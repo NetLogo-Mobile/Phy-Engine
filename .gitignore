@@ -1,0 +1,9 @@
+*/build/*
+!.h
+!.cpp
+.tmp
+.vscode
+build
+.vs/
+.*/*
+!CMakeLists.txt
