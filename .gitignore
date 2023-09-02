@@ -3,6 +3,7 @@
 !.cpp
 .tmp
 .vscode
+.xmake
 build
 .vs/
 .*/*
