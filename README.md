@@ -1,4 +1,4 @@
-<p align="center">
+<p align="left">
   <img src="documents/images/logo.png" alt="phy engine logo"/>
 </p>
 
