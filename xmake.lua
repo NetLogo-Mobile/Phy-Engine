@@ -4,13 +4,13 @@ set_version("1.0.0", {build = "%Y%m%d", soname = true})
 
 add_rules("mode.debug", "mode.release")
 
-set_languages("c23","cxx23")
+set_languages("c11","cxx23")
 
 set_optimize("fastest")
 
 set_kind("binary")
 
-if is_mode("release") then
+if is_mode("release", "native") then
     set_optimize("aggressive")
 else 
     set_optimize("none")
@@ -20,21 +20,51 @@ if is_plat("windows") then
     if is_mode("debug") then
         set_runtimes("MTd")
     else
-        add_cxflags("-GL", "-Ob2")
+        add_cxflags("-GL")
         set_runtimes("MT")
     end
-elseif is_plat("android") then
-    -- none
 elseif is_plat("mingw", "msys", "cygwin") then
+    if is_mode("debug") then
+        add_cxflags("-g")
+    else
+        add_cxflags("-flto", "-s")
+    end
+    add_cxflags("-static-libstdc++")
+    add_syslinks("ntdll")
+elseif is_plat("linux") then
     if is_mode("debug") then
         add_cxflags("-g")
     else
         add_cxflags("-s", "-flto")
     end
+
     add_cxflags("-static-libstdc++")
-    add_syslinks("ntdll")
-elseif is_plat("dos") then
-    -- none
+
+    if is_arch("x86_64") then
+        -- none
+    elseif is_arch("i386") then
+        -- none
+    elseif is_arch("loongarch64") then
+        -- none
+    end
+elseif is_plat("android") then
+    if is_mode("debug") then
+        add_cxflags("-g")
+    else
+        add_cxflags("-s", "-flto")
+    end
+    if is_mode("native") then
+        add_cxflags("-march=native")
+    end
+    add_cxflags("-static-libstdc++")
+elseif is_plat("msdos") then
+    if is_mode("debug") then
+        add_cxflags("-g")
+    else
+        add_cxflags("-s", "-flto")
+    end
+
+    add_cxflags("-static-libstdc++")
 else
     -- none
 end
