@@ -30,6 +30,8 @@ elseif is_mode("debug") then
     set_symbols("debug")
 end
 
+set_defaultarchs("msdos|i386")
+
 if is_plat("windows") then
     set_allowedarchs("x64", "x86", "arm64", "arm")
 
@@ -47,8 +49,6 @@ elseif is_plat("mingw") then
     add_cxflags("-static-libstdc++")
     add_syslinks("ntdll")
 elseif is_plat("linux") then
-    set_allowedarchs("x86_64", "i386", "aarch64", "aarch32", "loongarch64")
-
     if is_mode("release", "native") then
         add_cxflags("-flto")
     end
@@ -74,9 +74,9 @@ elseif is_plat("msdos") then
     add_cxflags("-static-libstdc++")
 end
 
-target("Phy Engine")
+--target("Phy Engine")
     add_files("src/**.cpp")
-target_end()
+--target_end()
 
     
 --
