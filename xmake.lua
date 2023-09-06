@@ -4,7 +4,7 @@ set_project("Phy Engine")
 
 set_version("1.0.0", {build = "%Y%m%d"})
 
-set_allowedplats("mingw", "linux", "android", "cygwin")
+set_allowedplats("windows", "mingw", "linux", "msdos")
 
 --find_tool("git", {version = true})
 
@@ -31,6 +31,7 @@ elseif is_mode("debug") then
 end
 
 if is_plat("windows") then
+    set_allowedarchs("x64", "x86", "arm64", "arm")
     if is_mode("debug") then
         set_runtimes("MTd")
     else
@@ -38,7 +39,7 @@ if is_plat("windows") then
         add_cxflags("-GL")
         set_runtimes("MT")
     end
-elseif is_plat("mingw", "cygwin") then
+elseif is_plat("mingw") then
     if is_mode("release", "native") then
         add_cxflags("-flto")
     end
@@ -59,10 +60,7 @@ elseif is_plat("linux") then
         -- none
     end
 elseif is_plat("android") then
-    if is_mode("release", "native") then
-        add_cxflags("-flto")
-    end
-    add_cxflags("-static-libstdc++")
+    --none
 elseif is_plat("msdos") then
     if is_mode("release", "native") then
         add_cxflags("-flto")
