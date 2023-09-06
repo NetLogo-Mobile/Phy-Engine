@@ -1,41 +1,52 @@
+set_xmakever("2.5.6")
+
 set_project("Phy Engine")
 
-set_version("1.0.0", {build = "%Y%m%d", soname = true})
+set_version("1.0.0", {build = "%Y%m%d"})
+
+set_allowedplats("mingw", "linux", "android", "cygwin")
+
+--find_tool("git", {version = true})
 
 add_rules("mode.debug", "mode.release")
 
-set_languages("c11","cxx23")
+set_allowedmodes("release", "debug", "native")
 
-set_optimize("fastest")
+set_languages("c11","cxx23")
 
 set_kind("binary")
 
+set_encodings("utf-8")
+
+if is_mode("native") then
+    add_vectorexts("all")
+end
+
 if is_mode("release", "native") then
     set_optimize("aggressive")
-else 
+    set_strip("all")
+elseif is_mode("debug") then
     set_optimize("none")
+    set_symbols("debug")
 end
 
 if is_plat("windows") then
     if is_mode("debug") then
         set_runtimes("MTd")
     else
+        set_fpmodels("fast")
         add_cxflags("-GL")
         set_runtimes("MT")
     end
-elseif is_plat("mingw", "msys", "cygwin") then
-    if is_mode("debug") then
-        add_cxflags("-g")
-    else
-        add_cxflags("-flto", "-s")
+elseif is_plat("mingw", "cygwin") then
+    if is_mode("release", "native") then
+        add_cxflags("-flto")
     end
     add_cxflags("-static-libstdc++")
     add_syslinks("ntdll")
 elseif is_plat("linux") then
-    if is_mode("debug") then
-        add_cxflags("-g")
-    else
-        add_cxflags("-s", "-flto")
+    if is_mode("release", "native") then
+        add_cxflags("-flto")
     end
 
     add_cxflags("-static-libstdc++")
@@ -48,29 +59,20 @@ elseif is_plat("linux") then
         -- none
     end
 elseif is_plat("android") then
-    if is_mode("debug") then
-        add_cxflags("-g")
-    else
-        add_cxflags("-s", "-flto")
-    end
-    if is_mode("native") then
-        add_cxflags("-march=native")
+    if is_mode("release", "native") then
+        add_cxflags("-flto")
     end
     add_cxflags("-static-libstdc++")
 elseif is_plat("msdos") then
-    if is_mode("debug") then
-        add_cxflags("-g")
-    else
-        add_cxflags("-s", "-flto")
+    if is_mode("release", "native") then
+        add_cxflags("-flto")
     end
 
     add_cxflags("-static-libstdc++")
-else
-    -- none
 end
 
 target("Phy Engine")
-    add_files("src/PEmain/*.cpp")
+    add_files("src/**.cpp")
 target_end()
 
     
