@@ -74,9 +74,9 @@ elseif is_plat("msdos") then
     add_cxflags("-static-libstdc++")
 end
 
---target("Phy Engine")
+target("phy_engine")
     add_files("src/**.cpp")
---target_end()
+target_end()
 
     
 --
