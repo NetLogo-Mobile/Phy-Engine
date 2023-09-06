@@ -32,6 +32,7 @@ end
 
 if is_plat("windows") then
     set_allowedarchs("x64", "x86", "arm64", "arm")
+
     if is_mode("debug") then
         set_runtimes("MTd")
     else
@@ -46,6 +47,8 @@ elseif is_plat("mingw") then
     add_cxflags("-static-libstdc++")
     add_syslinks("ntdll")
 elseif is_plat("linux") then
+    set_allowedarchs("x86_64", "i386", "aarch64", "aarch32", "loongarch64")
+
     if is_mode("release", "native") then
         add_cxflags("-flto")
     end
@@ -62,6 +65,8 @@ elseif is_plat("linux") then
 elseif is_plat("android") then
     --none
 elseif is_plat("msdos") then
+    set_allowedarchs("i386") -- x86 not support
+
     if is_mode("release", "native") then
         add_cxflags("-flto")
     end
