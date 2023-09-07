@@ -4,7 +4,7 @@ set_project("Phy Engine")
 
 set_version("1.0.0", {build = "%Y%m%d"})
 
-set_allowedplats("windows", "mingw", "linux", "msdos")
+set_allowedplats("windows", "mingw", "linux", "msdos", "android")
 
 --find_tool("git", {version = true})
 
