@@ -10,19 +10,15 @@ set_allowedplats("windows", "mingw", "linux", "msdos", "android")
 
 add_rules("mode.debug", "mode.release")
 
-set_allowedmodes("release", "debug", "native")
+set_allowedmodes("release", "debug")
 
-set_languages("c11","cxx23")
+set_languages("c11", "cxx23")
 
 set_kind("binary")
 
 set_encodings("utf-8")
 
-if is_mode("native") then
-    add_vectorexts("all")
-end
-
-if is_mode("release", "native") then
+if is_mode("release") then
     set_optimize("aggressive")
     set_strip("all")
 elseif is_mode("debug") then
@@ -43,13 +39,13 @@ if is_plat("windows") then
         set_runtimes("MT")
     end
 elseif is_plat("mingw") then
-    if is_mode("release", "native") then
+    if is_mode("release") then
         add_cxflags("-flto")
     end
     add_cxflags("-static-libstdc++")
     add_syslinks("ntdll")
 elseif is_plat("linux") then
-    if is_mode("release", "native") then
+    if is_mode("release") then
         add_cxflags("-flto")
     end
 
@@ -67,7 +63,7 @@ elseif is_plat("android") then
 elseif is_plat("msdos") then
     set_allowedarchs("i386") -- x86 not support
 
-    if is_mode("release", "native") then
+    if is_mode("release") then
         add_cxflags("-flto")
     end
 
@@ -78,7 +74,27 @@ target("phy_engine")
     add_files("src/**.cpp")
 target_end()
 
-    
+option("native")
+    set_default(false)
+    set_showmenu(true)
+    if is_plat("windows") then
+        add_vectorexts("all")
+    else
+        add_cxflags("-march=native")
+    end
+option_end()
+
+option("maths-kernel")
+    set_default("default")
+    set_showmenu(true)
+    set_values("default")
+option_end()
+
+option("memory-allocator")
+    set_default("default")
+    set_showmenu(true)
+    set_values("default")
+option_end()
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
 --
