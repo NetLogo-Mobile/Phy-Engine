@@ -4,7 +4,7 @@ set_project("Phy Engine")
 
 set_version("1.0.0", {build = "%Y%m%d"})
 
-set_allowedplats("windows", "mingw", "linux", "msdos", "android")
+set_allowedplats("windows", "mingw", "linux", "msdos", "android", "freebds", "elf")
 
 --find_tool("git", {version = true})
 
@@ -68,6 +68,10 @@ elseif is_plat("msdos") then
     end
 
     add_cxflags("-static-libstdc++")
+elseif is_plat("freebds") then
+    --none
+elseif is_plat("elf") then
+    add_cxflags("-ffreestanding")
 end
 
 target("phy_engine")

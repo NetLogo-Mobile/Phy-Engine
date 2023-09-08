@@ -494,9 +494,12 @@ public:
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
+#if defined(_MSC_VER) && !defined(__clang__)
 			return std::allocator<T>{}.allocate(n);
+#else
+			return new T[n];
+#endif
 		}
-		else {}
 #endif
 		constexpr
 			::std::size_t mxn{::std::numeric_limits<::std::size_t>::max()/sizeof(T)};
@@ -528,9 +531,12 @@ public:
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
+#if defined(_MSC_VER) && !defined(__clang__)
 			return std::allocator<T>{}.deallocate(ptr, 1);
+#else
+			return delete[] ptr;
+#endif	
 		}
-		else {}
 #endif
 		if constexpr(alignof(T)<=alloc::default_alignment)
 		{
@@ -554,9 +560,12 @@ public:
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
+#if defined(_MSC_VER) && !defined(__clang__)
 			return std::allocator<T>{}.deallocate(ptr, n);
+#else
+			return delete[] ptr;
+#endif	
 		}
-		else {}
 #endif
 		if constexpr(alignof(T)<=alloc::default_alignment)
 		{
