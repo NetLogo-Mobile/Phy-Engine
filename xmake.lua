@@ -74,9 +74,6 @@ elseif is_plat("elf") then
     add_cxflags("-ffreestanding")
 end
 
-target("phy_engine")
-    add_files("src/**.cpp")
-target_end()
 
 option("native")
     set_default(false)
@@ -99,6 +96,25 @@ option("memory-allocator")
     set_showmenu(true)
     set_values("default")
 option_end()
+
+option("custom-io-observer")
+    set_default(false)
+    set_showmenu(true)
+
+    add_defines("PHY_ENGINE_USE_CUSTOM_IO_OBSERVER")
+option_end()
+
+
+target("phy_engine")
+    set_options("native")
+    set_options("maths-kernel")
+    set_options("memory-allocator")
+    set_options("custom-io-observer")
+
+    add_files("src/**.cpp")
+    add_files("customize/**.cpp")
+target_end()
+
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
 --
