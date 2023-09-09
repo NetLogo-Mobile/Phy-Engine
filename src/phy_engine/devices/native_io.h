@@ -18,6 +18,6 @@ inline ::fast_io::u8c_io_observer u8out{::fast_io::u8c_stdout()};
 inline ::fast_io::u8c_io_observer u8err{::fast_io::u8c_stderr()};
 #endif
 #else
-#include "../../../customize/io_observer.h"
+#include "../../../custom/io_observer.h"
 #endif
 }
