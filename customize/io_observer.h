@@ -6,16 +6,17 @@
 
 /*
  *  You can define your own io observer here
+ *  io_observer.h will be included in namespace phy_engine::native_io
  */
-
-#if defined(PHY_ENGINE_USE_CUSTOM_IO_OBSERVER) || !(((__STDC_HOSTED__ == 1 && (!defined(_GLIBCXX_HOSTED) || _GLIBCXX_HOSTED == 1) && !defined(_LIBCPP_FREESTANDING)) || defined(FAST_IO_ENABLE_HOSTED_FEATURES)) && __has_include(<stdio.h>))
 
 // custom io observer definition
 class custom_io_observer {
 };
 
+// define u8in, u8out, u8err
+inline custom_io_observer u8in{};
+inline custom_io_observer u8out{};
+inline custom_io_observer u8err{};
+
 // operation function definition
 
-
-
-#endif

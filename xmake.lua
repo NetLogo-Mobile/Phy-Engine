@@ -112,7 +112,7 @@ target("phy_engine")
     set_options("custom-io-observer")
 
     add_files("src/**.cpp")
-    add_files("customize/**.cpp")
+    --add_files("customize/**.cpp")
 target_end()
 
 --
