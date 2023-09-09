@@ -3,7 +3,7 @@
 // To make a constexpr allocator, we need std::allocator. Because only new expression and std::allocator<T>::allocate are allowed in constexpr functions. 
 // See https://github.com/microsoft/STL/issues/1532 https://github.com/microsoft/STL/issues/4002
 // gcc and clang provide constexpr new, but still won't compile. 
-#include <memory>
+// std::allocator<T> is NOT freestanding.
 
 namespace fast_io
 {
@@ -494,7 +494,7 @@ public:
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
-			return std::allocator<T>{}.allocate(n);
+			return ::fast_io::freestanding::allocator<T>{}.allocate(n);
 		}
 #endif
 		constexpr
@@ -527,7 +527,7 @@ public:
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
-			return std::allocator<T>{}.deallocate(ptr, 1);
+			return ::fast_io::freestanding::allocator<T>{}.deallocate(ptr, 1);
 		}
 #endif
 		if constexpr(alignof(T)<=alloc::default_alignment)
@@ -552,7 +552,7 @@ public:
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
-			return ::operator delete(ptr, n);
+			return ::fast_io::freestanding::allocator<T>{}.deallocate(ptr, n);
 		}
 #endif
 		if constexpr(alignof(T)<=alloc::default_alignment)
