@@ -165,4 +165,4 @@
 #pragma comment(linker,"/alternatename:__imp_?SetConsoleCP@win32@fast_io@@YAHI@Z=__imp_SetConsoleCP")
 #pragma comment(linker,"/alternatename:__imp_?SetConsoleOutputCP@win32@fast_io@@YAHI@Z=__imp_SetConsoleOutputCP")
 #pragma comment(linker,"/alternatename:__imp_?GetConsolCP@win32@fast_io@@YAIXZ=__imp_GetConsoleCP")
-#pragma comment(linker, "/alternatename:__imp_?GetConsolOutputCP@win32@fast_io@@YAIXZ=__imp_GetConsoleOutputCP")
+#pragma comment(linker,"/alternatename:__imp_?GetConsolOutputCP@win32@fast_io@@YAIXZ=__imp_GetConsoleOutputCP")
