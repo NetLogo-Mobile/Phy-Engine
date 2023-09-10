@@ -163,3 +163,6 @@
 #pragma comment(linker,"/alternatename:__imp_?ZwCreateUserProcess@nt@win32@fast_io@@YAIPEAX0IIPEAUobject_attributes@123@1IIPEAUrtl_user_process_parameters@123@PEAUps_create_info@123@PEAUps_attribute_list@123@@Z=__imp_ZwCreateUserProcess")
 #pragma comment(linker,"/alternatename:__imp_?RtlCreateUserProcess@nt@win32@fast_io@@YAIPEAUunicode_string@123@IPEAUrtl_user_process_parameters@123@PEAUsecurity_descriptor@123@2PEAXE33PEAUrtl_user_process_information@123@@Z=__imp_RtlCreateUserProcess")
 #pragma comment(linker,"/alternatename:__imp_?SetConsoleCP@win32@fast_io@@YAHI@Z=__imp_SetConsoleCP")
+#pragma comment(linker,"/alternatename:__imp_?SetConsoleOutputCP@win32@fast_io@@YAHI@Z=__imp_SetConsoleOutputCP")
+#pragma comment(linker,"/alternatename:__imp_?GetConsolCP@win32@fast_io@@YAIXZ=__imp_GetConsoleCP")
+#pragma comment(linker,"/alternatename:__imp_?GetConsolOutputCP@win32@fast_io@@YAIXZ=__imp_GetConsoleOutputCP")
