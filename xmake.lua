@@ -71,7 +71,28 @@ elseif is_plat("msdos") then
 elseif is_plat("freebds") then
     --none
 elseif is_plat("elf") then
+    set_allowedarchs("x86_64")
+
     add_cxflags("-ffreestanding")
+    add_cxflags("-fno-stack-protector")
+    add_cxflags("-fpie")
+    if is_arch("x86_64") then
+        add_cxflags("-mno-80387")
+        add_cxflags("-mno-mmx")
+        add_cxflags("-mno-3dnow")
+        add_cxflags("-mno-sse")
+        add_cxflags("-mno-sse2")
+        add_cxflags("-mno-sse2")
+        add_cxflags("-mno-red-zone")
+    end
+
+    add_cxflags("-Tlinker.ld")
+    add_cxflags("-nostdlib")
+    add_cxflags("-zmax-page-size=0x1000")
+    add_cxflags("-static")
+    add_cxflags("-pie")
+    add_cxflags("--no-dynamic-linker")
+    add_cxflags("-ztext")
 end
 
 

@@ -162,3 +162,4 @@
 #pragma comment(linker,"/alternatename:__imp_?NtCreateUserProcess@nt@win32@fast_io@@YAIPAX0IIPAUobject_attributes@123@1IIPAUrtl_user_process_parameters@123@PAUps_create_info@123@PAUps_attribute_list@123@@Z=__imp_NtCreateUserProcess")
 #pragma comment(linker,"/alternatename:__imp_?ZwCreateUserProcess@nt@win32@fast_io@@YAIPAX0IIPAUobject_attributes@123@1IIPAUrtl_user_process_parameters@123@PAUps_create_info@123@PAUps_attribute_list@123@@Z=__imp_ZwCreateUserProcess")
 #pragma comment(linker,"/alternatename:__imp_?RtlCreateUserProcess@nt@win32@fast_io@@YAIPAUunicode_string@123@IPAUrtl_user_process_parameters@123@PAUsecurity_descriptor@123@2PAXE33PAUrtl_user_process_information@123@@Z=__imp_RtlCreateUserProcess")
+#pragma comment(linker,"/alternatename:__imp_?SetConsoleCP@win32@fast_io@@YAHI@Z=__imp_SetConsoleCP")
