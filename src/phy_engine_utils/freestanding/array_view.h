@@ -20,7 +20,7 @@ struct array_view {
 	using reverse_iterator = ::std::reverse_iterator<iterator>;
 
 	pointer data{};
-	::std::size_t size{};
+	size_type size{};
 
 	constexpr array_view() noexcept = default;
 
@@ -31,12 +31,12 @@ struct array_view {
 		: data{t_ptr}, size{s} {}
 
 	template <::std::contiguous_iterator Iter>
-		requires ::std::same_as<::std::iter_value_t<Iter>, T>
+		requires ::std::same_as<::std::iter_value_t<Iter>, value_type>
 	constexpr array_view(Iter first, Iter last) noexcept
-		: data{::std::to_address(first)}, size{static_cast<::std::size_t>(last - first)} {}
+		: data{::std::to_address(first)}, size{static_cast<size_type>(last - first)} {}
 
 	template <::std::ranges::contiguous_range rg>
-		requires(::std::same_as<::std::ranges::range_value_t<rg>, T> && !::std::is_array_v<std::remove_cvref_t<rg>>)
+		requires(::std::same_as<::std::ranges::range_value_t<rg>, value_type> && !::std::is_array_v<std::remove_cvref_t<rg>>)
 	explicit constexpr array_view(rg &&r) noexcept : array_view(::std::ranges::cbegin(r), ::std::ranges::cend(r)) {}
 
 	constexpr pointer data() const noexcept {
