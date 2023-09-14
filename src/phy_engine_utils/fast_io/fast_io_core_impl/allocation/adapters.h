@@ -444,8 +444,12 @@ public:
 		}
 	}
 
+	static inline constexpr bool can_deallocate_aligned_n =
+		::fast_io::details::has_deallocate_aligned_n_impl<alloc> ||
+		::fast_io::details::has_deallocate_aligned_impl<alloc> ||
+		::fast_io::details::has_deallocate_n_impl<alloc>;
 	static inline
-	void deallocate_aligned_n(void* p,::std::size_t alignment,::std::size_t n) noexcept
+	void deallocate_aligned_n(void* p,::std::size_t alignment,::std::size_t n) noexcept requires(can_deallocate_aligned_n)
 	{
 		if constexpr(::fast_io::details::has_deallocate_aligned_n_impl<alloc>)
 		{
@@ -462,7 +466,7 @@ public:
 				return;
 			}
 			::std::size_t const to_deallocate{sizeof(void*)+alignment+n};
-			allocator_type::deallocate(reinterpret_cast<void**>(p)[-1],to_deallocate);
+			allocator_type::deallocate_n(reinterpret_cast<void**>(p)[-1],to_deallocate);
 		}
 	}
 	static inline constexpr bool has_deallocate_aligned = ::fast_io::details::has_deallocate_aligned_impl<alloc>;

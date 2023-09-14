@@ -6,7 +6,7 @@
 namespace phy_engine::freestanding {
 
 template <typename T>
-struct array_view {
+struct string_view {
 	using value_type = T;
 	using pointer = T*;
 	using const_pointer = T const*;
@@ -22,22 +22,22 @@ struct array_view {
 	pointer data{};
 	size_type size{};
 
-	constexpr array_view() noexcept = default;
+	constexpr string_view() noexcept = default;
 
-	constexpr array_view(decltype(nullptr)) noexcept
+	constexpr string_view(decltype(nullptr)) noexcept
 		: data{nullptr}, size{0u} {}
 
-	constexpr array_view(pointer t_ptr, size_type s) noexcept
+	constexpr string_view(pointer t_ptr, size_type s) noexcept
 		: data{t_ptr}, size{s} {}
 
 	template <::std::contiguous_iterator Iter>
 		requires ::std::same_as<::std::iter_value_t<Iter>, value_type>
-	constexpr array_view(Iter first, Iter last) noexcept
+	constexpr string_view(Iter first, Iter last) noexcept
 		: data{::std::to_address(first)}, size{static_cast<size_type>(last - first)} {}
 
 	template <::std::ranges::contiguous_range rg>
 		requires(::std::same_as<::std::ranges::range_value_t<rg>, value_type> && !::std::is_array_v<std::remove_cvref_t<rg>>)
-	explicit constexpr array_view(rg &&r) noexcept : array_view(::std::ranges::cbegin(r), ::std::ranges::cend(r)) {}
+	explicit constexpr string_view(rg &&r) noexcept : string_view(::std::ranges::cbegin(r), ::std::ranges::cend(r)) {}
 
 	constexpr pointer data() const noexcept {
 		return data;
