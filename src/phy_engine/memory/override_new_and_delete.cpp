@@ -26,11 +26,10 @@ void operator delete(void* ptr) noexcept {
 	::fast_io::native_global_allocator::deallocate(ptr);
 }
 
-#if 0
+#if 0 // not support
 void operator delete(void* ptr, ::std::size_t n, ::std::align_val_t al) noexcept {
 	::fast_io::native_global_allocator::deallocate_aligned_n(ptr, static_cast<::std::size_t>(al), n);
 }
-
 
 void operator delete(void* ptr, ::std::align_val_t al) noexcept {
 	::fast_io::native_global_allocator::deallocate_aligned(ptr, static_cast<::std::size_t>(al));
