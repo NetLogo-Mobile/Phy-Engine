@@ -38,13 +38,16 @@ if is_plat("windows") then
         add_cxflags("-GL")
         set_runtimes("MT")
     end
+    add_cxflags("-GR-")
 elseif is_plat("mingw") then
+    add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
     end
     add_cxflags("-static-libstdc++")
     add_syslinks("ntdll")
 elseif is_plat("linux") then
+    add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
     end
@@ -63,6 +66,7 @@ elseif is_plat("android") then
 elseif is_plat("msdos") then
     set_allowedarchs("i386") -- x86 not support
 
+    add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
     end

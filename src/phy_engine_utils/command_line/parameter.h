@@ -12,13 +12,12 @@
 
 namespace phy_engine::command_line {
 
-template<::std::integral char_type>
-struct basic_parameter {
-	::std::basic_string_view<char_type> name{};
-	::phy_engine::freestanding::array_view<::std::basic_string_view<char_type>> alias{};
-	::phy_engine::freestanding::array_view<basic_parameter*> prerequisite{};
-	::phy_engine::freestanding::array_view<basic_parameter*> clash{};
-	bool (*callback)(int argc, char** argv, int pos, ::std::basic_string_view<char_type> var) noexcept {};
+struct parameter {
+	::std::u8string_view name{};
+	::phy_engine::freestanding::array_view<::std::u8string_view> alias{};
+	::phy_engine::freestanding::array_view<parameter*> prerequisite{};
+	::phy_engine::freestanding::array_view<parameter*> clash{};
+	bool (*callback)(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept {};
 };
 
 }
