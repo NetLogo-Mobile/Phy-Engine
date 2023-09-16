@@ -74,6 +74,13 @@ elseif is_plat("msdos") then
     add_cxflags("-static-libstdc++")
 elseif is_plat("freebds") then
     --none
+elseif is_plat("cross") then
+    add_cxflags("-fno-rtti")
+    if is_mode("release") then
+        add_cxflags("-flto")
+    end
+
+    add_cxflags("-static-libstdc++")
 end
 
 
