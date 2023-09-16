@@ -6,6 +6,8 @@
 
 #include "../../phy_engine_utils/command_line/impl.h"
 
+#include "inc.h"
+
 namespace phy_engine {
 
 namespace details {
@@ -55,7 +57,7 @@ inline constexpr auto generate_str_parameter_array(::fast_io::freestanding::arra
 inline constexpr auto parameters{details::parameter_sort(details::parameter_unsort)};
 inline constexpr ::std::size_t parameter_lookup_table_size{details::calculate_str_parameter_size(parameters)};
 inline constexpr auto parameter_lookup_table{details::generate_str_parameter_array<parameter_lookup_table_size>(parameters)};
-inline constexpr ::phy_engine::command_line::command_line command_line{
+inline constexpr ::phy_engine::command_line::command_line command_line_res{
 	::phy_engine::freestanding::array_view{parameters.data(), parameters.size()},
 	::phy_engine::freestanding::array_view{parameter_lookup_table.data(), parameter_lookup_table.size()}
 };

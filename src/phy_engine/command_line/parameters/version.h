@@ -5,6 +5,7 @@
 namespace phy_engine::parameter {
 namespace details {
 inline constexpr ::std::u8string_view verson_alias{u8"-v"};
+inline extern bool version_callback(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept;
 }  // namespace details
 
 inline constexpr ::phy_engine::command_line::parameter version{

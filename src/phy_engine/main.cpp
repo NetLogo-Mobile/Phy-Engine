@@ -23,5 +23,5 @@ int main(int argc, char** argv) noexcept {
 						 u8"V",
 						 ::phy_engine::phy_engine_version,
 						 ::phy_engine::ansi_escape_sequences::rst::color);
-	return ::phy_engine::command_line::parsing_parameters(argc, reinterpret_cast<char8_t**>(argv), ::phy_engine::command_line, ::phy_engine::parsing_result);
+	return ::phy_engine::command_line::parsing_parameters(argc, reinterpret_cast<char8_t**>(argv), ::phy_engine::command_line_res, ::phy_engine::parsing_result);
 }
