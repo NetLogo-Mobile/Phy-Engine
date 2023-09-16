@@ -10,7 +10,7 @@
 #include <concepts>
 
 #include "../fast_io/fast_io.h"
-#include "../freestanding/concept.h"
+#include "../concepts/concepts.h"
 
 namespace phy_engine::ansi_escape_sequences {
 /**
@@ -89,6 +89,21 @@ struct rst {
 	// Reset total variables:
 	inline static constexpr decltype(auto) all{u8"\033[0m"};
 
+#ifdef __MSDOS__
+	// Reset color variables:
+	inline static constexpr decltype(auto) color{all};
+	inline static constexpr decltype(auto) bg_color{all};
+	inline static constexpr decltype(auto) bd_color{all};
+
+	// Reset style variables:
+	inline static constexpr decltype(auto) bd_ft{all};
+	inline static constexpr decltype(auto) italics{all};
+	inline static constexpr decltype(auto) underlined{all};
+	inline static constexpr decltype(auto) blink{all};
+	inline static constexpr decltype(auto) inverse{all};
+	inline static constexpr decltype(auto) invisible{all};
+	inline static constexpr decltype(auto) crossed{all};
+#else
 	// Reset color variables:
 	inline static constexpr decltype(auto) color{u8"\033[39m"};
 	inline static constexpr decltype(auto) bg_color{u8"\033[49m"};
@@ -102,6 +117,7 @@ struct rst {
 	inline static constexpr decltype(auto) inverse{u8"\033[27m"};
 	inline static constexpr decltype(auto) invisible{u8"\033[28m"};
 	inline static constexpr decltype(auto) crossed{u8"\033[29m"};
+#endif
 };
 
 struct RGB {
@@ -135,13 +151,13 @@ inline constexpr char_type *rgb_print_reserve_impl(char_type *iter, ::std::uint_
 }
 
 template <::std::integral char_type>
-	requires(sizeof(char_type) == sizeof(char8_t) && ::phy_engine::freestanding::value_transferable<RGB>)
+	requires(sizeof(char_type) == sizeof(char8_t) && ::phy_engine::value_transferable<RGB>)
 inline constexpr char_type *print_reserve_define(::fast_io::io_reserve_type_t<char_type, RGB>, char_type *iter, RGB rgb) noexcept {
 	return details::rgb_print_reserve_impl(iter, rgb.r, rgb.g, rgb.b);
 }
 
 template <::std::integral char_type>
-	requires(sizeof(char_type) == sizeof(char8_t) && !::phy_engine::freestanding::value_transferable<RGB>)
+	requires(sizeof(char_type) == sizeof(char8_t) && !::phy_engine::value_transferable<RGB>)
 inline constexpr char_type *print_reserve_define(::fast_io::io_reserve_type_t<char_type, RGB>, char_type *iter, RGB const& rgb) noexcept {
 	return details::rgb_print_reserve_impl(iter, rgb.r, rgb.g, rgb.b);
 }

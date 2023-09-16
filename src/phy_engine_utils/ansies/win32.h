@@ -10,7 +10,6 @@
 #include <type_traits>
 
 #include "../fast_io/fast_io.h"
-#include "../freestanding/concept.h"
 
 namespace phy_engine::ansi_escape_sequences {
 
@@ -22,11 +21,6 @@ struct set_win32_console_io_cp_to_utf8 {
 	::std::uint_least32_t output{};
 	::std::uint_least32_t input{};
 
-#if __has_cpp_attribute(__gnu__::__always_inline__)
-	[[__gnu__::__always_inline__]]
-#elif __has_cpp_attribute(msvc::forceinline)
-	[[msvc::forceinline]]
-#endif
 	set_win32_console_io_cp_to_utf8() noexcept {
 #if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_WIN32_WINDOWS)
 		output = ::fast_io::win32::GetConsolOutputCP();
@@ -38,11 +32,6 @@ struct set_win32_console_io_cp_to_utf8 {
 #endif
 	}
 
-#if __has_cpp_attribute(__gnu__::__always_inline__)
-	[[__gnu__::__always_inline__]]
-#elif __has_cpp_attribute(msvc::forceinline)
-	[[msvc::forceinline]]
-#endif
 	~set_win32_console_io_cp_to_utf8() {
 #if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_WIN32_WINDOWS)
 		if (output != utf8_coding)
@@ -62,11 +51,6 @@ struct enable_win32_ansi {
 	void* out_handle{};
 	void* err_handle{};
 
-#if __has_cpp_attribute(__gnu__::__always_inline__)
-	[[__gnu__::__always_inline__]]
-#elif __has_cpp_attribute(msvc::forceinline)
-	[[msvc::forceinline]]
-#endif
 	enable_win32_ansi() noexcept {
 #if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_WIN32_WINDOWS)
 		out_handle = ::fast_io::win32::GetStdHandle(::fast_io::win32_stdout_number);
@@ -78,11 +62,6 @@ struct enable_win32_ansi {
 #endif
 	}
 
-#if __has_cpp_attribute(__gnu__::__always_inline__)
-	[[__gnu__::__always_inline__]]
-#elif __has_cpp_attribute(msvc::forceinline)
-	[[msvc::forceinline]]
-#endif
 	~enable_win32_ansi() {
 #if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_WIN32_WINDOWS)
 		::fast_io::win32::SetConsoleMode(out_handle, out_omode);

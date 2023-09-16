@@ -3,7 +3,7 @@
 #include <type_traits>
 #include <concepts>
 
-namespace phy_engine::freestanding {
+namespace phy_engine {
 template <typename T>
 concept value_transferable =
 	::std::is_trivially_copyable_v<::std::remove_cvref_t<T>> &&

@@ -6,7 +6,7 @@
 
 /*
  *  You can define your own io observer here
- *  io_observer.h will be included in namespace phy_engine::native_io
+ *  io_observer.h will be included in namespace phy_engine
  */
 
 // custom io observer definition

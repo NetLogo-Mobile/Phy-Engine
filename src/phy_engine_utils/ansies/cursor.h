@@ -10,7 +10,6 @@
 #include <type_traits>
 
 #include "../fast_io/fast_io.h"
-#include "../freestanding/concept.h"
 
 namespace phy_engine::ansi_escape_sequences {
 /**
@@ -58,7 +57,7 @@ inline constexpr char_type *crs_print_reserve_impl(char_type *iter, crs::cursor_
 	::fast_io::freestanding::my_memcpy(iter, u8"\u001b[", 2u);
 	char_type *curr_pos{iter + 2u};
 	curr_pos = print_reserve_define(::fast_io::io_reserve_type<char_type, ::std::uint_least32_t>, curr_pos, f);
-	*(curr_pos++) = static_cast<char_type>(crs::cursor_var);
+	*(curr_pos++) = static_cast<char_type>(cv);
 	return curr_pos;
 }
 }  // namespace details
@@ -72,6 +71,7 @@ inline constexpr char_type *print_reserve_define(::fast_io::io_reserve_type_t<ch
 /**
  * @brief  It is used to store the terminal control sequences for clear line / screen.
  */
+
 struct tcsc {
 	::std::uint_least32_t feat{};
 	enum class cursor_sequences_variables : char8_t {
@@ -91,11 +91,11 @@ inline constexpr ::std::size_t print_reserve_size(::fast_io::io_reserve_type_t<c
 namespace details {
 template <::std::integral char_type>
 	requires(sizeof(char_type) == sizeof(char8_t))
-inline constexpr char_type *tcsc_print_reserve_impl(char_type *iter, tcsc::cursor_sequences_variables cv, ::std::uint_least32_t f) noexcept {
+inline constexpr char_type *tcsc_print_reserve_impl(char_type *iter, tcsc::cursor_sequences_variables csv, ::std::uint_least32_t f) noexcept {
 	::fast_io::freestanding::my_memcpy(iter, u8"\u001b[", 2u);
 	char_type *curr_pos{iter + 2u};
 	curr_pos = print_reserve_define(::fast_io::io_reserve_type<char_type, ::std::uint_least32_t>, curr_pos, f);
-	*(curr_pos++) = static_cast<char_type>(tcsc::cursor_seq_var);
+	*(curr_pos++) = static_cast<char_type>(csv);
 	return curr_pos;
 }
 }  // namespace details
