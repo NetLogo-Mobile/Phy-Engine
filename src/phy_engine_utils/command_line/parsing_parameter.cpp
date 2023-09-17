@@ -51,7 +51,11 @@ int ::phy_engine::command_line::parsing_parameters(
 				inv_pars.emplace_back(str_vw, res);
 				continue;
 			} else {
-				cpr.parameters_res.emplace(res.par, ::phy_engine::command_line::details::str_parameter_res{res.str, i});
+				if (res.par->has_value != h) {
+					inv_pars.emplace_back(str_vw);
+				} else {
+					cpr.parameters_res.emplace(res.par, ::phy_engine::command_line::details::str_parameter_res{res.str, i});
+				}
 			}
 
 		} else {

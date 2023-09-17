@@ -11,7 +11,7 @@ bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** arg
 						   u8"Phy Engine (Copyright 2023-present Phy Engine Open Source Group)\n"
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,
-						   u8"\n"
+						   u8"\nCompiler: "
 #ifdef __clang__
 						   "LLVM clang " __clang_version__
 						   "\n"
@@ -24,6 +24,7 @@ bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** arg
 #else
 						   "Unknown C++ compiler\n"
 #endif
+						   "STL: "
 #if defined(_LIBCPP_VERSION)
 						   "LLVM libc++ ",
 						   _LIBCPP_VERSION
