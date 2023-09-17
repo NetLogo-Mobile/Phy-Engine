@@ -117,7 +117,7 @@ inline constexpr find_parameter_res find_parameter(::std::u8string_view sv, bool
 	::std::size_t res{sv.find(u8'=')};
 	if (res != ::std::u8string_view::npos) {
 		if (h) {
-			optval = d_str.substr(res);
+			optval = d_str.substr(res + 1u);
 			d_str = d_str.substr(0u, res);
 		} else {
 			return {}; // no optval required

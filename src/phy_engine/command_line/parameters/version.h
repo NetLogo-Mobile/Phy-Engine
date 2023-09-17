@@ -12,5 +12,6 @@ inline constexpr ::phy_engine::command_line::parameter version{
 	.name{u8"--version"},
 	.describe{u8"display version information"},
 	.alias{::phy_engine::freestanding::array_view{__builtin_addressof(details::verson_alias), 1}},
+	.callback{__builtin_addressof(details::version_callback)},
 };
 }  // namespace phy_engine::parameter
