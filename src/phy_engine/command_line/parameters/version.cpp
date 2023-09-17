@@ -6,14 +6,12 @@
 #include "../../version/phy_engine.h"
 
 bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept {
-	fast_io::posix_tzset();
-	auto unix_ts{fast_io::posix_clock_gettime(fast_io::posix_clock_id::realtime)};
 	::fast_io::io::println(::phy_engine::u8out,
 						   ::phy_engine::ansi_escape_sequences::rst::all,
 						   u8"Phy Engine (Copyright 2023-present Phy Engine Open Source Group)\n"
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,
-						   "\n"
+						   u8"\n"
 #ifdef __clang__
 						   "LLVM clang " __clang_version__
 						   "\n"
@@ -22,7 +20,7 @@ bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** arg
 						   "\n"
 #elif defined(_MSC_VER)
 						   "Microsoft Visual C++ ", _MSC_VER,
-						   "\n"
+						   u8"\n"
 #else
 						   "Unknown C++ compiler\n"
 #endif
@@ -31,7 +29,7 @@ bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** arg
 						   _LIBCPP_VERSION
 #elif defined(__GLIBCXX__)
 						   "GNU C++ Library ",
-						   _GLIBCXX_RELEASE, " ", __GLIBCXX__
+						   _GLIBCXX_RELEASE, u8" ", __GLIBCXX__
 #elif defined(_MSVC_STL_UPDATE)
 						   "Microsoft Visual C++ STL ",
 						   _MSVC_STL_UPDATE

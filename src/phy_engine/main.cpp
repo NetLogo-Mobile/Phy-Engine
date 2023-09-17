@@ -10,10 +10,6 @@
 #include "../phy_engine_utils/command_line/impl.h"
 #include "command_line/impl.h"
 
-#if (defined(_WIN32) || defined(__CYGWIN__)) && !defined(_WIN32_WINDOWS)
-[[maybe_unused]] ::phy_engine::ansi_escape_sequences::set_win32_console_io_cp_to_utf8 set_win32_console_var{};
-[[maybe_unused]] ::phy_engine::ansi_escape_sequences::enable_win32_ansi enable_win32_ansi_var{};
-#endif
 
 int main(int argc, char** argv) noexcept {
 	::fast_io::io::println(::phy_engine::u8out,
@@ -23,5 +19,10 @@ int main(int argc, char** argv) noexcept {
 						 u8"V",
 						 ::phy_engine::phy_engine_version,
 						 ::phy_engine::ansi_escape_sequences::rst::color);
-	return ::phy_engine::command_line::parsing_parameters(argc, reinterpret_cast<char8_t**>(argv), ::phy_engine::command_line_res, ::phy_engine::parsing_result);
+	int pr{::phy_engine::command_line::parsing_parameters(argc, reinterpret_cast<char8_t**>(argv), ::phy_engine::command_line_res, ::phy_engine::parsing_result)};
+	if (pr != 0) {
+		return pr;
+	}
+
+	return 0;
 }

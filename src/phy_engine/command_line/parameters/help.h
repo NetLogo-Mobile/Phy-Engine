@@ -10,7 +10,7 @@
 namespace phy_engine::parameter {
 namespace details {
 inline constexpr ::fast_io::freestanding::array<::std::u8string_view, 2> help_alias{u8"-h", u8"-?"};
-inline extern bool help_callback(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept;
+extern bool help_callback(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept;
 }  // namespace details
 
 inline constexpr ::phy_engine::command_line::parameter help{

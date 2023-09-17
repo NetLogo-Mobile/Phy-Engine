@@ -18,7 +18,7 @@ struct parameter {
 	::phy_engine::freestanding::array_view<::std::u8string_view> alias{};
 	::phy_engine::freestanding::array_view<parameter*> prerequisite{};
 	::phy_engine::freestanding::array_view<parameter*> clash{};
-	bool (*callback)(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept {};
+	bool (*callback)(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept {nullptr};
 	bool has_value{};
 };
 

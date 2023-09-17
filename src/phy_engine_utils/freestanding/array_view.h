@@ -2,6 +2,7 @@
 
 #include <type_traits>
 #include <concepts>
+#include <limits>
 
 namespace phy_engine::freestanding {
 
@@ -52,7 +53,8 @@ struct array_view {
 	}
 
 	constexpr size_type max_size() const noexcept {
-		return SIZE_MAX;
+		constexpr size_type max{::std::numeric_limits<size_type>::max()};
+		return max;
 	}
 
 	constexpr const_iterator cbegin() const noexcept {
