@@ -88,23 +88,27 @@ struct str_parameter {
 }  // namespace details
 
 struct command_line {
-	::phy_engine::freestanding::array_view<::phy_engine::command_line::parameter const*> parameters{};
-	::phy_engine::freestanding::array_view<details::str_parameter> parameter_lookup_table{};
+	::phy_engine::freestanding::array_view<::phy_engine::command_line::parameter const* const> parameters{};
+	::phy_engine::freestanding::array_view<details::str_parameter const> parameter_lookup_table{};
 };
 
+#if 0
 struct find_parameter_res {
-	::phy_engine::command_line::parameter const* par{};
 	::std::u8string_view str{};
+	::phy_engine::command_line::parameter const* para{};
 };
+#else
+using find_parameter_res = details::str_parameter;
+#endif  // 0
 
 inline constexpr find_parameter_res find_parameter(::std::u8string_view sv, bool h, command_line const& cl) noexcept {
-	::phy_engine::freestanding::array_view<details::str_parameter> plt{cl.parameter_lookup_table};
+	::phy_engine::freestanding::array_view<details::str_parameter const> plt{cl.parameter_lookup_table};
+	if (sv.size() == 1) [[unlikely]] {
+		return {};
+	}
+
 	::std::size_t left{};
 	::std::size_t right{plt.size() - 1u};
-
-#if __has_cpp_attribute(assume)
-	[[assume(left <= right)]];
-#endif
 
 	if (left == right) 
 		return {};
@@ -126,13 +130,17 @@ inline constexpr find_parameter_res find_parameter(::std::u8string_view sv, bool
 
 	while (left <= right) {
 		mid = (left + right) >> 1u;
-
+#if 0
+		if (mid == 0) [[unlikely]] {
+			return {};
+		}
+#endif  // 0
 		if (plt[mid].str > d_str) {
 			right = mid - 1;
 		} else if (plt[mid].str < d_str) {
 			left = mid + 1;
 		} else {
-			return {plt[mid].para, optval};
+			return {optval, plt[mid].para};
 		}
 	}
 
@@ -150,7 +158,7 @@ inline constexpr find_parameter_res find_parameter(::std::u8string_view sv, bool
 	}
 
 	if (!f_test_str.empty()) {
-		return {nullptr, f_test_str};
+		return {f_test_str, nullptr};
 	}
 
 	return {};

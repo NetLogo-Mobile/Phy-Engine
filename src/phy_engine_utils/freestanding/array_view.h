@@ -6,21 +6,21 @@
 
 namespace phy_engine::freestanding {
 
-template <typename T>
+	template <typename T>
 struct array_view {
 	using value_type = T;
-	using pointer = T*;
-	using const_pointer = T const*;
+	using pointer = T *;
+	using const_pointer = T const *;
 	using const_iterator = const_pointer;
 	using iterator = pointer;
-	using reference = T&;
-	using const_reference = T const&;
+	using reference = T &;
+	using const_reference = T const &;
 	using size_type = ::std::size_t;
 	using difference_type = ::std::ptrdiff_t;
 	using const_reverse_iterator = ::std::reverse_iterator<const_iterator>;
 	using reverse_iterator = ::std::reverse_iterator<iterator>;
 
-	const_pointer data_ptr{};
+	pointer data_ptr{};
 	size_type array_size{};
 
 	constexpr array_view() noexcept = default;
@@ -28,7 +28,7 @@ struct array_view {
 	constexpr array_view(decltype(nullptr)) noexcept
 		: data_ptr{nullptr}, array_size{0u} {}
 
-	constexpr array_view(const_pointer t_ptr, size_type s) noexcept
+	constexpr array_view(pointer t_ptr, size_type s) noexcept
 		: data_ptr{t_ptr}, array_size{s} {}
 
 	template <::std::contiguous_iterator Iter>
@@ -40,7 +40,7 @@ struct array_view {
 		requires(::std::same_as<::std::ranges::range_value_t<rg>, value_type> && !::std::is_array_v<std::remove_cvref_t<rg>>)
 	explicit constexpr array_view(rg &&r) noexcept : array_view(::std::ranges::cbegin(r), ::std::ranges::cend(r)) {}
 
-	constexpr const_pointer data() const noexcept {
+	constexpr pointer data() const noexcept {
 		return data_ptr;
 	}
 
@@ -65,6 +65,10 @@ struct array_view {
 		return data_ptr;
 	}
 
+	constexpr iterator begin() noexcept {
+		return data_ptr;
+	}
+
 	constexpr const_iterator cend() const noexcept {
 		return data_ptr + array_size;
 	}
@@ -73,8 +77,16 @@ struct array_view {
 		return data_ptr + array_size;
 	}
 
+	constexpr iterator end() noexcept {
+		return data_ptr + array_size;
+	}
+
 	constexpr const_reverse_iterator crbegin() const noexcept {
 		return const_reverse_iterator{data_ptr + array_size};
+	}
+
+	constexpr reverse_iterator rbegin() noexcept {
+		return reverse_iterator{data_ptr + array_size};
 	}
 
 	constexpr const_reverse_iterator rbegin() const noexcept {
@@ -85,6 +97,10 @@ struct array_view {
 		return const_reverse_iterator{data_ptr};
 	}
 
+	constexpr reverse_iterator rend() noexcept {
+		return reverse_iterator{data_ptr};
+	}
+
 	constexpr const_reverse_iterator rend() const noexcept {
 		return const_reverse_iterator{data_ptr};
 	}
@@ -92,12 +108,26 @@ struct array_view {
 	constexpr const_reference front() const noexcept {
 		return *data_ptr;
 	}
+
+	constexpr reference front() noexcept {
+		return *data_ptr;
+	}
+
 	constexpr const_reference back() const noexcept {
 		return *(data_ptr + array_size - 1u);
+	}
+
+	constexpr reference back() noexcept {
+		return *(data_ptr + array_size - 1u);
+	}
+
+	inline constexpr reference operator[](size_type s) noexcept {
+		return data_ptr[s];
 	}
 
 	inline constexpr const_reference operator[](size_type s) const noexcept {
 		return data_ptr[s];
 	}
 };
+
 } 

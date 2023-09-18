@@ -1,7 +1,7 @@
 /**************
  * Phy Engine *
  *************/
-
+#if 0  // gcc crash
 #include <new>
 
 #include "../../phy_engine_utils/fast_io/fast_io_core.h"
@@ -35,5 +35,5 @@ void operator delete(void* ptr, ::std::align_val_t al) noexcept {
 	::fast_io::native_global_allocator::deallocate_aligned(ptr, static_cast<::std::size_t>(al));
 }
 #endif  // 0
-
+#endif
 #endif

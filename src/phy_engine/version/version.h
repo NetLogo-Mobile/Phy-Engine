@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <concepts>
+#include <compare>
 
 #include "../../phy_engine_utils/fast_io/fast_io.h"
 
@@ -19,6 +20,43 @@ struct version {
 	::std::uint_least32_t z{};
 	::std::uint_least32_t state{};
 };
+
+inline constexpr bool operator==(version v1, version v2) noexcept {
+#ifdef _DEBUG
+	return v1.x == v2.x && v1.y == v2.y && v1.z == v2.z && v1.state == v2.state;
+#else
+	if constexpr (4 * sizeof(::std::uint_least32_t) == sizeof(version)) {
+#if __cpp_if_consteval >= 202106L
+		if consteval
+#else
+		if (__builtin_is_constant_evaluated())
+#endif
+		{
+			return v1.x == v2.x && v1.y == v2.y && v1.z == v2.z && v1.state == v2.state;
+		} else {
+			return ::fast_io::freestanding::my_memcmp(__builtin_addressof(v2), __builtin_addressof(v1), sizeof(version)) == 0;
+		}
+	} else {
+		return v1.x == v2.x && v1.y == v2.y && v1.z == v2.z && v1.state == v2.state;
+	}
+#endif  // _DEBUG
+}
+
+inline constexpr ::std::strong_ordering operator<=>(version v1, version v2) noexcept {
+	auto const cx{v1.x <=> v2.x};
+	if (cx == 0) {
+		auto const cy{v1.y <=> v2.y};
+		if (cy == 0) {
+			auto const cz{v1.z <=> v2.z};
+			if (cz == 0) {
+				return v1.state <=> v2.state;
+			}
+			return cz;
+		}
+		return cy;
+	}
+	return cx;
+}
 
 template <::std::integral char_type>
 	requires(sizeof(char_type) == sizeof(char8_t))

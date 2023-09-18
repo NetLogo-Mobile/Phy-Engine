@@ -21,7 +21,7 @@ inline constexpr auto parameter_sort(::phy_engine::command_line::parameter const
 	for (::std::size_t i{}; i < N; i++) {
 		res[i] = punsort[i];
 	}
-	::std::ranges::sort(res, [](::phy_engine::command_line::parameter const* a, ::phy_engine::command_line::parameter const* b) -> bool {
+	::std::ranges::sort(res, [](::phy_engine::command_line::parameter const* a, ::phy_engine::command_line::parameter const* b) noexcept -> bool {
 		return a->name < b->name;
 	});
 	return res;
@@ -47,7 +47,7 @@ inline constexpr auto generate_str_parameter_array(::fast_io::freestanding::arra
 			res[res_pos++] = {j, punsort[i]};
 		}
 	}
-	::std::ranges::sort(res, [](::phy_engine::command_line::details::str_parameter const& a, ::phy_engine::command_line::details::str_parameter const& b) -> bool {
+	::std::ranges::sort(res, [](::phy_engine::command_line::details::str_parameter const& a, ::phy_engine::command_line::details::str_parameter const& b) noexcept -> bool {
 		return a.str < b.str;
 	});
 	::std::u8string_view check{}; // Empty strings will be sorted and placed first.
@@ -55,11 +55,27 @@ inline constexpr auto generate_str_parameter_array(::fast_io::freestanding::arra
 		if (i.str == check || i.str.front() != u8'-') {
 			::fast_io::fast_terminate(); // The first character of the parameter must be '-'
 		} else {
+			if (i.str.size() == 1) {
+				::fast_io::fast_terminate();  // "-" is invalid
+			}
+
 			for (auto j : i.str) {
 				if (j == u8'=') 
 					::fast_io::fast_terminate(); // The parameter cannot contain the '=' character
 			}
 			check = i.str;
+		}
+
+		auto p{i.para};
+		for (auto i : p->clash) {
+			if (i == p) 
+				::fast_io::fast_terminate(); // Cannot contain this*
+		}
+		for (auto i : p->prerequisite) {
+			if (i == p)
+				::fast_io::fast_terminate(); // Cannot contain this*
+			if (::std::ranges::find(p->clash, i)) 
+				::fast_io::fast_terminate();  // Already included in the clash
 		}
 	}
 	return res;

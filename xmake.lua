@@ -24,6 +24,7 @@ if is_mode("release") then
 elseif is_mode("debug") then
     set_optimize("none")
     set_symbols("debug")
+    add_defines("_DEBUG")
 end
 
 set_defaultarchs("msdos|i386")
