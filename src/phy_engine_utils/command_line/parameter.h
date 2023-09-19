@@ -137,16 +137,23 @@ inline consteval calculate_hash_table_size_res calculate_hash_table_size(::fast_
 }
 
 struct ht_para_cpos {
+	::std::u8string_view str{};
 	parameter const* para{};
 	::std::size_t conflict_pos{};
 };
 
+struct ct_para_str {
+	::std::u8string_view str{};
+	parameter const* para{};
+};
 struct conflict_table {
-	::fast_io::freestanding::array<parameter const*, max_conflict_size> ctmem{};
+	::fast_io::freestanding::array<ct_para_str, max_conflict_size> ctmem{};
 };
 
 template <::std::size_t hash_table_size, ::std::size_t conflict_size>
 struct parameters_hash_table {
+	static_assert(hash_table_size > 1 && conflict_size > 1);
+
 	::fast_io::freestanding::array<ht_para_cpos, hash_table_size> ht{};
 	::fast_io::freestanding::array<conflict_table, conflict_size> ct{};
 };
@@ -173,24 +180,24 @@ inline consteval auto generate_hash_table(::fast_io::freestanding::array<all_par
 		auto const val{crc32c.digest_value() % hash_table_size};
 		if (res.ht[val].conflict_pos != 0) {
 			for (auto& i : res.ct[res.ht[val].conflict_pos - 1].ctmem) {
-				if (i == nullptr) {
-					i = j.para;
+				if (i.para == nullptr) {
+					i.para = j.para;
+					i.str = j.str;
 					break;
 				}
 			}
 		} else if (res.ht[val].para != nullptr) {
 			res.ht[val].conflict_pos = conflictplace;
-			res.ct[conflictplace - 1].ctmem.front() = res.ht[val].para;
-			for (auto& i : res.ct[conflictplace - 1].ctmem) {
-				if (i == nullptr) {
-					i = j.para;
-					break;
-				}
-			}
-			conflictplace++;
+			res.ct[conflictplace - 1].ctmem[0].para = res.ht[val].para;
+			res.ct[conflictplace - 1].ctmem[0].str = res.ht[val].str;
 			res.ht[val].para = nullptr;
+			res.ht[val].str = ::std::u8string_view{};
+			res.ct[conflictplace - 1].ctmem[1].para = j.para;
+			res.ct[conflictplace - 1].ctmem[1].str = j.str;
+			conflictplace++;
 		} else {
 			res.ht[val].para = j.para;
+			res.ht[val].str = j.str;
 		}
 	}
 	return res;
