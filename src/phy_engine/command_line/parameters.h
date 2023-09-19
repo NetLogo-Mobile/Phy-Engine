@@ -11,83 +11,16 @@
 namespace phy_engine {
 
 namespace details {
-inline constexpr ::phy_engine::command_line::parameter const* parameter_unsort[] {
+inline constexpr ::phy_engine::command_line::parameter const* parameter_unsort[]{
 #include "parainc.h"
 };
-
-template <::std::size_t N>
-inline constexpr auto parameter_sort(::phy_engine::command_line::parameter const* const (&punsort)[N]) noexcept {
-	::fast_io::freestanding::array<::phy_engine::command_line::parameter const*, N> res{};
-	for (::std::size_t i{}; i < N; i++) {
-		res[i] = punsort[i];
-	}
-	::std::ranges::sort(res, [](::phy_engine::command_line::parameter const* a, ::phy_engine::command_line::parameter const* b) noexcept -> bool {
-		return a->name < b->name;
-	});
-	return res;
-}
-
-template <::std::size_t N>
-inline constexpr ::std::size_t calculate_str_parameter_size(::fast_io::freestanding::array<::phy_engine::command_line::parameter const*, N> const& punsort) noexcept {
-	::std::size_t res{};
-	for (::std::size_t i{}; i < N; i++) {
-		res++;
-		res += punsort[i]->alias.size();
-	}
-	return res;
-}
-
-template <::std::size_t Nres, ::std::size_t N>
-inline constexpr auto generate_str_parameter_array(::fast_io::freestanding::array<::phy_engine::command_line::parameter const*, N> const& punsort) noexcept {
-	::fast_io::freestanding::array<::phy_engine::command_line::details::str_parameter, Nres> res{};
-	::std::size_t res_pos{};
-	for (::std::size_t i{}; i < N; i++) {
-		res[res_pos++] = {punsort[i]->name, punsort[i]};
-		for (auto j : punsort[i]->alias) {
-			res[res_pos++] = {j, punsort[i]};
-		}
-	}
-	::std::ranges::sort(res, [](::phy_engine::command_line::details::str_parameter const& a, ::phy_engine::command_line::details::str_parameter const& b) noexcept -> bool {
-		return a.str < b.str;
-	});
-	::std::u8string_view check{}; // Empty strings will be sorted and placed first.
-	for (auto &i : res) {
-		if (i.str == check || i.str.front() != u8'-') {
-			::fast_io::fast_terminate(); // The first character of the parameter must be '-'
-		} else {
-			if (i.str.size() == 1) {
-				::fast_io::fast_terminate();  // "-" is invalid
-			}
-
-			for (auto j : i.str) {
-				if (j == u8'=') 
-					::fast_io::fast_terminate(); // The parameter cannot contain the '=' character
-			}
-			check = i.str;
-		}
-
-		auto p{i.para};
-		for (auto i : p->clash) {
-			if (i == p) 
-				::fast_io::fast_terminate(); // Cannot contain this*
-		}
-		for (auto i : p->prerequisite) {
-			if (i == p)
-				::fast_io::fast_terminate(); // Cannot contain this*
-			if (::std::ranges::find(p->clash, i)) 
-				::fast_io::fast_terminate();  // Already included in the clash
-		}
-	}
-	return res;
-}
 }  // namespace details
 
-inline constexpr auto parameters{details::parameter_sort(details::parameter_unsort)};
-inline constexpr ::std::size_t parameter_lookup_table_size{details::calculate_str_parameter_size(parameters)};
-inline constexpr auto parameter_lookup_table{details::generate_str_parameter_array<parameter_lookup_table_size>(parameters)};
-inline constexpr ::phy_engine::command_line::command_line command_line_res{
-	::phy_engine::freestanding::array_view{parameters.data(), parameters.size()},
-	::phy_engine::freestanding::array_view{parameter_lookup_table.data(), parameter_lookup_table.size()}
-};
+inline constexpr auto parameters{::phy_engine::command_line::parameter_sort(details::parameter_unsort)};
 
+inline constexpr ::std::size_t parameter_lookup_table_size{::phy_engine::command_line::calculate_all_parameters_size(parameters)};
+inline constexpr auto parameter_lookup_table{::phy_engine::command_line::expand_all_parameters_and_check<parameter_lookup_table_size>(parameters)};
+
+inline constexpr auto hash_table_size{::phy_engine::command_line::calculate_hash_table_size(parameter_lookup_table)};
+inline constexpr auto hash_table{::phy_engine::command_line::generate_hash_table<hash_table_size.hash_table_size, hash_table_size.extra_size>(parameter_lookup_table)};
 }
