@@ -73,35 +73,50 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 										u8"[error] ",
 										::phy_engine::ansi_escape_sequences::col::white);
 				}
+
+#ifdef __MSDOS__
+				::fast_io::io::perrln(buf_u8err,
+									u8"invalid parameter: ",
+									i.str,
+									::phy_engine::ansi_escape_sequences::rst::all);
+#else
 				::fast_io::io::perr(buf_u8err,
 									u8"invalid parameter: ",
 									i.str);
 				if (ign_invpm_b) {
 					::fast_io::io::perrln(buf_u8err, ::phy_engine::ansi_escape_sequences::rst::all);
 				} else {
+					::std::u8string_view f_test_str{};
+
 					::std::size_t const str_size{i.str.size()};
 #if __has_cpp_attribute(assume)
-					[[assume(str_size <= 0xffff'ffff'ffff'ffff / 4u)]];
+					::std::size_t constexpr smax{::std::numeric_limits<::std::size_t>::max() / 4u};
+					[[assume(str_size <= smax)]];
 #endif
 					::std::size_t const test_size{str_size * 4u / 10u};
 					::std::size_t f_test_size{test_size};
-					::std::u8string_view f_test_str{};
+
 					for (auto& j : ::phy_engine::parameter_lookup_table) {
-						if (j.str.size() < str_size - f_test_size || j.str.size() > str_size + f_test_size) 
+						if (j.str.size() < str_size - f_test_size || j.str.size() > str_size + f_test_size)
 							continue;
 						if (auto const dp_res{::phy_engine::command_line::dp(i.str, j.str)}; dp_res <= test_size) {
 							f_test_str = j.str;
 							f_test_size = dp_res;
 						}
 					}
-					::fast_io::io::perrln(buf_u8err,
-										  u8" (did you mean: ",
-										  ::phy_engine::ansi_escape_sequences::col::purple,
-										  f_test_str,
-										  ::phy_engine::ansi_escape_sequences::col::white,
-										  ::fast_io::mnp::chvw(u8')'),
-										  ::phy_engine::ansi_escape_sequences::rst::all);
+					if (f_test_str.empty()) {
+						::fast_io::io::perrln(buf_u8err, ::phy_engine::ansi_escape_sequences::rst::all);
+					} else {
+						::fast_io::io::perrln(buf_u8err,
+											  u8" (did you mean: ",
+											  ::phy_engine::ansi_escape_sequences::col::purple,
+											  f_test_str,
+											  ::phy_engine::ansi_escape_sequences::col::white,
+											  ::fast_io::mnp::chvw(u8')'),
+											  ::phy_engine::ansi_escape_sequences::rst::all);
+					}
 				}
+#endif
 			} else if (i.type == ::phy_engine::command_line::parameter_parsing_results_type::duplicate_parameter) {
 				if (ign_invpm_b) {
 					::fast_io::io::perrln(buf_u8err,

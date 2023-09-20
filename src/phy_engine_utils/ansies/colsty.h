@@ -28,6 +28,17 @@ struct col {
 	inline static constexpr decltype(auto) purple{u8"\033[35m"};
 	inline static constexpr decltype(auto) cyan{u8"\033[36m"};
 	inline static constexpr decltype(auto) gray{u8"\033[37m"};
+
+#ifdef __MSDOS__
+	inline static constexpr decltype(auto) dk_gray{gray};
+	inline static constexpr decltype(auto) lt_red{red};
+	inline static constexpr decltype(auto) lt_green{green};
+	inline static constexpr decltype(auto) yellow{orange};
+	inline static constexpr decltype(auto) lt_blue{blue};
+	inline static constexpr decltype(auto) lt_purple{purple};
+	inline static constexpr decltype(auto) lt_cyan{cyan};
+	inline static constexpr decltype(auto) white{gray};
+#else
 	inline static constexpr decltype(auto) dk_gray{u8"\033[90m"};
 	inline static constexpr decltype(auto) lt_red{u8"\033[91m"};
 	inline static constexpr decltype(auto) lt_green{u8"\033[92m"};
@@ -36,6 +47,7 @@ struct col {
 	inline static constexpr decltype(auto) lt_purple{u8"\033[95m"};
 	inline static constexpr decltype(auto) lt_cyan{u8"\033[96m"};
 	inline static constexpr decltype(auto) white{u8"\033[97m"};
+#endif  // __MSDOS__
 
 	// Background color variables:
 	inline static constexpr decltype(auto) bg_black{u8"\033[40m"};
@@ -46,6 +58,17 @@ struct col {
 	inline static constexpr decltype(auto) bg_purple{u8"\033[45m"};
 	inline static constexpr decltype(auto) bg_blue{u8"\033[46m"};
 	inline static constexpr decltype(auto) bg_gray{u8"\033[47m"};
+
+#ifdef __MSDOS__
+	inline static constexpr decltype(auto) bg_dk_gray{bg_black};
+	inline static constexpr decltype(auto) bg_lt_red{bg_red};
+	inline static constexpr decltype(auto) bg_lt_green{bg_green};
+	inline static constexpr decltype(auto) bg_yellow{bg_orange};
+	inline static constexpr decltype(auto) bg_lt_blue{bg_cyan};
+	inline static constexpr decltype(auto) bg_lt_purple{bg_purple};
+	inline static constexpr decltype(auto) bg_lt_cyan{bg_blue};
+	inline static constexpr decltype(auto) bg_white{bg_gray};
+#else
 	inline static constexpr decltype(auto) bg_dk_gray{u8"\033[100m"};
 	inline static constexpr decltype(auto) bg_lt_red{u8"\033[101m"};
 	inline static constexpr decltype(auto) bg_lt_green{u8"\033[102m"};
@@ -54,6 +77,7 @@ struct col {
 	inline static constexpr decltype(auto) bg_lt_purple{u8"\033[105m"};
 	inline static constexpr decltype(auto) bg_lt_cyan{u8"\033[106m"};
 	inline static constexpr decltype(auto) bg_white{u8"\033[107m"};
+#endif  // __MSDOS__
 
 	// Bold color variables:
 	inline static constexpr decltype(auto) bd_black{u8"\033[1;30m"};
