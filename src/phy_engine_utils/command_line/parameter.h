@@ -15,13 +15,33 @@
 
 namespace phy_engine::command_line {
 
+enum class parameter_parsing_results_type : ::std::uint_fast8_t {
+	arg = 0,
+	occupied_arg,
+	parameter,
+	invalid_parameter,
+	duplicate_parameter
+};
+
+struct parameter;
+struct parameter_parsing_results {
+	::std::u8string_view str{};
+	parameter const* para{};
+	parameter_parsing_results_type type{};
+};
+
+enum class parameter_return_type : ::std::uint_fast8_t {
+	def = 0,
+	return_imme,
+	return_soon
+};
+
 struct parameter {
 	::std::u8string_view const name{};
 	::std::u8string_view const describe{};
 	::phy_engine::freestanding::array_view<::std::u8string_view const> alias{};
-	::phy_engine::freestanding::array_view<parameter const* const> prerequisite{};
-	::phy_engine::freestanding::array_view<parameter const* const> clash{};
-	bool (*callback)(int argc, char8_t** argv, int pos, ::std::u8string_view const var) noexcept {nullptr};
+	parameter_return_type (*callback)(::std::size_t argc, ::fast_io::vector<parameter_parsing_results>& vec) noexcept {};
+	bool* is_exist{};
 };
 
 template <::std::size_t N>
@@ -34,6 +54,13 @@ inline consteval auto parameter_sort(parameter const* const (&punsort)[N]) noexc
 		return a->name < b->name;
 	});
 	return res;
+}
+
+template <::std::size_t N>
+inline constexpr void parameter_clean(::fast_io::freestanding::array<parameter const*, N>& punsort) noexcept {
+	for (auto i : punsort) {
+		i.callback = nullptr;
+	}
 }
 
 struct all_parameter {
@@ -56,6 +83,9 @@ inline consteval auto expand_all_parameters_and_check(::fast_io::freestanding::a
 	::fast_io::freestanding::array<all_parameter, Nres> res{};
 	::std::size_t res_pos{};
 	for (::std::size_t i{}; i < N; i++) {
+		if (punsort[i]->is_exist == nullptr) 
+			::fast_io::fast_terminate();  // The first character of the parameter must be '-'
+
 		res[res_pos++] = {punsort[i]->name, punsort[i]};
 		for (auto j : punsort[i]->alias) {
 			res[res_pos++] = {j, punsort[i]};
@@ -69,23 +99,9 @@ inline consteval auto expand_all_parameters_and_check(::fast_io::freestanding::a
 		if (i.str == check || i.str.front() != u8'-') {
 			::fast_io::fast_terminate();  // The first character of the parameter must be '-'
 		} else {
-			if (i.str.size() == 1) {
+			if (i.str.size() == 1) 
 				::fast_io::fast_terminate();  // "-" is invalid
-			}
-
 			check = i.str;
-		}
-
-		auto const p{i.para};
-		for (auto i : p->clash) {
-			if (i == p)
-				::fast_io::fast_terminate();  // Cannot contain this*
-		}
-		for (auto i : p->prerequisite) {
-			if (i == p)
-				::fast_io::fast_terminate();  // Cannot contain this*
-			if (::std::ranges::find(p->clash, i))
-				::fast_io::fast_terminate();  // Already included in the clash
 		}
 	}
 	return res;
@@ -139,13 +155,18 @@ inline consteval calculate_hash_table_size_res calculate_hash_table_size(::fast_
 struct ht_para_cpos {
 	::std::u8string_view str{};
 	parameter const* para{};
-	::std::size_t conflict_pos{};
+	::std::size_t conflict_pos{}; // garbage private
 };
 
+#if 0
 struct ct_para_str {
 	::std::u8string_view str{};
 	parameter const* para{};
 };
+#else
+using ct_para_str = all_parameter;
+#endif  // 0
+
 struct conflict_table {
 	::fast_io::freestanding::array<ct_para_str, max_conflict_size> ctmem{};
 };
@@ -164,7 +185,6 @@ template <::std::size_t hash_table_size, ::std::size_t conflict_size, ::std::siz
 inline consteval auto generate_hash_table(::fast_io::freestanding::array<all_parameter, N> const& ord) noexcept {
 	parameters_hash_table<hash_table_size, conflict_size> res{};
 
-	constexpr auto sizet_d10{::std::numeric_limits<::std::size_t>::digits10};
 	::fast_io::crc32c_context crc32c{};
 	::std::size_t conflictplace{1u};
 
@@ -202,4 +222,49 @@ inline consteval auto generate_hash_table(::fast_io::freestanding::array<all_par
 	}
 	return res;
 }
+
+template <::std::size_t hash_table_size, ::std::size_t conflict_size>
+inline constexpr parameter const* find_from_hash_table(parameters_hash_table<hash_table_size, conflict_size> const& ht, ::std::u8string_view str) noexcept {
+	::fast_io::crc32c_context crc32c{};
+
+#if __cpp_if_consteval >= 202106L
+	if consteval
+#else
+	if (__builtin_is_constant_evaluated())
+#endif
+	{
+		auto const str_size{str.size()};
+		::std::byte* const ptr{new ::std::byte[str_size]{}};
+		for (::std::size_t k{}; k < str_size; k++) {
+			ptr[k] = static_cast<::std::byte>(str[k]);
+		}
+		crc32c.update(ptr, ptr + str_size);
+		delete[] ptr;
+	} else {
+		auto i{reinterpret_cast<::std::byte const*>(str.data())};
+		crc32c.update(i, i + str.size());
+	}
+	auto const val{crc32c.digest_value() % hash_table_size};
+	auto const htval{ht.ht[val]};
+	if (htval.para != nullptr) {
+		if (str == htval.str) {
+			return htval.para;
+		} else {
+			return nullptr;
+		}
+	} else if (htval.conflict_pos != 0) {
+		auto& ct{ht.ct[htval.conflict_pos - 1].ctmem};
+		for (::std::size_t i{}; i < max_conflict_size; i++) {
+			if (ct[i].str == str) {
+				return ct[i].para;
+			} else if (ct[i].para == nullptr) {
+				return nullptr;
+			}
+		}
+		return nullptr;
+	} else {
+		return nullptr;
+	}
 }
+
+}  // namespace phy_engine::command_line

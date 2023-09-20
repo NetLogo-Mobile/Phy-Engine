@@ -4,8 +4,9 @@
 #include "version.h"
 #include "../parameters.h"
 #include "../../version/phy_engine.h"
+#include "../../../phy_engine_utils/ansies/impl.h"
 
-bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** argv, int pos, ::std::u8string_view var) noexcept {
+::phy_engine::command_line::parameter_return_type(::phy_engine::parameter::details::version_callback)(::std::size_t, ::fast_io::vector<::phy_engine::command_line::parameter_parsing_results>&) noexcept{
 	::fast_io::io::println(::phy_engine::u8out,
 						   ::phy_engine::ansi_escape_sequences::rst::all,
 						   u8"Phy Engine (Copyright 2023-present Phy Engine Open Source Group)\n"
@@ -38,5 +39,5 @@ bool(::phy_engine::parameter::details::version_callback)(int argc, char8_t** arg
 						   "Unknown C++ standard library"
 #endif
 	);
-	return true;
+	return ::phy_engine::command_line::parameter_return_type::def;
 }
