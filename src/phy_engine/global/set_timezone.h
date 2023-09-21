@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../../phy_engine_utils/fast_io/fast_io.h"
 
 namespace phy_engine::global {

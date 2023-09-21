@@ -4,7 +4,7 @@ set_project("Phy Engine")
 
 set_version("1.0.0", {build = "%Y%m%d"})
 
-set_allowedplats("windows", "mingw", "linux", "msdos", "android", "freebds")
+set_allowedplats("windows", "mingw", "linux", "msdosdjgpp", "android", "freebds")
 
 --find_tool("git", {version = true})
 
@@ -30,7 +30,7 @@ end
 set_defaultarchs("msdos|i386")
 
 if is_plat("windows") then
-    set_allowedarchs("x64", "x86", "arm64", "arm")
+    set_allowedarchs("x64", "x86", "ARM64", "ARM")
 
     if is_mode("debug") then
         set_runtimes("MTd")
@@ -64,8 +64,8 @@ elseif is_plat("linux") then
     end
 elseif is_plat("android") then
     --none
-elseif is_plat("msdos") then
-    set_allowedarchs("i386") -- x86 not support
+elseif is_plat("msdosdjgpp") then
+    set_allowedarchs("i386") -- x86 ms-dos not support (out of memory)
 
     add_cxflags("-fno-rtti")
     if is_mode("release") then

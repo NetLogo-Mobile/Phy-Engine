@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "colsty.h"
 #include "cursor.h"

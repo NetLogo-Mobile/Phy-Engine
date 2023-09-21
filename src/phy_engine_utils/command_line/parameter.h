@@ -1,4 +1,4 @@
-/**************
+﻿/**************
  * Phy Engine *
  *************/
 
@@ -21,7 +21,8 @@ enum class parameter_parsing_results_type : ::std::uint_fast8_t {
 	parameter,
 	invalid_parameter,
 	duplicate_parameter,
-	dir
+	dir,
+	file
 };
 
 struct parameter;
