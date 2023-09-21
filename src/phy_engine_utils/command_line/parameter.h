@@ -20,7 +20,8 @@ enum class parameter_parsing_results_type : ::std::uint_fast8_t {
 	occupied_arg,
 	parameter,
 	invalid_parameter,
-	duplicate_parameter
+	duplicate_parameter,
+	dir
 };
 
 struct parameter;

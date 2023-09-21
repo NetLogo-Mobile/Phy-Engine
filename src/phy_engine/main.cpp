@@ -23,7 +23,7 @@ int main(int argc, char** argv) noexcept {
 #endif  // 0
 
 	int pr{::phy_engine::parsing(argc, reinterpret_cast<char8_t**>(argv), ::phy_engine::parsing_result, ::phy_engine::hash_table)};
-	
+
 	if (pr != 0) {
 		return pr;
 	}

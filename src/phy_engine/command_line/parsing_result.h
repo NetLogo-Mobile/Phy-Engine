@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "../../phy_engine_utils/command_line/command_line.h"
 #include "../../phy_engine_utils/ansies/impl.h"
 #include "../devices/native_io.h"
@@ -22,7 +24,11 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 		return -1;
 	}
 
-	pr.reserve(static_cast<::std::size_t>(argc) - 1u);
+	pr.reserve(static_cast<::std::size_t>(argc));
+
+	if (*argv != nullptr) {
+		pr.emplace_back_unchecked(::std::u8string_view{*argv}, nullptr, ::phy_engine::command_line::parameter_parsing_results_type::dir);
+	}
 
 	for (int i{1}; i < argc; i++) {
 		if (argv[i] == nullptr)
@@ -64,7 +70,7 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 										::phy_engine::ansi_escape_sequences::col::lt_red,
 										u8"[warning] ",
 										::phy_engine::ansi_escape_sequences::col::white,
-										u8"Ignore");
+										u8"ignore ");
 				} else {
 					shouldreturn = true;
 					::fast_io::io::perr(buf_u8err,
@@ -74,15 +80,10 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 										::phy_engine::ansi_escape_sequences::col::white);
 				}
 
-#ifdef __MSDOS__
-				::fast_io::io::perrln(buf_u8err,
-									u8"invalid parameter: ",
-									i.str,
-									::phy_engine::ansi_escape_sequences::rst::all);
-#else
 				::fast_io::io::perr(buf_u8err,
 									u8"invalid parameter: ",
 									i.str);
+
 				if (ign_invpm_b) {
 					::fast_io::io::perrln(buf_u8err, ::phy_engine::ansi_escape_sequences::rst::all);
 				} else {
@@ -104,6 +105,7 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 							f_test_size = dp_res;
 						}
 					}
+
 					if (f_test_str.empty()) {
 						::fast_io::io::perrln(buf_u8err, ::phy_engine::ansi_escape_sequences::rst::all);
 					} else {
@@ -116,7 +118,6 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 											  ::phy_engine::ansi_escape_sequences::rst::all);
 					}
 				}
-#endif
 			} else if (i.type == ::phy_engine::command_line::parameter_parsing_results_type::duplicate_parameter) {
 				if (ign_invpm_b) {
 					::fast_io::io::perrln(buf_u8err,
@@ -148,6 +149,9 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 
 	bool needexit{};
 	for (::size_t i{}; i < pr.size(); i++) {
+		if (pr[i].para == nullptr)
+			continue;
+		
 		if (auto const cb{pr[i].para->callback}; cb != nullptr) {
 			::phy_engine::command_line::parameter_return_type const res{cb(i, pr)};
 			switch (res) {
@@ -157,9 +161,12 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 				return -1;
 			case ::phy_engine::command_line::parameter_return_type::return_soon:
 				needexit = true;
+			default:
+				::std::unreachable();
 			}
 		}
 	}
+
 	if (needexit)
 		return -1;
 	
