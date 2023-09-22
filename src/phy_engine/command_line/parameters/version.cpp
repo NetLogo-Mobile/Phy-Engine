@@ -9,7 +9,8 @@
 ::phy_engine::command_line::parameter_return_type(::phy_engine::parameter::details::version_callback)(::std::size_t, ::fast_io::vector<::phy_engine::command_line::parameter_parsing_results>&) noexcept{
 	::fast_io::io::println(::phy_engine::u8out,
 						   ::phy_engine::ansi_escape_sequences::rst::all,
-						   u8"Phy Engine (Copyright 2023-present Phy Engine Open Source Group)\n"
+						   u8"Phy Engine\n"
+						   u8"Copyright (C) 2023-present Phy Engine Open Source Group\n"
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,
 						   u8"\nCompiler: "
@@ -20,7 +21,8 @@
 						   "GCC " __VERSION__
 						   "\n"
 #elif defined(_MSC_VER)
-						   "Microsoft Visual C++ ", _MSC_VER,
+						   "Microsoft Visual C++ ",
+						   _MSC_VER,
 						   u8"\n"
 #else
 						   "Unknown C++ compiler\n"

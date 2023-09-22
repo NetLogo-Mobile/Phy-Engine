@@ -15,6 +15,8 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 	if (argc == 0) {
 		::fast_io::io::perrln(::phy_engine::u8err,
 							  ::phy_engine::ansi_escape_sequences::rst::all,
+							  ::phy_engine::ansi_escape_sequences::col::white,
+							  u8"Phy Engine: ",
 							  ::phy_engine::ansi_escape_sequences::col::red,
 							  u8"[error] ",
 							  ::phy_engine::ansi_escape_sequences::rst::all,
@@ -67,6 +69,8 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 				if (ign_invpm_b) {
 					::fast_io::io::perr(buf_u8err,
 										::phy_engine::ansi_escape_sequences::rst::all,
+										::phy_engine::ansi_escape_sequences::col::white,
+										u8"Phy Engine: ",
 										::phy_engine::ansi_escape_sequences::col::lt_red,
 										u8"[warning] ",
 										::phy_engine::ansi_escape_sequences::col::white,
@@ -75,6 +79,8 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 					shouldreturn = true;
 					::fast_io::io::perr(buf_u8err,
 										::phy_engine::ansi_escape_sequences::rst::all,
+										::phy_engine::ansi_escape_sequences::col::white,
+										u8"Phy Engine: ",
 										::phy_engine::ansi_escape_sequences::col::red,
 										u8"[error] ",
 										::phy_engine::ansi_escape_sequences::col::white);
@@ -82,6 +88,7 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 
 				::fast_io::io::perr(buf_u8err,
 									u8"invalid parameter: ",
+									::phy_engine::ansi_escape_sequences::col::cyan,
 									i.str);
 
 				if (ign_invpm_b) {
@@ -110,8 +117,9 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 						::fast_io::io::perrln(buf_u8err, ::phy_engine::ansi_escape_sequences::rst::all);
 					} else {
 						::fast_io::io::perrln(buf_u8err,
+											  ::phy_engine::ansi_escape_sequences::col::white,
 											  u8" (did you mean: ",
-											  ::phy_engine::ansi_escape_sequences::col::purple,
+											  ::phy_engine::ansi_escape_sequences::col::green,
 											  f_test_str,
 											  ::phy_engine::ansi_escape_sequences::col::white,
 											  ::fast_io::mnp::chvw(u8')'),
@@ -122,20 +130,26 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 				if (ign_invpm_b) {
 					::fast_io::io::perrln(buf_u8err,
 										  ::phy_engine::ansi_escape_sequences::rst::all,
+										  ::phy_engine::ansi_escape_sequences::col::white,
+										  u8"Phy Engine: ",
 										  ::phy_engine::ansi_escape_sequences::col::lt_red,
 										  u8"[warning] ",
 										  ::phy_engine::ansi_escape_sequences::col::white,
 										  u8"ignore duplicate parameter: ",
+										  ::phy_engine::ansi_escape_sequences::col::cyan,
 										  i.str,
 										  ::phy_engine::ansi_escape_sequences::rst::all);
 				} else {
 					shouldreturn = true;
 					::fast_io::io::perrln(buf_u8err,
 										  ::phy_engine::ansi_escape_sequences::rst::all,
+										  ::phy_engine::ansi_escape_sequences::col::white,
+										  u8"Phy Engine: ",
 										  ::phy_engine::ansi_escape_sequences::col::red,
 										  u8"[error] ",
 										  ::phy_engine::ansi_escape_sequences::col::white,
 										  u8"duplicate parameter: ",
+										  ::phy_engine::ansi_escape_sequences::col::cyan,
 										  i.str,
 										  ::phy_engine::ansi_escape_sequences::rst::all);
 				}
@@ -148,7 +162,7 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 	}
 
 	bool needexit{};
-	for (::size_t i{}; i < pr.size(); i++) {
+	for (::size_t i{1}; i < pr.size(); i++) {
 		if (pr[i].para == nullptr)
 			continue;
 		

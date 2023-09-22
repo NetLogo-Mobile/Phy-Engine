@@ -30,7 +30,7 @@ struct col {
 	inline static constexpr decltype(auto) gray{u8"\033[37m"};
 
 #ifdef __MSDOS__
-	inline static constexpr decltype(auto) dk_gray{gray};
+	inline static constexpr decltype(auto) dk_gray{black};
 	inline static constexpr decltype(auto) lt_red{red};
 	inline static constexpr decltype(auto) lt_green{green};
 	inline static constexpr decltype(auto) yellow{orange};
