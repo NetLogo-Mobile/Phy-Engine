@@ -27,7 +27,7 @@ elseif is_mode("debug") then
     add_defines("_DEBUG")
 end
 
-set_defaultarchs("msdos|i386")
+set_defaultarchs("msdosdjgpp|i386")
 
 if is_plat("windows") then
     set_allowedarchs("x64", "x86", "ARM64", "ARM")

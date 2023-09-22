@@ -1,5 +1,13 @@
 ﻿#pragma once
+#if 0
+#include <string_view>
 
-namespace phy_engine {
+#define PHY_ENGINE_U8_STR_GET(x) u8#x
+namespace phy_engine::git {
+inline constexpr auto git{
+#include "../../../.git/refs/heads/master" 
 
+};
 }
+#undef PHY_ENGINE_U8_STR_GET
+#endif  // 0

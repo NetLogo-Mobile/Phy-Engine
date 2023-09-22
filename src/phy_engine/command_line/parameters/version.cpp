@@ -5,6 +5,7 @@
 #include "../parameters.h"
 #include "../../version/phy_engine.h"
 #include "../../../phy_engine_utils/ansies/impl.h"
+#include "../../version/git.h"
 
 ::phy_engine::command_line::parameter_return_type(::phy_engine::parameter::details::version_callback)(::std::size_t, ::fast_io::vector<::phy_engine::command_line::parameter_parsing_results>&) noexcept{
 	::fast_io::io::println(::phy_engine::u8out,
@@ -13,6 +14,10 @@
 						   u8"Copyright (C) 2023-present Phy Engine Open Source Group\n"
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,
+#if 0
+						   u8"\nGit: ",
+						   ::phy_engine::git::git,
+#endif  // 0
 						   u8"\nCompiler: "
 #ifdef __clang__
 						   "LLVM clang " __clang_version__
