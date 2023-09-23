@@ -62,7 +62,8 @@ int main(int argc, char** argv) noexcept {
 		if (!has_file) {
 			constexpr auto& version_para{::phy_engine::parameter::version};
 			constexpr auto& help_para{::phy_engine::parameter::help};
-			if (!(*version_para.is_exist || *help_para.is_exist)) {
+			constexpr auto& contributor_para{::phy_engine::parameter::contributor};
+			if (!(*version_para.is_exist || *help_para.is_exist || *contributor_para.is_exist)) {
 				::fast_io::io::perr(::phy_engine::u8err,
 									::phy_engine::ansi_escape_sequences::rst::all,
 									::phy_engine::ansi_escape_sequences::col::white,
