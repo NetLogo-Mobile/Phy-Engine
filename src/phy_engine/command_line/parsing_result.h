@@ -35,6 +35,7 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 	for (int i{1}; i < argc; i++) {
 		if (argv[i] == nullptr)
 			continue;
+
 		::std::u8string_view argv_str{argv[i]};
 
 		if (argv_str.empty())
@@ -175,6 +176,7 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 				return -1;
 			case ::phy_engine::command_line::parameter_return_type::return_soon:
 				needexit = true;
+				break;
 			default:
 				::std::unreachable();
 			}
