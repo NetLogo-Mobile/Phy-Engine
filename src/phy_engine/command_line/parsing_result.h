@@ -177,6 +177,33 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 										  i.str,
 										  ::phy_engine::ansi_escape_sequences::rst::all);
 				}
+			} else if (i.type == ::phy_engine::command_line::parameter_parsing_results_type::arg) {
+				if (ign_invpm_b) {
+					::fast_io::io::perrln(buf_u8err,
+										  ::phy_engine::ansi_escape_sequences::rst::all,
+										  ::phy_engine::ansi_escape_sequences::col::white,
+										  u8"Phy Engine: ",
+										  ::phy_engine::ansi_escape_sequences::col::lt_red,
+										  u8"[warning] ",
+										  ::phy_engine::ansi_escape_sequences::col::white,
+										  u8"ignore invalid option: ",
+										  ::phy_engine::ansi_escape_sequences::col::cyan,
+										  i.str,
+										  ::phy_engine::ansi_escape_sequences::rst::all);
+				} else {
+					shouldreturn = true;
+					::fast_io::io::perrln(buf_u8err,
+										  ::phy_engine::ansi_escape_sequences::rst::all,
+										  ::phy_engine::ansi_escape_sequences::col::white,
+										  u8"Phy Engine: ",
+										  ::phy_engine::ansi_escape_sequences::col::red,
+										  u8"[error] ",
+										  ::phy_engine::ansi_escape_sequences::col::white,
+										  u8"invalid option: ",
+										  ::phy_engine::ansi_escape_sequences::col::cyan,
+										  i.str,
+										  ::phy_engine::ansi_escape_sequences::rst::all);
+				}
 			}
 		}
 

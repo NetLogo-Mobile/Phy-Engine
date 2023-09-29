@@ -10,6 +10,8 @@
 #include "../phy_engine_utils/command_line/impl.h"
 #include "command_line/impl.h"
 #include "command_line/parsing_result.h"
+#include "../phy_engine_file_format/impl.h"
+#include "operation/run.h"
 
 int main(int argc, char** argv) noexcept {
 
@@ -33,7 +35,8 @@ int main(int argc, char** argv) noexcept {
 
 	if (parse_res.size() > 1) {
 		if (parse_res[1].type == ::phy_engine::command_line::parameter_parsing_results_type::file) {
-			// open file
+			if (::phy_engine::load_file(parse_res[1].str) != 0) 
+				return -2;
 		} else {
 			constexpr auto& version_para{::phy_engine::parameter::version};
 			constexpr auto& help_para{::phy_engine::parameter::help};
@@ -69,6 +72,8 @@ int main(int argc, char** argv) noexcept {
 							::phy_engine::ansi_escape_sequences::rst::all);
 		return -2;
 	}
+
+	::phy_engine::run();
 
 	return 0;
 }
