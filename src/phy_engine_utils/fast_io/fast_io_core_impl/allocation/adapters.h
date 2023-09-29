@@ -100,7 +100,7 @@ inline constexpr void* allocator_pointer_aligned_impl(::std::size_t alignment,::
 				p=alloc::allocate_zero(to_allocate);
 			}
 		}
-		void* aligned_ptr{reinterpret_cast<void*>((reinterpret_cast<::std::size_t>(p)+alignment)&(0u-alignment))};
+		void* aligned_ptr{reinterpret_cast<void*>((reinterpret_cast<::std::size_t>(p)+alignment)&(-alignment))};
 		reinterpret_cast<void**>(aligned_ptr)[-1] = p;
 		return aligned_ptr;
 	}
@@ -444,12 +444,8 @@ public:
 		}
 	}
 
-	static inline constexpr bool can_deallocate_aligned_n =
-		::fast_io::details::has_deallocate_aligned_n_impl<alloc> ||
-		::fast_io::details::has_deallocate_aligned_impl<alloc> ||
-		::fast_io::details::has_deallocate_n_impl<alloc>;
 	static inline
-	void deallocate_aligned_n(void* p,::std::size_t alignment,::std::size_t n) noexcept requires(can_deallocate_aligned_n)
+	void deallocate_aligned_n(void* p,::std::size_t alignment,::std::size_t n) noexcept
 	{
 		if constexpr(::fast_io::details::has_deallocate_aligned_n_impl<alloc>)
 		{
@@ -465,8 +461,15 @@ public:
 			{
 				return;
 			}
-			::std::size_t const to_deallocate{sizeof(void*)+alignment+n};
-			allocator_type::deallocate_n(reinterpret_cast<void**>(p)[-1],to_deallocate);
+			if constexpr (::fast_io::details::has_deallocate_impl<alloc>)
+			{
+				allocator_type::deallocate(reinterpret_cast<void**>(p)[-1]);
+			}
+			else
+			{
+				::std::size_t const to_deallocate{sizeof(void*)+alignment+n};
+				allocator_type::deallocate_n(reinterpret_cast<void**>(p)[-1],to_deallocate);
+			}
 		}
 	}
 	static inline constexpr bool has_deallocate_aligned = ::fast_io::details::has_deallocate_aligned_impl<alloc>;

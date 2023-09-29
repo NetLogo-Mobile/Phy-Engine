@@ -1052,7 +1052,7 @@ private:
 public:
 
 	// todo: exception guarantee?
-#if 0
+#if 1
 	constexpr iterator insert(const_iterator pos, T const& value) noexcept(noexcept(this->push_back(value)))
 	{
 		iterator mut_pos{ pos - imp.begin_ptr + imp.begin_ptr };

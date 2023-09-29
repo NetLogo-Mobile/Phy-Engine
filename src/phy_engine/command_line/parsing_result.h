@@ -10,6 +10,9 @@ namespace phy_engine {
 inline ::fast_io::vector<::phy_engine::command_line::parameter_parsing_results> parsing_result{};
 
 template <::std::size_t hash_table_size, ::std::size_t conflict_size>
+#if __has_cpp_attribute(__gnu__::__cold__)
+[[__gnu__::__cold__]]
+#endif
 inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_engine::command_line::parameter_parsing_results>& pr, ::phy_engine::command_line::parameters_hash_table<hash_table_size, conflict_size> const& ht) noexcept {
 	
 	if (argc == 0) {
@@ -32,7 +35,27 @@ inline constexpr int parsing(int argc, char8_t** argv, ::fast_io::vector<::phy_e
 		pr.emplace_back_unchecked(::std::u8string_view{*argv}, nullptr, ::phy_engine::command_line::parameter_parsing_results_type::dir);
 	}
 
-	for (int i{1}; i < argc; i++) {
+	if (argc > 1) {
+		if (argv[1] != nullptr) {
+			::std::u8string_view argv_str{argv[1]};
+
+			if (!argv_str.empty()) {
+				if (argv_str.front() == u8'-') {
+					auto para{::phy_engine::command_line::find_from_hash_table<hash_table_size, conflict_size>(ht, argv_str)};
+					if (para == nullptr) {
+						pr.emplace_back_unchecked(argv_str, nullptr, ::phy_engine::command_line::parameter_parsing_results_type::invalid_parameter);
+					} else {
+						*para->is_exist = true;
+						pr.emplace_back_unchecked(argv_str, para, ::phy_engine::command_line::parameter_parsing_results_type::parameter);
+					}
+				} else {
+					pr.emplace_back_unchecked(argv_str, nullptr, ::phy_engine::command_line::parameter_parsing_results_type::file);
+				}
+			}
+		}
+	}
+
+	for (int i{2}; i < argc; i++) {
 		if (argv[i] == nullptr)
 			continue;
 

@@ -22,9 +22,7 @@ enum class parameter_parsing_results_type : ::std::uint_fast8_t {
 	invalid_parameter,
 	duplicate_parameter,
 	dir,
-#if 0
 	file
-#endif
 };
 
 struct parameter;

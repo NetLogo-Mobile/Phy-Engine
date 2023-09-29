@@ -10,7 +10,6 @@
 #include "../phy_engine_utils/command_line/impl.h"
 #include "command_line/impl.h"
 #include "command_line/parsing_result.h"
-#include "devices/file_loader.h"
 
 int main(int argc, char** argv) noexcept {
 
@@ -32,34 +31,10 @@ int main(int argc, char** argv) noexcept {
 		return pr;
 	}
 
-	if (parse_res.size() >= 2) {
-		bool has_file{};
-		for (::std::size_t i{}; i < parse_res.size(); i++) {
-			if (parse_res[i].type == ::phy_engine::command_line::parameter_parsing_results_type::arg) {
-				if (has_file) {
-					::fast_io::io::perr(::phy_engine::u8err,
-										::phy_engine::ansi_escape_sequences::rst::all,
-										::phy_engine::ansi_escape_sequences::col::white,
-										u8"Phy Engine: ",
-										::phy_engine::ansi_escape_sequences::col::lt_red,
-										u8"[warning] ",
-										::phy_engine::ansi_escape_sequences::col::white,
-										u8"Only one file can be opened simultaneously, subsequent files \"",
-										::phy_engine::ansi_escape_sequences::col::dk_gray,
-										parse_res[i].str,
-										::phy_engine::ansi_escape_sequences::col::white,
-										u8"\" will be ignored.\n",
-										::phy_engine::ansi_escape_sequences::rst::all);
-					continue;
-				}
-				has_file = true;
-				if (auto const ret{::phy_engine::file::file_loader(parse_res[i].str)}; ret != 0) {
-					return ret;
-				}
-			}
-		}
-
-		if (!has_file) {
+	if (parse_res.size() > 1) {
+		if (parse_res[1].type == ::phy_engine::command_line::parameter_parsing_results_type::file) {
+			// open file
+		} else {
 			constexpr auto& version_para{::phy_engine::parameter::version};
 			constexpr auto& help_para{::phy_engine::parameter::help};
 			constexpr auto& contributor_para{::phy_engine::parameter::contributor};
@@ -71,7 +46,10 @@ int main(int argc, char** argv) noexcept {
 									::phy_engine::ansi_escape_sequences::col::bd_red,
 									u8"[fatal] ",
 									::phy_engine::ansi_escape_sequences::col::white,
-									u8"no input files\n",
+									u8"no input files\n"
+									u8"Usage: $",
+									::phy_engine::ansi_escape_sequences::col::orange,
+									u8"phy_engine <file> [options]\n",
 									::phy_engine::ansi_escape_sequences::rst::all,
 									u8"\nPhy Engine terminated.\n");
 				return -2;
@@ -85,13 +63,14 @@ int main(int argc, char** argv) noexcept {
 							::phy_engine::ansi_escape_sequences::col::bd_red,
 							u8"[fatal] ",
 							::phy_engine::ansi_escape_sequences::col::white,
-							u8"no input files\n",
+							u8"no input files\n"
+							u8"Usage: $",
+							::phy_engine::ansi_escape_sequences::col::orange,
+							u8"phy_engine <file> [options]\n",
 							::phy_engine::ansi_escape_sequences::rst::all,
 							u8"\nPhy Engine terminated.\n");
 		return -2;
 	}
-
-	// run
 
 	return 0;
 }

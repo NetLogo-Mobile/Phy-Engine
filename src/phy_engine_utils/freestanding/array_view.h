@@ -6,7 +6,7 @@
 
 namespace phy_engine::freestanding {
 
-	template <typename T>
+template <typename T>
 struct array_view {
 	using value_type = T;
 	using pointer = T *;
