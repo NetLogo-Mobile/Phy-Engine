@@ -11,8 +11,9 @@
 					 ::phy_engine::ansi_escape_sequences::rst::all,
 					 ::phy_engine::ansi_escape_sequences::col::white,
 					 u8"CONTRIBUTOR:\n",
-					 ::phy_engine::ansi_escape_sequences::rst::all);
+					 ::phy_engine::ansi_escape_sequences::col::yellow);
 	for (::std::size_t i{}; i < ::phy_engine::contributor_size; i++) 
 		::fast_io::println(buf_u8out, u8"\t", ::phy_engine::contributor[i]);
+	::fast_io::print(buf_u8out, ::phy_engine::ansi_escape_sequences::rst::all);
 	return ::phy_engine::command_line::parameter_return_type::def;
 }

@@ -50,8 +50,7 @@ int main(int argc, char** argv) noexcept {
 									u8"Usage: $",
 									::phy_engine::ansi_escape_sequences::col::orange,
 									u8"phy_engine <file> [options]\n",
-									::phy_engine::ansi_escape_sequences::rst::all,
-									u8"\nPhy Engine terminated.\n");
+									::phy_engine::ansi_escape_sequences::rst::all);
 				return -2;
 			}
 		}
@@ -67,8 +66,7 @@ int main(int argc, char** argv) noexcept {
 							u8"Usage: $",
 							::phy_engine::ansi_escape_sequences::col::orange,
 							u8"phy_engine <file> [options]\n",
-							::phy_engine::ansi_escape_sequences::rst::all,
-							u8"\nPhy Engine terminated.\n");
+							::phy_engine::ansi_escape_sequences::rst::all);
 		return -2;
 	}
 
