@@ -44,6 +44,8 @@ elseif is_plat("mingw") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
+        add_cxflags("-fomit-frame-pointer")
+        add_cxflags("-fno-unwind-tables")
     end
     add_cxflags("-static-libstdc++")
     add_syslinks("ntdll")
@@ -51,6 +53,8 @@ elseif is_plat("linux") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
+        add_cxflags("-fomit-frame-pointer")
+        add_cxflags("-fno-unwind-tables")
     end
 
     add_cxflags("-static-libstdc++")
@@ -63,22 +67,31 @@ elseif is_plat("linux") then
         -- none
     end
 elseif is_plat("android") then
-    --none
+    add_cxflags("-fno-rtti")
+    if is_mode("release") then
+        add_cxflags("-flto")
+        add_cxflags("-fomit-frame-pointer")
+        add_cxflags("-fno-unwind-tables")
+    end
+
+    add_cxflags("-static-libstdc++")
 elseif is_plat("msdosdjgpp") then
     set_allowedarchs("i386") -- x86 ms-dos not support (out of memory)
 
     add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
+        add_cxflags("-fomit-frame-pointer")
+        add_cxflags("-fno-unwind-tables")
     end
 
     add_cxflags("-static-libstdc++")
 elseif is_plat("freebds") then
-    --none
-elseif is_plat("cross") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
         add_cxflags("-flto")
+        add_cxflags("-fomit-frame-pointer")
+        add_cxflags("-fno-unwind-tables")
     end
 
     add_cxflags("-static-libstdc++")
