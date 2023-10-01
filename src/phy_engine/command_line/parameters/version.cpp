@@ -12,6 +12,9 @@
 						   ::phy_engine::ansi_escape_sequences::rst::all,
 						   u8"Phy Engine\n"
 						   u8"Copyright (C) 2023-present Phy Engine Open Source Group\n"
+#ifdef _DEBUG
+						   u8"Debug Mode\n"
+#endif  // _DEBUG
 						   // Version
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,

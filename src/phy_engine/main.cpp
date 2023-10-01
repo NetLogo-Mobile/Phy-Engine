@@ -14,16 +14,6 @@
 
 int main(int argc, char** argv) noexcept {
 
-#ifdef _DEBUG
-	::fast_io::io::println(::phy_engine::u8out,
-						 ::phy_engine::ansi_escape_sequences::rst::all,
-						 u8"Phy Engine Dev ",
-						 ::phy_engine::ansi_escape_sequences::col::green,
-						 u8"V",
-						 ::phy_engine::phy_engine_version,
-						 ::phy_engine::ansi_escape_sequences::rst::color);
-#endif
-
 	auto& parse_res{::phy_engine::parsing_result};
 
 	int pr{::phy_engine::parsing(argc, reinterpret_cast<char8_t**>(argv), parse_res, ::phy_engine::hash_table)};
