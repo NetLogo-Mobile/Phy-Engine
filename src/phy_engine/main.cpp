@@ -22,12 +22,16 @@ int main(int argc, char** argv) noexcept {
 		return pr;
 	}
 
-	constexpr auto& version_para{::phy_engine::parameter::version};
-	constexpr auto& help_para{::phy_engine::parameter::help};
-	constexpr auto& contributor_para{::phy_engine::parameter::contributor};
+	if (parse_res.size() > 1) {
+		if (parse_res[1].type != ::phy_engine::command_line::parameter_parsing_results_type::file) {
+			constexpr auto& version_para{::phy_engine::parameter::version};
+			constexpr auto& help_para{::phy_engine::parameter::help};
+			constexpr auto& contributor_para{::phy_engine::parameter::contributor};
 
-	if (*version_para.is_exist || *help_para.is_exist || *contributor_para.is_exist) {
-		return 0;
+			if (*version_para.is_exist || *help_para.is_exist || *contributor_para.is_exist) {
+				return 0;
+			}
+		}
 	}
 
 	return ::phy_engine::run();

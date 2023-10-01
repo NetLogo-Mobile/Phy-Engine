@@ -7,4 +7,6 @@
 build
 .vs/
 .*/*
+.cmake
+custom/git_commit_hash.h
 !CMakeLists.txt
