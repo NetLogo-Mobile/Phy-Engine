@@ -12,39 +12,77 @@
 						   ::phy_engine::ansi_escape_sequences::rst::all,
 						   u8"Phy Engine\n"
 						   u8"Copyright (C) 2023-present Phy Engine Open Source Group\n"
+						   // Version
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,
-#if 0
-						   u8"\nGit: ",
-						   ::phy_engine::git::git,
-#endif  // 0
+						   // Get
+						   u8" ",
+						   ::phy_engine::git::commit_hash,
+						   // Compiler
 						   u8"\nCompiler: "
 #ifdef __clang__
-						   "LLVM clang " __clang_version__
-						   "\n"
+						   u8"LLVM clang " __clang_version__
+						   u8"\n"
 #elif defined(__GNUC__) && defined(__VERSION__)
-						   "GCC " __VERSION__
-						   "\n"
+						   u8"GCC " __VERSION__
+						   u8"\n"
 #elif defined(_MSC_VER)
-						   "Microsoft Visual C++ ",
+						   u8"Microsoft Visual C++ ",
 						   _MSC_VER,
 						   u8"\n"
 #else
-						   "Unknown C++ compiler\n"
+						   u8"Unknown C++ compiler\n"
 #endif
-						   "STL: "
+						   // Lib
+						   u8"Lib: "
 #if defined(_LIBCPP_VERSION)
-						   "LLVM libc++ ",
+						   u8"LLVM libc++ ",
 						   _LIBCPP_VERSION
 #elif defined(__GLIBCXX__)
-						   "GNU C++ Library ",
+						   u8"GNU C++ Library ",
 						   _GLIBCXX_RELEASE, u8" ", __GLIBCXX__
 #elif defined(_MSVC_STL_UPDATE)
-						   "Microsoft Visual C++ STL ",
+						   u8"Microsoft Visual C++ STL ",
 						   _MSVC_STL_UPDATE
 #else
-						   "Unknown C++ standard library"
+						   u8"Unknown C++ standard library"
 #endif
+#if 0
+						   // Host
+						   u8"\nHost: "
+#if defined(__x86_64__)
+						   u8"x86_64"
+#elif (defined(_M_IX86) || defined(__i386__))
+						   u8"i386"
+#elif defined(__x86__)
+						   u8"x86"
+#endif
+						   u8"-"
+#if defined(__WIN64__)
+						   u8"w64"
+#elif defined(__WIN32__)
+						   u8"w32"
+#endif
+						   u8"-"
+#if defined(__MINGW64__)
+						   u8"mingw64"
+#elif defined(__MINGW32__)
+						   u8"mingw"
+#endif
+						   // ISA
+						   u8"\nISA: "
+#if defined(__x86_64__)
+						   u8"x86_64 "
+#elif (defined(_M_IX86) || defined(__i386__))
+						   u8"i386 "
+#elif defined(__x86__)
+						   u8"x86 "
+#endif
+#if defined(__SSE__)
+						   "SSE "
+#endif
+
+#endif  // 0
 	);
 	return ::phy_engine::command_line::parameter_return_type::def;
 }

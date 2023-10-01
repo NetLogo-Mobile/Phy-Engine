@@ -32,5 +32,13 @@ int main(int argc, char** argv) noexcept {
 		return pr;
 	}
 
+	constexpr auto& version_para{::phy_engine::parameter::version};
+	constexpr auto& help_para{::phy_engine::parameter::help};
+	constexpr auto& contributor_para{::phy_engine::parameter::contributor};
+
+	if (*version_para.is_exist || *help_para.is_exist || *contributor_para.is_exist) {
+		return 0;
+	}
+
 	return ::phy_engine::run();
 }

@@ -21,10 +21,21 @@ set_encodings("utf-8")
 if is_mode("release") then
     set_optimize("aggressive")
     set_strip("all")
+    set_policy("build.optimization.lto", true)
 elseif is_mode("debug") then
     set_optimize("none")
     set_symbols("debug")
     add_defines("_DEBUG")
+
+    if is_plat("windows") then
+        add_cxflags("/guard:cf")
+    else
+        --add_cxflags("-fsanitize=memory")
+        --add_cxflags("-fsanitize=thread")
+        --add_cxflags("-fsanitize=undefined")
+        --add_cxflags("-fsanitize=leak")
+    end
+    --add_cxflags("-fsanitize=address")
 end
 
 set_defaultarchs("msdosdjgpp|i386")
@@ -37,13 +48,13 @@ if is_plat("windows") then
     else
         set_fpmodels("fast")
         add_cxflags("-GL")
+        add_ldflags("-LTCG")
         set_runtimes("MT")
     end
     add_cxflags("-GR-")
 elseif is_plat("mingw") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
-        add_cxflags("-flto")
         add_cxflags("-fomit-frame-pointer")
         add_cxflags("-fno-unwind-tables")
     end
@@ -52,7 +63,6 @@ elseif is_plat("mingw") then
 elseif is_plat("linux") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
-        add_cxflags("-flto")
         add_cxflags("-fomit-frame-pointer")
         add_cxflags("-fno-unwind-tables")
     end
@@ -69,7 +79,6 @@ elseif is_plat("linux") then
 elseif is_plat("android") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
-        add_cxflags("-flto")
         add_cxflags("-fomit-frame-pointer")
         add_cxflags("-fno-unwind-tables")
     end
@@ -80,7 +89,6 @@ elseif is_plat("msdosdjgpp") then
 
     add_cxflags("-fno-rtti")
     if is_mode("release") then
-        add_cxflags("-flto")
         add_cxflags("-fomit-frame-pointer")
         add_cxflags("-fno-unwind-tables")
     end
@@ -89,7 +97,6 @@ elseif is_plat("msdosdjgpp") then
 elseif is_plat("freebds") then
     add_cxflags("-fno-rtti")
     if is_mode("release") then
-        add_cxflags("-flto")
         add_cxflags("-fomit-frame-pointer")
         add_cxflags("-fno-unwind-tables")
     end
@@ -127,7 +134,6 @@ option("custom-io-observer")
     add_defines("PHY_ENGINE_USE_CUSTOM_IO_OBSERVER")
 option_end()
 
-
 target("phy_engine")
     set_options("native")
     set_options("maths-kernel")
@@ -135,6 +141,16 @@ target("phy_engine")
     set_options("custom-io-observer")
 
     add_files("src/**.cpp")
+    before_build(
+        function (target)
+            local git_head_file = io.open(".git\\refs\\heads\\master", "r")
+            local git_head = "u8\"" .. git_head_file:read() .. "\""
+            local git_header_h =  io.open("custom\\get_header.h", "w")
+            git_header_h:write(git_head)
+            git_header_h:close()
+            git_head_file:close()
+        end
+    )
     --add_files("customize/**.cpp")
 target_end()
 
