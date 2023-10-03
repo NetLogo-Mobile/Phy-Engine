@@ -16,7 +16,7 @@ struct environment {
 };
 
 // RELTOL
-inline constexpr double getRelTol(environment const& e) noexcept {
+inline constexpr double get_rel_tol(environment const& e) noexcept {
 	return ::std::min(e.V_epsr_max, e.I_epsr_max);
 }
 

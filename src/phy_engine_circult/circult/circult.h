@@ -3,15 +3,16 @@
 #include <utility>
 
 #include "../environment/environment.h"
+#include "../../phy_engine_netlist/netlist.h"
 
 namespace phy_engine {
 
 enum class CKT_mode_type : ::std::uint_least8_t {
 	DC,
+	AC,
+	TR,
 	OP,
 	TrOP,
-	AC,
-	TR
 };
 
 struct
@@ -19,8 +20,9 @@ struct
 [[__gnu__::__packed__]]
 #endif
 circult {
-	CKT_mode_type CKT_mode{};  // CKTmode
+	CKT_mode_type ckt_mode{};  // CKTmode
 	::phy_engine::environment env{};
+	::phy_engine::netlist nl{};
 };
 
 
