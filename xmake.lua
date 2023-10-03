@@ -148,7 +148,7 @@ target("phy_engine")
         function (target)
             local git_head_file = io.open(".git\\refs\\heads\\master", "r")
             local git_head = "u8\"" .. git_head_file:read() .. "\""
-            local git_header_h =  io.open("custom\\get_header.h", "w")
+            local git_header_h =  io.open("custom\\git_commit_hash.h", "w")
             git_header_h:write(git_head)
             git_header_h:close()
             git_head_file:close()
