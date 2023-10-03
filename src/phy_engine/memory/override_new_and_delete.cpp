@@ -1,7 +1,7 @@
 ﻿/**************
  * Phy Engine *
  *************/
-#if 0  // gcc crash
+#if 1  // gcc crash
 #include <new>
 
 #include "../../phy_engine_utils/fast_io/fast_io_core.h"
@@ -11,14 +11,14 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 __declspec(allocator)
 #endif
-[[nodiscord]] void* operator new(::std::size_t n) noexcept { 
+void* operator new(::std::size_t n) noexcept { 
 	return ::fast_io::native_global_allocator::allocate(n);
 }
 
 #if defined(_MSC_VER) && !defined(__clang__)
 __declspec(allocator)
 #endif
-[[nodiscord]] void* operator new(::std::size_t n, ::std::align_val_t al) noexcept {
+void* operator new(::std::size_t n, ::std::align_val_t al) noexcept {
 	return ::fast_io::native_global_allocator::allocate_aligned(static_cast<::std::size_t>(al), n);
 }
 

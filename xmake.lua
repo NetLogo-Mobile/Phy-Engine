@@ -140,7 +140,10 @@ target("phy_engine")
     set_options("memory-allocator")
     set_options("custom-io-observer")
 
+    --add_defines("FAST_IO_USE_MIMALLOC")
+    
     add_files("src/**.cpp")
+    add_files("src/**.c")
     before_build(
         function (target)
             local git_head_file = io.open(".git\\refs\\heads\\master", "r")
