@@ -8,6 +8,8 @@ namespace phy_engine {
 
 enum class CKT_mode_type : ::std::uint_least8_t {
 	DC,
+	OP,
+	TrOP,
 	AC,
 	TR
 };
