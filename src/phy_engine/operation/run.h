@@ -25,6 +25,7 @@ inline int run() noexcept {
 
 	}
 #endif  // 0
+
 	return 0;
 }
 }
