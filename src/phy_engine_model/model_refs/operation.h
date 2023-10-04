@@ -53,7 +53,7 @@ inline constexpr bool prepare_trop(T&& m) noexcept {
 }
 
 template <::phy_engine::model::model T>
-inline constexpr bool iterate_ac(T&& m, double omega = {}) noexcept {
+inline constexpr bool iterate_ac(T&& m, [[maybe_unused]] double omega) noexcept {
 	if constexpr (::phy_engine::model::defines::can_iterate_ac<T>) {
 		return iterate_ac_define(::phy_engine::model::model_reserve_type<T>, m, omega);
 	} else if constexpr (::phy_engine::model::defines::can_iterate_dc<T>) {
@@ -73,7 +73,7 @@ inline constexpr bool iterate_dc(T&& m) noexcept {
 }
 
 template <::phy_engine::model::model T>
-inline constexpr bool iterate_tr(T&& m, double tTime = {}) noexcept {
+inline constexpr bool iterate_tr(T&& m, [[maybe_unused]] double tTime) noexcept {
 	if constexpr (::phy_engine::model::defines::can_iterate_tr<T>) {
 		return iterate_tr_define(::phy_engine::model::model_reserve_type<T>, m, tTime);
 	} else if constexpr (::phy_engine::model::defines::can_iterate_dc<T>) {
@@ -105,11 +105,9 @@ inline constexpr bool iterate_trop(T&& m) noexcept {
 	}
 }
 
-#if 0
 template <::phy_engine::model::model T>
-inline constexpr ::phy_engine::model::node_view get_nodes(T&& m) noexcept {
-	return get_node_view(::phy_engine::model::model_reserve_type<T>, m);
+inline constexpr ::phy_engine::model::pin_view get_pins(T&& m) noexcept {
+	return get_pin_view(::phy_engine::model::model_reserve_type<T>, m);
 }
-#endif  // 0
 
 }

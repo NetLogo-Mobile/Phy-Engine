@@ -8,7 +8,7 @@
 
 #include "../../phy_engine_utils/fast_io/fast_io_dsal/vector.h"
 
-#include "../node/node_view.h"
+#include "../pin/pin_view.h"
 
 namespace phy_engine::model {
 
@@ -82,9 +82,7 @@ concept model = requires(T&& t) {
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.branchs)>, ::fast_io::vector<::std::size_t>>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.num_termls)>, ::std::size_t>;
 
-#if 0
-					{ get_node_view(model_reserve_type<T>, t) } -> ::std::same_as<::phy_engine::model::node_view>;
-#endif  // 0
+					{ get_pin_view(model_reserve_type<T>, t) } -> ::std::same_as<::phy_engine::model::pin_view>;
 				};
 
 

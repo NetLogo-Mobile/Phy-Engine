@@ -1,10 +1,10 @@
 #pragma once
 #include <cstddef>
-#include "node.h"
+#include "pin.h"
 
 namespace phy_engine::model {
-struct node_view {
-	::phy_engine::model::node* nodes{};
+struct pin_view {
+	::phy_engine::model::pin* pins{};
 	::std::size_t size{};
 };
 }
