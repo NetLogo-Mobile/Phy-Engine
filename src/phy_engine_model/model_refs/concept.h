@@ -9,6 +9,7 @@
 #include "../../phy_engine_utils/fast_io/fast_io_dsal/vector.h"
 
 #include "../pin/pin_view.h"
+#include "type.h"
 
 namespace phy_engine::model {
 
@@ -76,8 +77,11 @@ concept can_iterate_trop = requires(T&& t) {
 template <typename T>
 concept model = requires(T&& t) {
 					requires ::std::same_as<::std::remove_cvref_t<decltype(T::model_name)>, ::std::u8string_view>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(T::type)>, ::phy_engine::model::model_type>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.name)>, ::std::u8string>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.describe)>, ::std::u8string>;
 
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.identifying)>, ::std::size_t>; // intertype independence
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.nodes)>, ::fast_io::vector<::std::size_t>>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.branchs)>, ::fast_io::vector<::std::size_t>>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.num_termls)>, ::std::size_t>;
