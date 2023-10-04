@@ -98,6 +98,8 @@ template <::phy_engine::model::model T>
 inline constexpr bool iterate_trop(T&& m) noexcept {
 	if constexpr (::phy_engine::model::defines::can_iterate_trop<T>) {
 		return iterate_trop_define(::phy_engine::model::model_reserve_type<T>, m);
+	} else if constexpr (::phy_engine::model::defines::can_iterate_tr<T>) {
+		return iterate_tr_define(::phy_engine::model::model_reserve_type<T>, m);
 	} else if constexpr (::phy_engine::model::defines::can_iterate_dc<T>) {
 		return iterate_dc_define(::phy_engine::model::model_reserve_type<T>, m);
 	} else {
