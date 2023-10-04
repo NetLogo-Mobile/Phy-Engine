@@ -37,7 +37,7 @@
 						   u8"Unknown C++ compiler\n"
 #endif
 						   // Lib
-						   u8"Lib: "
+						   u8"Library: "
 #if defined(_LIBCPP_VERSION)
 						   u8"LLVM libc++ ",
 						   _LIBCPP_VERSION
