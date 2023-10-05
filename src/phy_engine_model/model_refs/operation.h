@@ -4,6 +4,15 @@
 namespace phy_engine::model {
 
 template <::phy_engine::model::model T>
+inline constexpr bool init_model(T&& m) noexcept {
+	if constexpr (::phy_engine::model::defines::can_init<T>) {
+		return init_define(::phy_engine::model::model_reserve_type<T>, m);
+	} else {
+		return true;
+	}
+}
+
+template <::phy_engine::model::model T>
 inline constexpr bool prepare_ac(T&& m) noexcept {
 	if constexpr (::phy_engine::model::defines::can_prepare_ac<T>) {
 		return prepare_ac_define(::phy_engine::model::model_reserve_type<T>, m);
@@ -104,6 +113,57 @@ inline constexpr bool iterate_trop(T&& m) noexcept {
 		return iterate_dc_define(::phy_engine::model::model_reserve_type<T>, m);
 	} else {
 		return false;
+	}
+}
+
+template <::phy_engine::model::model T>
+inline constexpr bool save_op(T&& m) noexcept {
+	// not a non-linear device and no need to store operating point
+	if constexpr (T::device_type == ::phy_engine::model::model_device_type::non_linear) {
+		if constexpr (::phy_engine::model::defines::can_save_op<T>) {
+			return save_op_define(::phy_engine::model::model_reserve_type<T>, m);
+		} else {
+			return true;
+		}
+	} else {
+		return true;
+	}
+}
+
+template <::phy_engine::model::model T>
+inline constexpr bool load_temperature(T&& m, [[maybe_unused]] double temp) noexcept {
+	if constexpr (::phy_engine::model::defines::can_load_temperature<T>) {
+		return load_temperature_define(::phy_engine::model::model_reserve_type<T>, m, temp);
+	} else {
+		return true;
+	}
+}
+
+template <::phy_engine::model::model T>
+inline constexpr bool step_changed_tr(T&& m, [[maybe_unused]] double tTemp, [[maybe_unused]] double nstep) noexcept {
+	if constexpr (::phy_engine::model::defines::can_step_changed_tr<T>) {
+		return step_changed_tr_define(::phy_engine::model::model_reserve_type<T>, m, tTemp, nstep);
+	} else {
+		return true;
+	}
+}
+
+template <::phy_engine::model::model T>
+inline constexpr bool adapt_step(T&& m, [[maybe_unused]] double& step) noexcept {
+	if constexpr (::phy_engine::model::defines::can_adapt_step<T>) {
+		return adapt_step_define(::phy_engine::model::model_reserve_type<T>, m, step);
+	} else {
+		return true;
+	}
+}
+
+template <::phy_engine::model::model T>
+inline constexpr bool check_convergence(T&& m) noexcept {
+	// no model-specific checks for convergence
+	if constexpr (::phy_engine::model::defines::can_check_convergence<T>) {
+		return check_convergence_define(::phy_engine::model::model_reserve_type<T>, m);
+	} else {
+		return true;
 	}
 }
 

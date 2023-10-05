@@ -7,7 +7,7 @@
 
 namespace phy_engine {
 
-enum class CKT_mode_type : ::std::uint_least8_t {
+enum class CKT_mode_type : ::std::uint_fast8_t {
 	DC,
 	AC,
 	TR,
