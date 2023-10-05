@@ -115,12 +115,14 @@ concept model = requires(T&& t) {
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.name)>, ::std::u8string>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.describe)>, ::std::u8string>;
 
-					requires ::std::same_as<::std::remove_cvref_t<decltype(t.identification)>, ::std::size_t>; // intertype independence
+					requires ::std::same_as<::std::remove_cvref_t<decltype(T::identification_name)>, ::std::u8string_view>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.identification)>, ::std::size_t>;  // intertype independence
+
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.nodes)>, ::fast_io::vector<::std::size_t>>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.branchs)>, ::fast_io::vector<::std::size_t>>;
 					requires ::std::same_as<::std::remove_cvref_t<decltype(t.num_termls)>, ::std::size_t>;
 
-					{ get_pin_view(model_reserve_type<T>, t) } -> ::std::same_as<::phy_engine::model::pin_view>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(T::pins)>, ::phy_engine::model::pin_view>;
 				};
 
 
