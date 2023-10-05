@@ -146,7 +146,7 @@ target("phy_engine")
     add_files("src/**.c")
     before_build(
         function (target)
-            local git_head_file = io.open(".git\\refs\\heads\\master", "r")
+            local git_head_file = io.open(".git\\FETCH_HEAD", "r")
             local git_head = "u8\"" .. git_head_file:read() .. "\""
             local git_header_h =  io.open("custom\\git_commit_hash.h", "w")
             git_header_h:write(git_head)

@@ -12,15 +12,15 @@
 						   ::phy_engine::ansi_escape_sequences::rst::all,
 						   u8"Phy Engine\n"
 #ifdef _DEBUG
-						   u8"Debug Mode\n"
+						   u8"(Debug Mode)\n"
 #endif  // _DEBUG
 						   u8"Copyright (C) 2023-present Phy Engine Open Source Group\n"
 						   // Version
 						   u8"Version: ",
 						   ::phy_engine::phy_engine_version,
 						   // Get
-						   u8" ",
-						   ::phy_engine::git::commit_hash,
+						   u8"\n",
+						   ::phy_engine::git::fetch_head,
 						   // Compiler
 						   u8"\nCompiler: "
 #ifdef __clang__
