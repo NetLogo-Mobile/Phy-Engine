@@ -29,7 +29,7 @@ using native_global_allocator =
 generic_allocator_adapter<
 #if defined(FAST_IO_USE_CUSTOM_GLOBAL_ALLOCATOR)
 custom_global_allocator
-#elif defined(FAST_IO_USE_MIMALLOC) && (!defined(_MSC_VER) || defined(__clang__))
+#elif defined(FAST_IO_USE_MIMALLOC)
 mimalloc_allocator
 #elif (defined(__linux__) && defined(__KERNEL__)) || defined(FAST_IO_USE_LINUX_KERNEL_ALLOCATOR)
 linux_kmalloc_allocator
