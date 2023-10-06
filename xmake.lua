@@ -149,7 +149,8 @@ target("phy_engine")
             local git_head_file = io.open(".git\\FETCH_HEAD", "r")
             local git_head = "u8\"" .. git_head_file:read() .. "\""
             local git_header_h =  io.open("custom\\git_commit_hash.h", "w")
-            git_header_h:write(git_head)
+            local substr = string.gsub(git_head, "\t", " ");
+            git_header_h:write(substr)
             git_header_h:close()
             git_head_file:close()
         end

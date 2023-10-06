@@ -17,17 +17,17 @@ constexpr
  To bit_cast(From const& src) noexcept
 {
 #if __cpp_lib_bit_cast >= 201806L
-	return ::std::bit_cast<To>(src);
+	return std::bit_cast<To>(src);
 #else
 	To dst;
 #if defined(__has_builtin)
 #if __has_builtin(__builtin_memcpy)
 		__builtin_memcpy
 #else
-		::std::memcpy
+		std::memcpy
 #endif
 #else
-		::std::memcpy
+		std::memcpy
 #endif
 	(__builtin_addressof(dst), __builtin_addressof(src), sizeof(To));
 	return dst;
@@ -49,7 +49,7 @@ using make_noexcept_t = typename make_noexcept<R,Args...>::type;
 
 
 template<typename F>
-requires ::std::is_function_v<F>
+requires std::is_function_v<F>
 #if __has_cpp_attribute(__gnu__::__always_inline__)
 [[__gnu__::__always_inline__]]
 #elif __has_cpp_attribute(msvc::forceinline)
@@ -65,7 +65,7 @@ inline constexpr auto noexcept_cast(F* f) noexcept
 }
 
 template<typename F,typename... Args>
-requires ::std::is_function_v<F>
+requires std::is_function_v<F>
 #if __has_cpp_attribute(__gnu__::__always_inline__)
 [[__gnu__::__always_inline__]]
 #elif __has_cpp_attribute(msvc::forceinline)
@@ -88,7 +88,7 @@ decltype(auto) noexcept_call(F* f,Args&& ...args) noexcept
 	}
 #else
 #if __cpp_lib_is_constant_evaluated >= 201811
-	if (::std::is_constant_evaluated())
+	if (std::is_constant_evaluated())
 		return f(::std::forward<Args>(args)...);		//EH unwinding does not matter here
 	else
 #endif

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <string_view>
 
 namespace phy_engine::model {

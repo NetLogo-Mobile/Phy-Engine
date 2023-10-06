@@ -40,35 +40,7 @@ inline
 #if defined(__WINE__) || !defined(_WIN32)
 constexpr
 #endif
-wnative_io_observer win() noexcept
-{
-	return native_stdin<wchar_t>();
-}
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-wnative_io_observer wout() noexcept
-{
-	return native_stdout<wchar_t>();
-}
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-wnative_io_observer werr() noexcept
-{
-	return native_stderr<wchar_t>();
-}
-
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u8native_io_observer u8in() noexcept
+decltype(auto) u8in() noexcept
 {
 	return native_stdin<char8_t>();
 }
@@ -77,7 +49,7 @@ inline
 #if defined(__WINE__) || !defined(_WIN32)
 constexpr
 #endif
-u8native_io_observer u8out() noexcept
+decltype(auto) u8out() noexcept
 {
 	return native_stdout<char8_t>();
 }
@@ -86,97 +58,23 @@ inline
 #if defined(__WINE__) || !defined(_WIN32)
 constexpr
 #endif
-u8native_io_observer u8err() noexcept
+decltype(auto) u8err() noexcept
 {
 	return native_stderr<char8_t>();
-}
-
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u16native_io_observer u16in() noexcept
-{
-	return native_stdin<char16_t>();
-}
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u16native_io_observer u16out() noexcept
-{
-	return native_stdout<char16_t>();
-}
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u16native_io_observer u16err() noexcept
-{
-	return native_stderr<char16_t>();
-}
-
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u32native_io_observer u32in() noexcept
-{
-	return native_stdin<char32_t>();
-}
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u32native_io_observer u32out() noexcept
-{
-	return native_stdout<char32_t>();
-}
-
-inline
-#if defined(__WINE__) || !defined(_WIN32)
-constexpr
-#endif
-u32native_io_observer u32err() noexcept
-{
-	return native_stderr<char32_t>();
 }
 
 
 using in_buf_type = basic_ibuf<native_io_observer>;
 using out_buf_type = basic_obuf<native_io_observer>;
 
-using win_buf_type = basic_ibuf<wnative_io_observer>;
-using wout_buf_type = basic_obuf<wnative_io_observer>;
-
 using u8in_buf_type = basic_ibuf<u8native_io_observer>;
 using u8out_buf_type = basic_obuf<u8native_io_observer>;
-
-using u16in_buf_type = basic_ibuf<u16native_io_observer>;
-using u16out_buf_type = basic_obuf<u16native_io_observer>;
-
-using u32in_buf_type = basic_ibuf<u32native_io_observer>;
-using u32out_buf_type = basic_obuf<u32native_io_observer>;
 
 using in_buf_type_mutex = basic_iomutex<in_buf_type>;
 using out_buf_type_mutex = basic_iomutex<out_buf_type>;
 
-using win_buf_type_mutex = basic_iomutex<wnative_io_observer>;
-using wout_buf_type_mutex = basic_iomutex<wnative_io_observer>;
-
 using u8in_buf_type_mutex = basic_iomutex<u8in_buf_type>;
 using u8out_buf_type_mutex = basic_iomutex<u8out_buf_type>;
-
-using u16in_buf_type_mutex = basic_iomutex<u16in_buf_type>;
-using u16out_buf_type_mutex = basic_iomutex<u16out_buf_type>;
-
-using u32in_buf_type_mutex = basic_iomutex<u32in_buf_type>;
-using u32out_buf_type_mutex = basic_iomutex<u32out_buf_type>;
 
 #endif
 
