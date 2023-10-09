@@ -19,7 +19,7 @@
 						   u8"\nVersion: ",
 						   ::phy_engine::phy_engine_version,
 
-						   // Get
+						   // Git
 						   u8"\n",
 						   ::phy_engine::git::fetch_head,
 
@@ -56,9 +56,9 @@
 #if defined(__alpha__)
 						   u8"DEC Alpha",
 #elif defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
-						   u8"aarch64"
+						   u8"ARM64"
 #elif defined(__arm__) || defined(_M_ARM)
-						   u8"aarch"
+						   u8"ARM
 #elif defined(__x86_64__) || defined(_M_AMD64)
 						   u8"x86_64"
 #elif defined(__i386__) || defined(_M_IX86)
@@ -100,9 +100,63 @@
 #else
 						   u8"Unknown Arch"
 #endif
-
-#if 0
+#if defined(__wasm_simd128__)
+						   u8"\nSIMD: WebAssembly SIMD"
+#elif defined(__ARM_NEON) || ((defined(_MSC_VER) && !defined(__clang__)) && defined(_M_ARM64) && !defined(_KERNEL_MODE))
+						   u8"\nSIMD: ARM NEON"
+#elif (defined(__x86_64__) || defined(_M_AMD64) || defined(__i386__) || defined(_M_IX86)) && defined(__MMX__)
 						   u8"\nSIMD: "
+#if defined(__MMX__)
+						   u8"MMX "
+#endif
+#if defined(__SSE__)
+						   u8"SSE "
+#endif
+#if defined(__SSE2__)
+						   u8"SSE2 "
+#endif
+#if defined(__SSE3__)
+						   u8"SSE3 "
+#endif
+#if defined(__SSSE3__)
+						   u8"SSSE3 "
+#endif
+#if defined(__SSE4_1__)
+						   u8"SSE4.1 "
+#endif
+#if defined(__SSE4_2__)
+						   u8"SSE4.2 "
+#endif
+#if defined(__FMA__)
+						   u8"FMA "
+#endif
+#if defined(__AVX__)
+						   u8"AVX "
+#endif
+#if defined(__AVX2__)
+						   u8"AVX2 "
+#endif
+#if defined(__MIC__)
+						   u8"MIC "
+#endif
+#if defined(__AVX512BW__)
+						   u8"AVX512BW "
+#endif
+#if defined(__AVX512VL__)
+						   u8"AVX512VL "
+#endif
+#if defined(__AVX512DQ__)
+						   u8"AVX512DQ "
+#endif
+#if defined(__AVX512F__)
+						   u8"AVX512F "
+#endif
+#if defined(__AVX512VBMI__)
+						   u8"AVX512VBMI "
+#endif
+
+#elif defined(__VECTOR4DOUBLE__) || defined(__VSX__) || (defined(__ALTIVEC__) || defined(__VEC__))
+						   u8"\nSIMD: PPC SIMD"
 #endif
 	);
 	return ::phy_engine::command_line::parameter_return_type::def;
