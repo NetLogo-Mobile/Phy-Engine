@@ -104,42 +104,9 @@ elseif is_plat("freebds") then
     add_cxflags("-static-libstdc++")
 end
 
-
-option("native")
-    set_default(false)
-    set_showmenu(true)
-    if is_plat("windows") then
-        add_vectorexts("all")
-    else
-        add_cxflags("-march=native")
-    end
-option_end()
-
-option("maths-kernel")
-    set_default("default")
-    set_showmenu(true)
-    set_values("default")
-option_end()
-
-option("memory-allocator")
-    set_default("default")
-    set_showmenu(true)
-    set_values("default")
-option_end()
-
-option("custom-io-observer")
-    set_default(false)
-    set_showmenu(true)
-
-    add_defines("PHY_ENGINE_USE_CUSTOM_IO_OBSERVER")
-option_end()
-
 target("phy_engine")
-    set_options("native")
-    set_options("maths-kernel")
-    set_options("memory-allocator")
-    set_options("custom-io-observer")
 
+    add_includedirs("third-paths")
     --add_defines("FAST_IO_USE_MIMALLOC")
     
     add_files("src/**.cpp")
