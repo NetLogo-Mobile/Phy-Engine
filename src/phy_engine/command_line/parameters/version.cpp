@@ -100,6 +100,8 @@
 #else
 						   u8"Unknown Arch"
 #endif
+
+						   // SIMD
 #if defined(__wasm_simd128__)
 						   u8"\nSIMD: WebAssembly SIMD"
 #elif defined(__ARM_NEON) || ((defined(_MSC_VER) && !defined(__clang__)) && defined(_M_ARM64) && !defined(_KERNEL_MODE))
@@ -154,10 +156,95 @@
 #if defined(__AVX512VBMI__)
 						   u8"AVX512VBMI "
 #endif
-
 #elif defined(__VECTOR4DOUBLE__) || defined(__VSX__) || (defined(__ALTIVEC__) || defined(__VEC__))
 						   u8"\nSIMD: PPC SIMD"
 #endif
+
+						   // OS
+						   u8"\nOS: "
+#if defined(BSD) || defined(_SYSTYPE_BSD)
+						   u8"BSD"
+#elif defined(__BEOS__)
+						   u8"BeOS"
+#elif defined(AMIGA) || defined(__amigaos__)
+						   u8"AmigaOS"
+#elif defined(_AIX) || defined(__TOS_AIX__)
+						   u8 "IBM AIX"
+#elif defined(_WIN32) || defined(_WIN64) || defined(__WIN32__) || defined(__TOS_WIN__) || defined(__WINDOWS__) || defined(_WIN32_WINNT) || defined(_WIN32_WINDOWS)
+						   u8"Microsoft Windows"
+#if defined(_WIN32_WINDOWS)
+						   u8", minimum system support: "
+#if _WIN32_WINDOWS >= 0x0490
+						   u8"Windows ME"
+#elif _WIN32_WINDOWS >= 0x0410
+						   u8"Windows 98"
+#elif _WIN32_WINDOWS >= 0x0400
+						   u8"Windows 95"
+#endif
+						   u8" (",
+						   ::fast_io::mnp::hex0xupper(_WIN32_WINDOWS),
+						   u8")"
+#elif defined(_WIN32_WINNT)
+						   u8", minimum system support: "
+#if _WIN32_WINNT >= 0x0A00
+						   u8"Windows 10"
+#elif _WIN32_WINNT >= 0x0603
+						   u8"Windows 8.1"
+#elif _WIN32_WINNT >= 0x0602
+						   u8"Windows 8"
+#elif _WIN32_WINNT >= 0x0601
+						   u8"Windows 7"
+#elif _WIN32_WINNT >= 0x0600
+						   u8"Windows Server 2008, Windows Vista"
+#elif _WIN32_WINNT >= 0x0502
+						   u8"Windows Server 2003 with SP1, Windows XP with SP2"
+#elif _WIN32_WINNT >= 0x0501
+						   u8"Windows Server 2003, Windows XP"
+#endif
+						   u8" (",
+						   ::fast_io::mnp::hex0xupper(_WIN32_WINNT),
+						   u8")"
+#endif
+#elif defined(__VMS)
+						   u8"VMS"
+#elif defined(__unix) || defined(_XOPEN_SOURCE) || defined(_POSIX_SOURCE)
+						   u8"Unix Environment"
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+						   u8 "Linux"
+#elif defined(__sun)
+						   u8"Solaris"
+#elif defined(__QNX__) || defined(__QNXNTO__)
+						   u8"QNX"
+#elif defined(__OS400__)
+						   u8"IBM OS/400"
+#elif defined(__APPLE__) && defined(__MACH__)
+#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
+						   u8"iOS"
+#else
+						   u8"Mac OS"
+#endif
+#elif defined(__sgi)
+						   u8"IRIX"
+#elif defined(__hpux)
+						   u8"HP-UX"
+#elif defined(__HAIKU__)
+						   u8"Haiku"
+#elif defined(__CYGWIN__)
+						   u8"Cygwin"
+#else
+						   u8"Unknown OS"
+#endif
+
+#if 0
+						   // mk
+						   u8"\nMaths Kernel: "
+
+						   // ff
+						   u8"\nSupported file formats: "
+
+						   // i18n
+						   u8"\nI18n Information: "
+#endif  // 0
 	);
 	return ::phy_engine::command_line::parameter_return_type::def;
 }
