@@ -210,7 +210,7 @@
 #elif defined(__unix) || defined(_XOPEN_SOURCE) || defined(_POSIX_SOURCE)
 						   u8"Unix Environment"
 #elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
-						   u8 "Linux"
+						   u8"Linux"
 #elif defined(__sun)
 						   u8"Solaris"
 #elif defined(__QNX__) || defined(__QNXNTO__)
@@ -230,9 +230,11 @@
 #elif defined(__HAIKU__)
 						   u8"Haiku"
 #elif defined(__CYGWIN__)
+						   u8"Cygwin" 
+#elif defined(__MSDOS__)
 						   u8"Cygwin"
 #else
-						   u8"Unknown OS"
+						   u8"Microsoft Dos"
 #endif
 
 #if 0
