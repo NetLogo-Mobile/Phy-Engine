@@ -162,14 +162,8 @@
 
 						   // OS
 						   u8"\nOS: "
-#if defined(BSD) || defined(_SYSTYPE_BSD)
-						   u8"BSD"
-#elif defined(__BEOS__)
-						   u8"BeOS"
-#elif defined(AMIGA) || defined(__amigaos__)
-						   u8"AmigaOS"
-#elif defined(_AIX) || defined(__TOS_AIX__)
-						   u8 "IBM AIX"
+#if defined(__CYGWIN__)
+						   u8"Cygwin"
 #elif defined(_WIN32) || defined(_WIN64) || defined(__WIN32__) || defined(__TOS_WIN__) || defined(__WINDOWS__) || defined(_WIN32_WINNT) || defined(_WIN32_WINDOWS)
 						   u8"Microsoft Windows"
 #if defined(_WIN32_WINDOWS)
@@ -205,36 +199,43 @@
 						   ::fast_io::mnp::hex0xupper(_WIN32_WINNT),
 						   u8")"
 #endif
-#elif defined(__VMS)
-						   u8"VMS"
-#elif defined(__unix) || defined(_XOPEN_SOURCE) || defined(_POSIX_SOURCE)
-						   u8"Unix Environment"
+#elif defined(__MSDOS__)
+						   u8"Microsoft Dos"
+
 #elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
 						   u8"Linux"
-#elif defined(__sun)
-						   u8"Solaris"
-#elif defined(__QNX__) || defined(__QNXNTO__)
-						   u8"QNX"
-#elif defined(__OS400__)
-						   u8"IBM OS/400"
 #elif defined(__APPLE__) && defined(__MACH__)
 #if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
 						   u8"iOS"
 #else
 						   u8"Mac OS"
 #endif
+#elif defined(BSD) ||  defined(_SYSTYPE_BSD) 
+							   u8"BSD"
+#elif defined(__VMS)
+						   u8"VMS"
+#elif defined(__sun)
+						   u8"Solaris"
+#elif defined(__QNX__) || defined(__QNXNTO__)
+						   u8"QNX"
+#elif defined(__BEOS__)
+						   u8"BeOS"
+#elif defined(AMIGA) || defined(__amigaos__)
+						   u8"AmigaOS"
+#elif defined(_AIX) || defined(__TOS_AIX__)
+						   u8 "IBM AIX"
+#elif defined(__OS400__)
+						   u8"IBM OS/400"
 #elif defined(__sgi)
 						   u8"IRIX"
 #elif defined(__hpux)
 						   u8"HP-UX"
 #elif defined(__HAIKU__)
 						   u8"Haiku"
-#elif defined(__CYGWIN__)
-						   u8"Cygwin" 
-#elif defined(__MSDOS__)
-						   u8"Cygwin"
+#elif defined(__unix) || defined(_XOPEN_SOURCE) || defined(_POSIX_SOURCE)
+						   u8"Unix Environment"
 #else
-						   u8"Microsoft Dos"
+						   u8"Unknown OS"
 #endif
 
 #if 0
