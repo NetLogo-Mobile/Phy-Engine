@@ -196,8 +196,20 @@ inline constexpr bool delete_model(netlist &nl, ::std::size_t vec_pos, ::std::si
 	if (chunk_pos >= nlb.size())
 		return false;
 
+	if (auto i = nlb.begin + chunk_pos; i == nlb.curr) {
+		if (i->type == ::phy_engine::model::model_type::null) {
+			nlb.num_of_null_model--;
+		}
+		i->~module_base();
+		nlb.curr--;
+	} else {
+		if (i->type == ::phy_engine::model::model_type::null) {
+			nlb.num_of_null_model--;
+		}
+		i->clear();
+	}
 	// to do (also delete wire)
-
+	return true;
 }
 
 inline constexpr bool delete_model(netlist &nl, model_pos const &pos) noexcept {
