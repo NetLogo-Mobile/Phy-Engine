@@ -167,7 +167,8 @@ struct model_pos {
 	::std::size_t chunk_pos{};
 };
 
-template <::phy_engine::model::model mod>
+template <typename mod>
+	requires(::phy_engine::model::model<::std::remove_cvref_t<mod>>)
 inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
 	if (nl.netlist_memory.empty()) {
 		auto &nlb{nl.netlist_memory.emplace_back()};
@@ -215,15 +216,19 @@ inline constexpr ::phy_engine::model::module_base *get_model(netlist &nl, ::std:
 }
 
 inline constexpr bool add_wire(netlist &nl) noexcept {
+	return {};
 }
 
 inline constexpr bool delete_wire(netlist &nl) noexcept {
+	return {};
 }
 
-inline constexpr bool add_netlist(netlist &nl, netlist const& nl_add) noexcept {
+inline constexpr bool add_netlist(netlist &nl, netlist const &nl_add) noexcept {
+	return {};
 }
 
 inline constexpr netlist get_netlist(netlist &nl, ::std::size_t *pos_view, ::std::size_t size) noexcept {
+	return {};
 }
 
 inline constexpr void optimize_memory(netlist &nl) noexcept {

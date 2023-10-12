@@ -109,11 +109,11 @@ concept can_query_status = requires(T&& t) {
 
 template <typename T>
 concept model = requires(T&& t) {
-					requires ::std::same_as<::std::remove_cvref_t<decltype(T::model_name)>, ::std::u8string_view>;
-					requires ::std::same_as<::std::remove_cvref_t<decltype(T::type)>, ::phy_engine::model::model_type>;
-					requires ::std::same_as<::std::remove_cvref_t<decltype(T::device_type)>, ::phy_engine::model::model_device_type>;
-					requires ::std::same_as<::std::remove_cvref_t<decltype(T::identification_name)>, ::std::u8string_view>;
-					requires ::std::same_as<::std::remove_cvref_t<decltype(T::pins)>, ::phy_engine::model::pin_view>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.model_name)>, ::std::u8string_view>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.type)>, ::phy_engine::model::model_type>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.device_type)>, ::phy_engine::model::model_device_type>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.identification_name)>, ::std::u8string_view>;
+					requires ::std::same_as<::std::remove_cvref_t<decltype(t.pins)>, ::phy_engine::model::pin_view>;
 				};
 
 
