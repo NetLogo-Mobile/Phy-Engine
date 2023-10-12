@@ -167,9 +167,4 @@ inline constexpr bool check_convergence(T&& m) noexcept {
 	}
 }
 
-template <::phy_engine::model::model T>
-inline constexpr ::phy_engine::model::pin_view get_pins(T&& m) noexcept {
-	return get_pin_view(::phy_engine::model::model_reserve_type<T>, m);
-}
-
 }

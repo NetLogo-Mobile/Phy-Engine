@@ -32,6 +32,7 @@ struct module_base_impl {
 	virtual constexpr bool step_changed_tr(double tTemp, double nstep) noexcept = 0;
 	virtual constexpr bool adapt_step(double &step) noexcept = 0;
 	virtual constexpr bool check_convergence() noexcept = 0;
+
 	virtual constexpr ::phy_engine::model::pin_view get_pins() noexcept = 0;
 	virtual constexpr ::std::u8string_view get_model_name() noexcept = 0;
 	virtual constexpr ::std::u8string_view get_identification_name() noexcept = 0;
@@ -109,8 +110,9 @@ struct model_derv_impl : module_base_impl {
 	virtual constexpr bool check_convergence() noexcept override {
 		return ::phy_engine::model::check_convergence<mod>(m);
 	}
+
 	virtual constexpr ::phy_engine::model::pin_view get_pins() noexcept override {
-		return ::phy_engine::model::get_pins<mod>(m);
+		return mod::pins;
 	}
 	virtual constexpr ::std::u8string_view get_model_name() noexcept override {
 		return mod::model_name;
@@ -240,7 +242,7 @@ struct module_base {
 		branchs = ::std::move(other.branchs);
 	}
 
-	constexpr ~module_base() {
+	constexpr ~module_base() noexcept {
 		clear();
 	}
 
