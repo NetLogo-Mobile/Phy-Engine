@@ -21,6 +21,7 @@ struct test_model {
 	::phy_engine::model::netlist nl{};
 	::phy_engine::model::test_model a{};
 	init_model(a);
+	init_model(::phy_engine::model::test_model{});
 	add_model(nl, a);
 	add_model(nl, ::phy_engine::model::test_model{});
 	add_model(nl, ::phy_engine::model::test_model{});

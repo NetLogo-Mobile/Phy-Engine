@@ -167,8 +167,7 @@ struct model_pos {
 	::std::size_t chunk_pos{};
 };
 
-template <typename mod>
-	requires(::phy_engine::model::model<::std::remove_cvref_t<mod>>)
+template <::phy_engine::model::model mod>
 inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
 	if (nl.netlist_memory.empty()) {
 		auto &nlb{nl.netlist_memory.emplace_back()};
