@@ -24,8 +24,8 @@ struct test_model {
 	add_model(nl, a);
 	add_model(nl, ::phy_engine::model::test_model{});
 	add_model(nl, ::phy_engine::model::test_model{});
-	::phy_engine::model::netlist nl2 = nl;
-	::phy_engine::model::netlist nl3 = ::std::move(nl);
+	::phy_engine::model::netlist nl2{nl};
+	::phy_engine::model::netlist nl3{::std::move(nl)};
 	return ::phy_engine::command_line::parameter_return_type::def;
 }
 #endif  // _DEBUG

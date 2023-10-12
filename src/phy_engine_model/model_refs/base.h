@@ -258,6 +258,7 @@ struct module_base {
 			return *this;
 		}
 		type = other.type;
+		
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
 		if consteval
@@ -270,8 +271,9 @@ struct module_base {
 #endif
 		{
 			ptr->~module_base_impl();
-			Alloc::deallocate(ptr);
+			Alloc::deallocate(ptr); // nullptr will crash
 		}
+
 		if (other.ptr) [[likely]]
 			ptr = other.ptr->clone();
 		else
@@ -315,7 +317,7 @@ struct module_base {
 #endif
 		{
 			ptr->~module_base_impl();
-			Alloc::deallocate(ptr);
+			Alloc::deallocate(ptr); // nullptr will crash
 		}
 		ptr = other.ptr;
 		other.ptr = nullptr;
