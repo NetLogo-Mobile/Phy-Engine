@@ -77,10 +77,42 @@ struct netlist_block {
 		num_of_null_model = other.num_of_null_model;
 		other.begin = nullptr;
 		other.curr = nullptr;
-		other.num_of_null_model = ::std::size_t{};
+		other.num_of_null_model = 0;
 	}
 
 	constexpr netlist_block &operator=(netlist_block &&other) noexcept {
+		if (__builtin_addressof(other) == this) {
+			return *this;
+		}
+
+		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
+			b->~model_base();
+		}
+
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+#if __cpp_if_consteval >= 202106L
+		if consteval
+#else
+		if (__builtin_is_constant_evaluated())
+#endif
+		{
+			delete[] begin;
+		} else
+#endif
+		{
+			Alloc::deallocate(begin);
+		}
+
+		begin = other.begin;
+		curr = other.curr;
+		num_of_null_model = other.num_of_null_model;
+		other.begin = nullptr;
+		other.curr = nullptr;
+		other.num_of_null_model = 0;
+		return *this;
+	}
+
+	constexpr netlist_block &move_without_delete_memory(netlist_block &&other) noexcept {
 		if (__builtin_addressof(other) == this) {
 			return *this;
 		}
