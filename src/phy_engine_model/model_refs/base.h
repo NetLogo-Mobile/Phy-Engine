@@ -12,9 +12,9 @@
 namespace phy_engine::model {
 namespace details {
 
-struct module_base_impl {
-	virtual constexpr ~module_base_impl() noexcept = default;
-	virtual constexpr module_base_impl *clone() const noexcept = 0;
+struct model_base_impl {
+	virtual constexpr ~model_base_impl() noexcept = default;
+	virtual constexpr model_base_impl *clone() const noexcept = 0;
 
 	virtual constexpr bool init_model() noexcept = 0;
 	virtual constexpr bool prepare_ac() noexcept = 0;
@@ -39,12 +39,12 @@ struct module_base_impl {
 };
 
 template <::phy_engine::model::model mod>
-struct model_derv_impl : module_base_impl {
+struct model_derv_impl : model_base_impl {
 	mod m{};
 
 	constexpr model_derv_impl(mod &&input_m) noexcept : m{::std::forward<mod>(input_m)} {}
 
-	virtual constexpr module_base_impl *clone() const noexcept override {
+	virtual constexpr model_base_impl *clone() const noexcept override {
 		using Alloc = ::fast_io::native_global_allocator;
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
@@ -57,7 +57,7 @@ struct model_derv_impl : module_base_impl {
 		} else
 #endif
 		{
-			module_base_impl *ptr{reinterpret_cast<module_base_impl *>(Alloc::allocate(sizeof(model_derv_impl<mod>)))};
+			model_base_impl *ptr{reinterpret_cast<model_base_impl *>(Alloc::allocate(sizeof(model_derv_impl<mod>)))};
 			new (ptr) model_derv_impl<mod>{*this};
 			return ptr;
 		}
@@ -212,7 +212,7 @@ struct model_base {
 	using Alloc = ::fast_io::native_global_allocator;
 
 	::phy_engine::model::model_type type{};
-	details::module_base_impl *ptr{};
+	details::model_base_impl *ptr{};
 
 	::std::size_t identification{}; // intertype independence
 	::std::u8string name{};
@@ -270,7 +270,7 @@ struct model_base {
 			} else
 #endif
 			{
-				ptr->~module_base_impl();
+				ptr->~model_base_impl();
 				Alloc::deallocate(ptr);  // nullptr will crash
 			}
 		}
@@ -317,7 +317,7 @@ struct model_base {
 			} else
 #endif
 			{
-				ptr->~module_base_impl();
+				ptr->~model_base_impl();
 				Alloc::deallocate(ptr);  // nullptr will crash
 			}
 		}
@@ -349,7 +349,7 @@ struct model_base {
 			} else
 #endif
 			{
-				ptr->~module_base_impl();
+				ptr->~model_base_impl();
 				Alloc::deallocate(ptr);
 			}
 		}
