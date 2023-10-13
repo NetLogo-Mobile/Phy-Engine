@@ -294,7 +294,7 @@ struct model_base {
 		ptr = other.ptr;
 		other.ptr = nullptr;
 		identification = other.identification;
-		other.identification = ::std::size_t{};
+		other.identification = 0;
 		name = ::std::move(other.name);
 		describe = ::std::move(other.describe);
 		nodes = ::std::move(other.nodes);
@@ -326,7 +326,7 @@ struct model_base {
 		ptr = other.ptr;
 		other.ptr = nullptr;
 		identification = other.identification;
-		other.identification = ::std::size_t{};
+		other.identification = 0;
 		name = ::std::move(other.name);
 		describe = ::std::move(other.describe);
 		nodes = ::std::move(other.nodes);
@@ -356,7 +356,7 @@ struct model_base {
 			}
 		}
 		ptr = nullptr;
-		identification = ::std::size_t{};
+		identification = 0;
 		name.clear();
 		describe.clear();
 		nodes.clear();

@@ -15,6 +15,7 @@ namespace phy_engine::model {
 
 template <typename T>
 struct model_reserve_type_t {
+	static_assert(::std::is_same_v<::std::remove_cvref_t<T>, T>, "model_reserve_type_t: typename 'T' cannot have refer and const attributes");
 	explicit constexpr model_reserve_type_t() noexcept = default;
 };
 

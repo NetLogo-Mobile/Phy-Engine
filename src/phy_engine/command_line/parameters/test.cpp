@@ -24,12 +24,13 @@ struct test_str {
 
 template <typename mod>
 inline constexpr auto in_test_str(mod&& m) noexcept {
-	return test_str<mod>{::std::forward<mod>(m)}
+	return test_str<mod>{::std::forward<mod>(m)};
 };
 
 inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<test_model>, test_model& t_m) noexcept {
 	int a;
 	auto i = in_test_str(a);
+	//::phy_engine::model::model_reserve_type_t<int&> k; // static_assert
 	return true;
 }
 
