@@ -4,6 +4,7 @@
 #include "test.h"
 
 #include "../../../phy_engine_netlist/netlist.h"
+#include "../../../phy_engine_netlist/operation.h"
 #include "../../../phy_engine_model/model_refs/operation.h"
 #include "../../../phy_engine_model/model_refs/base.h"
 
