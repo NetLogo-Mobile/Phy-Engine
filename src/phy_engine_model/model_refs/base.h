@@ -272,8 +272,8 @@ struct model_base {
 			} else
 #endif
 			{
-				ptr->~model_base_impl();
-				Alloc::deallocate(ptr);  // nullptr will crash
+				ptr->~model_base_impl();  // nullptr will crash
+				Alloc::deallocate(ptr);
 			}
 		}
 		if (other.ptr) [[likely]]
@@ -319,8 +319,8 @@ struct model_base {
 			} else
 #endif
 			{
-				ptr->~model_base_impl();
-				Alloc::deallocate(ptr);  // nullptr will crash
+				ptr->~model_base_impl();  // nullptr will crash
+				Alloc::deallocate(ptr);
 			}
 		}
 		ptr = other.ptr;
@@ -351,7 +351,7 @@ struct model_base {
 			} else
 #endif
 			{
-				ptr->~model_base_impl();
+				ptr->~model_base_impl();  // nullptr will crash
 				Alloc::deallocate(ptr);
 			}
 		}
