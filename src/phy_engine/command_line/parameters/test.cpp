@@ -5,6 +5,7 @@
 
 #include "../../../phy_engine_netlist/netlist.h"
 #include "../../../phy_engine_model/model_refs/operation.h"
+#include "../../../phy_engine_model/model_refs/base.h"
 
 struct test_model {
 	static constexpr ::std::u8string_view model_name{u8"test_model"};
@@ -15,7 +16,8 @@ struct test_model {
 };
 
 ::phy_engine::command_line::parameter_return_type(::phy_engine::parameter::details::test_callback)(::std::size_t, ::fast_io::vector<::phy_engine::command_line::parameter_parsing_results>&) noexcept {
-	::phy_engine::model::netlist nl{};
+#if 0
+		::phy_engine::model::netlist nl{};
 	test_model a{};
 	::phy_engine::model::init_model(a);
 	::phy_engine::model::init_model(test_model{});
@@ -24,6 +26,10 @@ struct test_model {
 	add_model(nl, test_model{});
 	::phy_engine::model::netlist nl2{nl};
 	::phy_engine::model::netlist nl3{::std::move(nl)};
+#endif  // 0
+
+	::phy_engine::model::model_base a{};
+	a.clear();
 	return ::phy_engine::command_line::parameter_return_type::def;
 }
 #endif  // _DEBUG

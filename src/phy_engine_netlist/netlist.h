@@ -11,7 +11,7 @@ namespace phy_engine::model {
 namespace details {
 
 struct netlist_block {
-	using Alloc = ::fast_io::native_typed_global_allocator<::phy_engine::model::module_base>;
+	using Alloc = ::fast_io::native_typed_global_allocator<::phy_engine::model::model_base>;
 	static constexpr ::std::size_t chunk_size{4096};
 
 	constexpr netlist_block() noexcept {
@@ -22,7 +22,7 @@ struct netlist_block {
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
-			begin = new ::phy_engine::model::module_base[chunk_size];
+			begin = new ::phy_engine::model::model_base[chunk_size];
 		} else
 #endif
 		{
@@ -39,7 +39,7 @@ struct netlist_block {
 		if (__builtin_is_constant_evaluated())
 #endif
 		{
-			begin = new ::phy_engine::model::module_base[chunk_size];
+			begin = new ::phy_engine::model::model_base[chunk_size];
 		} else
 #endif
 		{
@@ -49,7 +49,7 @@ struct netlist_block {
 		curr = begin + size;
 		num_of_null_model = other.num_of_null_model;
 		for (::std::size_t i{}; i < size; i++) {
-			new (begin + i)::phy_engine::model::module_base{other.begin[i]};
+			new (begin + i)::phy_engine::model::model_base{other.begin[i]};
 		}
 	}
 
@@ -62,7 +62,7 @@ struct netlist_block {
 		curr = begin + size;
 		num_of_null_model = other.num_of_null_model;
 		for (::std::size_t i{}; i < size; i++) {
-			new (begin + i)::phy_engine::model::module_base{other.begin[i]};
+			new (begin + i)::phy_engine::model::model_base{other.begin[i]};
 		}
 		return *this;
 	}
@@ -95,8 +95,8 @@ struct netlist_block {
 	}
 
 	constexpr void clear() noexcept {
-		for (::phy_engine::model::module_base *b{begin}; b != curr; b++) {
-			b->~module_base();
+		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
+			b->~model_base();
 		}
 		curr = begin;
 		num_of_null_model = ::std::size_t{};
@@ -121,6 +121,25 @@ struct netlist_block {
 		curr = nullptr;
 	}
 
+	constexpr void new_memory() noexcept {
+		if (begin == nullptr) {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+#if __cpp_if_consteval >= 202106L
+			if consteval
+#else
+			if (__builtin_is_constant_evaluated())
+#endif
+			{
+				begin = new ::phy_engine::model::model_base[chunk_size];
+			} else
+#endif
+			{
+				begin = Alloc::allocate(chunk_size);
+			}
+			curr = begin;
+		}
+	}
+
 	constexpr ::std::size_t size() noexcept {
 		return static_cast<::std::size_t>(curr - begin);
 	}
@@ -129,8 +148,8 @@ struct netlist_block {
 		return static_cast<::std::size_t>(curr - begin) - num_of_null_model;
 	}
 
-	::phy_engine::model::module_base *begin{};
-	::phy_engine::model::module_base *curr{};
+	::phy_engine::model::model_base *begin{};
+	::phy_engine::model::model_base *curr{};
 	::std::size_t num_of_null_model{};
 };
 }  
@@ -145,7 +164,7 @@ inline constexpr ::std::size_t get_num_of_model(netlist &nl) noexcept {
 	if constexpr (check) {
 		::std::size_t res{};
 		for (auto &i : nl.netlist_memory) {
-			for (::phy_engine::model::module_base *b{i.begin}; b != i.curr; b++) {
+			for (::phy_engine::model::model_base *b{i.begin}; b != i.curr; b++) {
 				if (b->type != ::phy_engine::model::model_type::null) [[likely]] {
 					res++;
 				}
@@ -162,27 +181,27 @@ inline constexpr ::std::size_t get_num_of_model(netlist &nl) noexcept {
 }
 
 struct model_pos {
-	::phy_engine::model::module_base *mod{};
+	::phy_engine::model::model_base *mod{};
 	::std::size_t vec_pos{};
 	::std::size_t chunk_pos{};
 };
 
 template <::phy_engine::model::model mod>
 inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
-	if (nl.netlist_memory.empty()) {
+	if (nl.netlist_memory.empty()) [[unlikely]] {
 		auto &nlb{nl.netlist_memory.emplace_back()};
-		new (nlb.curr)::phy_engine::model::module_base{::std::forward<mod>(m)};
+		new (nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
 		nlb.curr++;
 		return {nlb.curr, 0, 0};
 	} else {
 		auto &nlb{nl.netlist_memory.back()};
-		if (nlb.curr == nlb.begin + nlb.chunk_size) {
+		if (nlb.curr == nlb.begin + nlb.chunk_size) [[unlikely]] {
 			auto &new_nlb{nl.netlist_memory.emplace_back()};
-			new (new_nlb.curr)::phy_engine::model::module_base{::std::forward<mod>(m)};
+			new (new_nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
 			nlb.curr++;
 			return {new_nlb.curr, nl.netlist_memory.size() - 1, 0};
 		} else {
-			new (nlb.curr)::phy_engine::model::module_base{::std::forward<mod>(m)};
+			new (nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
 			nlb.curr++;
 			return {nlb.curr, nl.netlist_memory.size() - 1, nlb.size() - 1};
 		}
@@ -200,13 +219,13 @@ inline constexpr bool delete_model(netlist &nl, ::std::size_t vec_pos, ::std::si
 		if (i->type == ::phy_engine::model::model_type::null) {
 			nlb.num_of_null_model--;
 		}
-		i->~module_base();
+		i->~model_base();
 		nlb.curr--;
 	} else {
-		if (i->type == ::phy_engine::model::model_type::null) {
-			nlb.num_of_null_model--;
+		if (i->type != ::phy_engine::model::model_type::null) {
+			nlb.num_of_null_model++;
+			i->clear();
 		}
-		i->clear();
 	}
 	// to do (also delete wire)
 	return true;
@@ -220,7 +239,7 @@ inline constexpr bool delete_model(netlist &nl, model_pos &&pos) noexcept {
 	return delete_model(nl, pos.vec_pos, pos.chunk_pos);
 }
 
-inline constexpr ::phy_engine::model::module_base *get_model(netlist &nl, ::std::size_t vec_pos, ::std::size_t chunk_pos) noexcept {
+inline constexpr ::phy_engine::model::model_base *get_model(netlist &nl, ::std::size_t vec_pos, ::std::size_t chunk_pos) noexcept {
 	if (vec_pos >= nl.netlist_memory.size())
 		return nullptr;
 	auto &nlb{nl.netlist_memory[vec_pos]};

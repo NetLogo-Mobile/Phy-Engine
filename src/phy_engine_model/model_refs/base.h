@@ -208,7 +208,7 @@ struct model_derv_impl : module_base_impl {
 };
 }  // namespace details
 
-struct module_base {
+struct model_base {
 	using Alloc = ::fast_io::native_global_allocator;
 
 	::phy_engine::model::model_type type{};
@@ -221,10 +221,10 @@ struct module_base {
 	::fast_io::vector<::std::size_t> branchs{};
 
 
-	constexpr module_base() noexcept = default;
+	constexpr model_base() noexcept = default;
 
 	template <::phy_engine::model::model mod>
-	constexpr module_base(mod &&m) noexcept {
+	constexpr model_base(mod &&m) noexcept {
 		type = m.type;
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
@@ -242,7 +242,7 @@ struct module_base {
 		}
 	};
 
-	constexpr module_base(module_base const &other) noexcept {
+	constexpr model_base(model_base const &other) noexcept {
 		type = other.type;
 		if (other.ptr) [[likely]]
 			ptr = other.ptr->clone();
@@ -253,27 +253,27 @@ struct module_base {
 		branchs = other.branchs;
 	}
 
-	constexpr module_base& operator=(module_base const &other) noexcept {
+	constexpr model_base& operator=(model_base const &other) noexcept {
 		if (__builtin_addressof(other) == this) {
 			return *this;
 		}
 		type = other.type;
-		
+		if (ptr != nullptr) {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
-		if consteval
+			if consteval
 #else
-		if (__builtin_is_constant_evaluated())
+			if (__builtin_is_constant_evaluated())
 #endif
-		{
-			delete ptr;
-		} else
+			{
+				delete ptr;
+			} else
 #endif
-		{
-			ptr->~module_base_impl();
-			Alloc::deallocate(ptr); // nullptr will crash
+			{
+				ptr->~module_base_impl();
+				Alloc::deallocate(ptr);  // nullptr will crash
+			}
 		}
-
 		if (other.ptr) [[likely]]
 			ptr = other.ptr->clone();
 		else
@@ -286,7 +286,7 @@ struct module_base {
 		return *this;
 	}
 
-	constexpr module_base(module_base &&other) noexcept {
+	constexpr model_base(model_base &&other) noexcept {
 		type = other.type;
 		other.type = ::phy_engine::model::model_type{};
 		ptr = other.ptr;
@@ -299,25 +299,27 @@ struct module_base {
 		branchs = ::std::move(other.branchs);
 	}
 
-	constexpr module_base operator=(module_base &&other) noexcept {
+	constexpr model_base operator=(model_base &&other) noexcept {
 		if (__builtin_addressof(other) == this) {
 			return *this;
 		}
 		type = other.type;
 		other.type = ::phy_engine::model::model_type{};
+		if (ptr != nullptr) {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
-		if consteval
+			if consteval
 #else
-		if (__builtin_is_constant_evaluated())
+			if (__builtin_is_constant_evaluated())
 #endif
-		{
-			delete ptr;
-		} else
+			{
+				delete ptr;
+			} else
 #endif
-		{
-			ptr->~module_base_impl();
-			Alloc::deallocate(ptr); // nullptr will crash
+			{
+				ptr->~module_base_impl();
+				Alloc::deallocate(ptr);  // nullptr will crash
+			}
 		}
 		ptr = other.ptr;
 		other.ptr = nullptr;
@@ -329,25 +331,27 @@ struct module_base {
 		branchs = ::std::move(other.branchs);
 	}
 
-	constexpr ~module_base() noexcept {
+	constexpr ~model_base() noexcept {
 		clear();
 	}
 
 	constexpr void clear() noexcept {
 		type = ::phy_engine::model::model_type{};
+		if (ptr != nullptr) {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
-		if consteval
+			if consteval
 #else
-		if (__builtin_is_constant_evaluated())
+			if (__builtin_is_constant_evaluated())
 #endif
-		{
-			delete ptr;
-		} else
+			{
+				delete ptr;
+			} else
 #endif
-		{
-			ptr->~module_base_impl();
-			Alloc::deallocate(ptr);
+			{
+				ptr->~module_base_impl();
+				Alloc::deallocate(ptr);
+			}
 		}
 		ptr = nullptr;
 		identification = ::std::size_t{};

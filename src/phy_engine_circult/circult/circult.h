@@ -35,7 +35,7 @@ circult {
 	constexpr bool delete_component(::std::size_t pos) noexcept {
 	}
 
-	constexpr ::phy_engine::model::module_base *get_component(::std::size_t pos) noexcept {
+	constexpr ::phy_engine::model::model_base *get_component(::std::size_t pos) noexcept {
 	}
 
 	constexpr bool add_wire() noexcept {
@@ -53,7 +53,7 @@ circult {
 	constexpr void optimize_memory() noexcept {
 	}
 
-	constexpr ::phy_engine::model::module_base *find_component_from_mtype(::phy_engine::model::model_type type, ::std::size_t identification) noexcept {
+	constexpr ::phy_engine::model::model_base *find_component_from_mtype(::phy_engine::model::model_type type, ::std::size_t identification) noexcept {
 	}
 
 	constexpr ::fast_io::vector<::std::u8string> find_component_from_name(::std::u8string_view str) noexcept {
