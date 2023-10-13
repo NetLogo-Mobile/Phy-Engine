@@ -211,7 +211,8 @@ struct model_pos {
 	::std::size_t chunk_pos{};
 };
 
-template <::phy_engine::model::model mod>
+template <typename mod>
+	requires(::phy_engine::model::model<mod> && ::phy_engine::model::defines::can_iterate_dc<mod>)
 inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
 	if (nl.netlist_memory.empty()) [[unlikely]] {
 		auto &nlb{nl.netlist_memory.emplace_back()};

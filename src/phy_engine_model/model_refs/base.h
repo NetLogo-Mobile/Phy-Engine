@@ -40,7 +40,9 @@ struct model_base_impl {
 
 template <::phy_engine::model::model mod>
 struct model_derv_impl : model_base_impl {
-	mod m{};
+	using rcvmod_type = ::std::remove_cvref_t<mod>;
+
+	rcvmod_type m;
 
 	constexpr model_derv_impl(mod &&input_m) noexcept : m{::std::forward<mod>(input_m)} {}
 
@@ -65,100 +67,100 @@ struct model_derv_impl : model_base_impl {
 
     virtual constexpr bool init_model() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_init<mod>) {
-			return init_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return init_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool prepare_ac() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_prepare_ac<mod>) {
-			return prepare_ac_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_ac_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool prepare_dc() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_prepare_dc<mod>) {
-			return prepare_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool prepare_tr() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_prepare_tr<mod>) {
-			return prepare_tr_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool prepare_op() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_prepare_op<mod>) {
-			return prepare_op_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else if constexpr (::phy_engine::model::defines::can_prepare_dc<mod>) {
-			return prepare_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool prepare_trop() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_prepare_trop<mod>) {
-			return prepare_trop_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else if constexpr (::phy_engine::model::defines::can_prepare_tr<mod>) {
-			return prepare_tr_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool iterate_ac(double omega) noexcept override {
 		if constexpr (::phy_engine::model::defines::can_iterate_ac<mod>) {
-			return iterate_ac_define(::phy_engine::model::model_reserve_type<mod>, m, omega);
+			return iterate_ac_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, omega);
 		} else if constexpr (::phy_engine::model::defines::can_iterate_dc<mod>) {
-			return iterate_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return false;
 		}
 	}
 	virtual constexpr bool iterate_dc() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_iterate_dc<mod>) {
-			return iterate_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return false;
 		}
 	}
 	virtual constexpr bool iterate_tr(double tTime) noexcept override {
 		if constexpr (::phy_engine::model::defines::can_iterate_tr<mod>) {
-			return iterate_tr_define(::phy_engine::model::model_reserve_type<mod>, m, tTime);
+			return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, tTime);
 		} else if constexpr (::phy_engine::model::defines::can_iterate_dc<mod>) {
-			return iterate_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return false;
 		}
 	}
 	virtual constexpr bool iterate_op() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_iterate_op<mod>) {
-			return iterate_op_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else if constexpr (::phy_engine::model::defines::can_iterate_dc<mod>) {
-			return iterate_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return false;
 		}
 	}
 	virtual constexpr bool iterate_trop() noexcept override {
 		if constexpr (::phy_engine::model::defines::can_iterate_trop<mod>) {
-			return iterate_trop_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else if constexpr (::phy_engine::model::defines::can_iterate_tr<mod>) {
-			return iterate_tr_define(::phy_engine::model::model_reserve_type<mod>, m, 0.0);
+			return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, 0.0);
 		} else if constexpr (::phy_engine::model::defines::can_iterate_dc<mod>) {
-			return iterate_dc_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return false;
 		}
 	}
 	virtual constexpr bool save_op() noexcept override {
 		// not a non-linear device and no need to store operating point
-		if constexpr (m.device_type == ::phy_engine::model::model_device_type::non_linear) {
+		if constexpr (rcvmod_type::device_type == ::phy_engine::model::model_device_type::non_linear) {
 			if constexpr (::phy_engine::model::defines::can_save_op<mod>) {
-				return save_op_define(::phy_engine::model::model_reserve_type<mod>, m);
+				return save_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 			} else {
 				return true;
 			}
@@ -168,21 +170,21 @@ struct model_derv_impl : model_base_impl {
 	}
 	virtual constexpr bool load_temperature(double temp) noexcept override {
 		if constexpr (::phy_engine::model::defines::can_load_temperature<mod>) {
-			return load_temperature_define(::phy_engine::model::model_reserve_type<mod>, m, temp);
+			return load_temperature_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, temp);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool step_changed_tr(double tTemp, double nstep) noexcept override {
 		if constexpr (::phy_engine::model::defines::can_step_changed_tr<mod>) {
-			return step_changed_tr_define(::phy_engine::model::model_reserve_type<mod>, m, tTemp, nstep);
+			return step_changed_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, tTemp, nstep);
 		} else {
 			return true;
 		}
 	}
 	virtual constexpr bool adapt_step(double &step) noexcept override {
 		if constexpr (::phy_engine::model::defines::can_adapt_step<mod>) {
-			return adapt_step_define(::phy_engine::model::model_reserve_type<mod>, m, step);
+			return adapt_step_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, step);
 		} else {
 			return true;
 		}
@@ -190,20 +192,20 @@ struct model_derv_impl : model_base_impl {
 	virtual constexpr bool check_convergence() noexcept override {
 		// no model-specific checks for convergence
 		if constexpr (::phy_engine::model::defines::can_check_convergence<mod>) {
-			return check_convergence_define(::phy_engine::model::model_reserve_type<mod>, m);
+			return check_convergence_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
 		} else {
 			return true;
 		}
 	}
 
 	virtual constexpr ::phy_engine::model::pin_view get_pins() noexcept override {
-		return m.pins;
+		return rcvmod_type::pins;
 	}
 	virtual constexpr ::std::u8string_view get_model_name() noexcept override {
-		return m.model_name;
+		return rcvmod_type::model_name;
 	}
 	virtual constexpr ::std::u8string_view get_identification_name() noexcept override {
-		return m.identification_name;
+		return rcvmod_type::identification_name;
 	}
 };
 }  // namespace details
@@ -225,7 +227,7 @@ struct model_base {
 
 	template <::phy_engine::model::model mod>
 	constexpr model_base(mod &&m) noexcept {
-		type = m.type;
+		type = ::std::remove_cvref_t<mod>::type;
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
 		if consteval
