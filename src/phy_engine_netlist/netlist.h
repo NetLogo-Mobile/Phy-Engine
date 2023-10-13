@@ -91,18 +91,20 @@ struct netlist_block {
 			b->~model_base();
 		}
 
+		if (begin != nullptr) {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
-		if consteval
+			if consteval
 #else
-		if (__builtin_is_constant_evaluated())
+			if (__builtin_is_constant_evaluated())
 #endif
-		{
-			delete[] begin;
-		} else
+			{
+				delete[] begin;
+			} else
 #endif
-		{
-			Alloc::deallocate(begin);
+			{
+				Alloc::deallocate(begin);
+			}
 		}
 
 		begin = other.begin;
@@ -138,18 +140,20 @@ struct netlist_block {
 			b->~model_base();
 		}
 
+		if (begin != nullptr) {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
-		if consteval
+			if consteval
 #else
-		if (__builtin_is_constant_evaluated())
+			if (__builtin_is_constant_evaluated())
 #endif
-		{
-			delete[] begin;
-		} else
+			{
+				delete[] begin;
+			} else
 #endif
-		{
-			Alloc::deallocate(begin);
+			{
+				Alloc::deallocate(begin);
+			}
 		}
 
 		begin = nullptr;
