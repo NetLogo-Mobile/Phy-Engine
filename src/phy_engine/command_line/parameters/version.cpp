@@ -56,9 +56,9 @@
 #if defined(__alpha__)
 						   u8"DEC Alpha",
 #elif defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
-						   u8"ARM64"
+						   u8"aarch64"
 #elif defined(__arm__) || defined(_M_ARM)
-						   u8"ARM
+						   u8"aarch"
 #elif defined(__x86_64__) || defined(_M_AMD64)
 						   u8"x86_64"
 #elif defined(__i386__) || defined(_M_IX86)

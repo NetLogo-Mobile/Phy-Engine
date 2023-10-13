@@ -28,6 +28,7 @@ struct netlist_block {
 		{
 			begin = Alloc::allocate(chunk_size);
 		}
+
 		curr = begin;
 	}
 
@@ -45,6 +46,7 @@ struct netlist_block {
 		{
 			begin = Alloc::allocate(chunk_size);
 		}
+
 		auto const size{static_cast<::std::size_t>(other.curr - other.begin)};
 		curr = begin + size;
 		num_of_null_model = other.num_of_null_model;
@@ -135,6 +137,7 @@ struct netlist_block {
 		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
 			b->~model_base();
 		}
+
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
 		if consteval
@@ -148,6 +151,7 @@ struct netlist_block {
 		{
 			Alloc::deallocate(begin);
 		}
+
 		begin = nullptr;
 		curr = nullptr;
 		num_of_null_model = 0;
