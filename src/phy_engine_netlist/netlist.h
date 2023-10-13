@@ -57,7 +57,11 @@ struct netlist_block {
 		if (__builtin_addressof(other) == this) {
 			return *this;
 		}
-		clear();
+
+		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
+			b->~model_base();
+		}
+
 		auto const size{static_cast<::std::size_t>(other.curr - other.begin)};
 		curr = begin + size;
 		num_of_null_model = other.num_of_null_model;
@@ -80,30 +84,25 @@ struct netlist_block {
 		if (__builtin_addressof(other) == this) {
 			return *this;
 		}
-		delete_memory();
+
+		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
+			b->~model_base();
+		}
+		::phy_engine::model::model_base *const temp_begin{begin};
+
 		begin = other.begin;
 		curr = other.curr;
 		num_of_null_model = other.num_of_null_model;
-		other.begin = nullptr;
-		other.curr = nullptr;
-		other.num_of_null_model = ::std::size_t{};
+		other.begin = temp_begin;
+		other.curr = temp_begin;
+		other.num_of_null_model = 0;
 		return *this;
 	}
 
 	constexpr ~netlist_block() noexcept {
-		delete_memory();
-	}
-
-	constexpr void clear() noexcept {
 		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
 			b->~model_base();
 		}
-		curr = begin;
-		num_of_null_model = ::std::size_t{};
-	}
-
-	constexpr void delete_memory() noexcept {
-		clear();
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
 #if __cpp_if_consteval >= 202106L
 		if consteval
@@ -119,25 +118,15 @@ struct netlist_block {
 		}
 		begin = nullptr;
 		curr = nullptr;
+		num_of_null_model = 0;
 	}
 
-	constexpr void new_memory() noexcept {
-		if (begin == nullptr) {
-#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
-#if __cpp_if_consteval >= 202106L
-			if consteval
-#else
-			if (__builtin_is_constant_evaluated())
-#endif
-			{
-				begin = new ::phy_engine::model::model_base[chunk_size];
-			} else
-#endif
-			{
-				begin = Alloc::allocate(chunk_size);
-			}
-			curr = begin;
+	constexpr void clear() noexcept {
+		for (::phy_engine::model::model_base *b{begin}; b != curr; b++) {
+			b->~model_base();
 		}
+		curr = begin;
+		num_of_null_model = 0;
 	}
 
 	constexpr ::std::size_t size() noexcept {
