@@ -119,7 +119,7 @@ inline constexpr bool iterate_trop(mod&& m) noexcept {
 template <::phy_engine::model::model mod>
 inline constexpr bool save_op(mod&& m) noexcept {
 	// not a non-linear device and no need to store operating point
-	if constexpr (m.device_type == ::phy_engine::model::model_device_type::non_linear) {
+	if constexpr (::std::remove_cvref_t<mod> ::device_type == ::phy_engine::model::model_device_type::non_linear) {
 		if constexpr (::phy_engine::model::defines::can_save_op<mod>) {
 			return save_op_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
 		} else {
