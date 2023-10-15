@@ -48,6 +48,7 @@ if is_plat("windows") then
     else
         set_fpmodels("fast")
         add_cxflags("-GL")
+        --add_vectorexts("sse", "sse2")
         add_ldflags("-LTCG")
         set_runtimes("MT")
     end

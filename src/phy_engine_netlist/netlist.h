@@ -186,6 +186,10 @@ struct netlist_block {
 struct netlist {
 	using Alloc = ::fast_io::native_global_allocator;
 	::fast_io::vector<details::netlist_block> netlist_memory{};
+	::std::size_t m_numNodes{};
+	::std::size_t m_numBranches{};
+	::std::size_t m_numTermls{};
+	bool m_hasGround{};
 };
 
 

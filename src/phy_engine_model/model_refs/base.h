@@ -362,6 +362,14 @@ struct model_base {
 		nodes.clear();
 		branchs.clear();
 	}
+
+	constexpr ::std::size_t get_nodes_size() const {
+		return nodes.size();
+	}
+
+	constexpr ::std::size_t get_branchs_size() const {
+		return branchs.size();
+	}
 };
 
 }  // namespace phy_engine::model
