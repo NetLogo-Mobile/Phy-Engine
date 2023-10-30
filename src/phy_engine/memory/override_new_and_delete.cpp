@@ -11,18 +11,18 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 __declspec(allocator)
 #endif
-void* operator new(::std::size_t n) noexcept { 
+void* operator new(::std::size_t n) { 
 	return ::fast_io::native_global_allocator::allocate(n);
 }
 
 #if defined(_MSC_VER) && !defined(__clang__)
 __declspec(allocator)
 #endif
-void* operator new(::std::size_t n, ::std::align_val_t al) noexcept {
+void* operator new(::std::size_t n, ::std::align_val_t al) {
 	return ::fast_io::native_global_allocator::allocate_aligned(static_cast<::std::size_t>(al), n);
 }
 
-void operator delete(void* ptr) noexcept {
+void operator delete(void* ptr) {
 	::fast_io::native_global_allocator::deallocate(ptr);
 }
 
