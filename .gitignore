@@ -1,6 +1,7 @@
 */build/*
 !.h
 !.cpp
+!.cc
 .tmp
 .vscode
 .xmake
@@ -8,5 +9,6 @@ build
 .vs/
 .*/*
 .cmake
-custom/git_commit_hash.h
 !CMakeLists.txt
+test/**/*.exe
+!.github/*
