@@ -100,10 +100,12 @@ inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
         if(i >= nlb.curr) [[unlikely]] { return false; }
         else if(i == nlb.curr - 1)
         {
-            if(i->type == ::phy_engine::model::model_type::null) { --nlb.num_of_null_model; }
+            auto const i_type{i->type};
+            if(i_type == ::phy_engine::model::model_type::null) [[unlikely]] { --nlb.num_of_null_model; }
             nl.m_numTermls -= i->ptr->get_pins().size;
             i->~model_base();
             --nlb.curr;
+            if(i_type == ::phy_engine::model::model_type::null) [[unlikely]] { return false; }
         }
         else
         {
@@ -113,6 +115,7 @@ inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
                 nl.m_numTermls -= i->ptr->get_pins().size;
                 i->clear();
             }
+            else [[unlikely]] { return false; }
         }
         // to do (also delete wire)
         return true;
