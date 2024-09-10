@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <fast_io/fast_io_dsal/string_view.h>
 #include "../../model_refs/base.h"
 

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "../ast/module.h"
 
 namespace phy_engine::verilog
