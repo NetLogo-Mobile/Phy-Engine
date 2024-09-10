@@ -1,5 +1,4 @@
 ﻿#pragma once
-
 #include "netlist.h"
 #include "concept.h"
 
@@ -8,7 +7,24 @@ namespace phy_engine::netlist
     template <bool check = false>
     inline constexpr ::std::size_t get_num_of_model(netlist const& nl) noexcept
     {
-        return nl.netlist_memory.size();
+        if constexpr(check)
+        {
+            ::std::size_t res{};
+            for(auto const& i: nl.netlist_memory)
+            {
+                for(::phy_engine::model::model_base* b{i.begin}; b != i.curr; ++b)
+                {
+                    if(b->type != ::phy_engine::model::model_type::null) [[likely]] { ++res; }
+                }
+            }
+            return res;
+        }
+        else
+        {
+            ::std::size_t res{};
+            for(auto const& i: nl.netlist_memory) { res += i.get_num_of_model(); }
+            return res;
+        }
     }
 
     struct model_pos
@@ -25,7 +41,7 @@ namespace phy_engine::netlist
 
     template <typename mod>
         requires (::phy_engine::model::model<mod> && ::phy_engine::model::defines::can_iterate_dc<mod>)
-    inline constexpr ::phy_engine::model::model_base* add_model(netlist& nl, mod&& m) noexcept
+    inline constexpr add_model_retstr add_model(netlist& nl, mod&& m) noexcept
     {
         using rcvmod_type = ::std::remove_cvref_t<mod>;
         if(nl.netlist_memory.empty()) [[unlikely]]
