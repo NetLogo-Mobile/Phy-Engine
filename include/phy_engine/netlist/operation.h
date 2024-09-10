@@ -13,9 +13,9 @@ namespace phy_engine::netlist
             ::std::size_t res{};
             for(auto const& i: nl.netlist_memory)
             {
-                for(::phy_engine::model::model_base* b{i.begin}; b != i.curr; b++)
+                for(::phy_engine::model::model_base* b{i.begin}; b != i.curr; ++b)
                 {
-                    if(b->type != ::phy_engine::model::model_type::null) [[likely]] { res++; }
+                    if(b->type != ::phy_engine::model::model_type::null) [[likely]] { ++res; }
                 }
             }
             return res;
@@ -95,20 +95,22 @@ inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
     {
         if(vec_pos >= nl.netlist_memory.size()) [[unlikely]] { return false; }
         auto& nlb{nl.netlist_memory.index_unchecked(vec_pos)};
-        if(chunk_pos >= nlb.size()) [[unlikely]] { return false; }
 
-        if(auto i{nlb.begin + chunk_pos}; i == nlb.curr)
+        auto i{nlb.begin + chunk_pos};
+
+        if(i >= nlb.curr) [[unlikely]] { return false; }
+        else if(i == nlb.curr - 1)
         {
-            if(i->type == ::phy_engine::model::model_type::null) { nlb.num_of_null_model--; }
+            if(i->type == ::phy_engine::model::model_type::null) { --nlb.num_of_null_model; }
             nl.m_numTermls -= i->ptr->get_pins().size;
             i->~model_base();
-            nlb.curr--;
+            --nlb.curr;
         }
         else
         {
             if(i->type != ::phy_engine::model::model_type::null)
             {
-                nlb.num_of_null_model++;
+                ++nlb.num_of_null_model;
                 nl.m_numTermls -= i->ptr->get_pins().size;
                 i->clear();
             }
@@ -133,10 +135,13 @@ inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
     {
         ::phy_engine::model::model_base* model1{get_model(nl, mp1)};
         if(model1 == nullptr) [[unlikely]] { return false; }
+
         auto pw1{model1->ptr->get_pins()};
         if(n1 >= pw1.size) [[unlikely]] { return false; }
+
         ::phy_engine::model::model_base* model2{get_model(nl, mp2)};
         if(model2 == nullptr) [[unlikely]] { return false; }
+
         auto pw2{model2->ptr->get_pins()};
         if(n2 >= pw2.size) [[unlikely]] { return false; }
         // to do

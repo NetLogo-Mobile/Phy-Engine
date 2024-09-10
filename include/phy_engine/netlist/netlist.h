@@ -4,7 +4,7 @@
 
 #include <fast_io/fast_io_core.h>
 #include <fast_io/fast_io_dsal/vector.h>
-
+#include <fast_io/fast_io_dsal/deque.h>
 #include "../model/model_refs/base.h"
 
 namespace phy_engine::netlist

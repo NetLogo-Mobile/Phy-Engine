@@ -386,7 +386,7 @@ namespace phy_engine::model
 
         constexpr void clear() noexcept
         {
-            type = ::phy_engine::model::model_type{};
+            type = ::phy_engine::model::model_type::null;
             if(ptr != nullptr)
             {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
