@@ -7,6 +7,8 @@ namespace phy_engine::model
 
     enum class variant_type : ::std::uint_fast8_t
     {
+        invalid,
+
         i8,
         i16,
         i32,

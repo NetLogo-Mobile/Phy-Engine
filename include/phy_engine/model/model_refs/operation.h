@@ -198,4 +198,26 @@ namespace phy_engine::model
         else { return true; }
     }
 
+    template <::phy_engine::model::model mod>
+    inline constexpr bool set_attribute(mod&& m, ::std::size_t index, ::phy_engine::model::variant vi) noexcept
+    {
+        // no model-specific checks for convergence
+        if constexpr(::phy_engine::model::defines::has_set_attribute<mod>)
+        {
+            return set_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), index, vi);
+        }
+        else { return false; }
+    }
+
+    template <::phy_engine::model::model mod>
+    inline constexpr ::phy_engine::model::variant get_attribute(mod&& m, ::std::size_t index) noexcept
+    {
+        // no model-specific checks for convergence
+        if constexpr(::phy_engine::model::defines::has_get_attribute<mod>)
+        {
+            return get_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), index);
+        }
+        else { return {}; }
+    }
+
 }  // namespace phy_engine::model

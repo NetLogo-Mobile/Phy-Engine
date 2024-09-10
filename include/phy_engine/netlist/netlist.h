@@ -7,7 +7,7 @@
 
 #include "../model/model_refs/base.h"
 
-namespace phy_engine::model
+namespace phy_engine::netlist
 {
     namespace details
     {
@@ -16,7 +16,7 @@ namespace phy_engine::model
         {
             using Alloc = ::fast_io::native_typed_global_allocator<::phy_engine::model::model_base>;
             inline static constexpr ::std::size_t chunk_size{4096};
-            inline static constexpr ::std::size_t chunk_module_size{chunk_size / sizeof(model_base)};
+            inline static constexpr ::std::size_t chunk_module_size{chunk_size / sizeof(::phy_engine::model::model_base)};
 
             constexpr netlist_block() noexcept
             {

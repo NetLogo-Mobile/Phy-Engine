@@ -418,4 +418,16 @@ namespace phy_engine::model
         constexpr ::std::size_t get_branchs_size() const { return branchs.size(); }
     };
 
+    struct module_template
+    {
+        // inline static constexpr ::fast_io::u8string_view model_name{u8"Module Template"};
+        // inline static constexpr ::fast_io::u8string_view model_description{u8"Describtion."};
+        // inline static constexpr ::phy_engine::model::model_type type{::phy_engine::model::model_type::invalid};
+        // inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::linear};
+        // inline static constexpr ::fast_io::u8string_view identification_name{u8"Mt"};
+
+        ::fast_io::u8string_view custom_name{};
+
+    };
+
 }  // namespace phy_engine::model

@@ -561,7 +561,7 @@ private:
 
 public:
 
-	constexpr basic_string(basic_string const&) noexcept 
+	constexpr basic_string(basic_string const& other) noexcept 
 	{
 		this->copyconstructorcommon(other);
 	}

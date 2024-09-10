@@ -10,6 +10,7 @@
 
 #include "type.h"
 #include "../pin/pin_view.h"
+#include "variant.h"
 
 namespace phy_engine::model
 {
@@ -105,19 +106,36 @@ namespace phy_engine::model
         concept can_check_convergence = requires(mod&& t) {
             { check_convergence_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
         };
+
         template <typename mod>
         concept can_query_status = requires(mod&& t) {
             { query_status_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, ::std::size_t{}) } -> ::std::same_as<bool>;
+        };
+
+        template <typename mod>
+        concept has_set_attribute = requires(mod&& t) {
+            {
+                set_attribute_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, ::std::size_t{}, ::phy_engine::model::variant{})
+            } -> ::std::same_as<bool>;
+        };
+
+        template <typename mod>
+        concept has_get_attribute = requires(mod&& t) {
+            { get_attribute_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, ::std::size_t{}) } -> ::std::same_as<::phy_engine::model::variant>;
         };
     }  // namespace defines
 
     template <typename mod>
     concept model = requires(mod&& t) {
+        // constexpr static value
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::model_name)>, ::fast_io::u8string_view>;
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::type)>, ::phy_engine::model::model_type>;
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::device_type)>, ::phy_engine::model::model_device_type>;
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::identification_name)>, ::fast_io::u8string_view>;
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::pins)>, ::phy_engine::model::pin_view>;
+
+        // member value
+        requires ::std::same_as<::std::remove_cvref_t<decltype(t.custom_name)>, ::fast_io::u8string_view>;
     };
 
 }  // namespace phy_engine::model
