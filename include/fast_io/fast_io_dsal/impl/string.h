@@ -525,7 +525,7 @@ public:
 
 	constexpr basic_string &operator=(basic_string &&other) noexcept
 	{
-		if (__builtin_addressof(other) == this) [[unlikely]]
+		if (__builtin_addressof(other) == this)
 		{
 			return *this;
 		}
@@ -534,48 +534,8 @@ public:
 		return *this;
 	}
 
-private:
-	constexpr void copyconstructorcommon(basic_string const& other) noexcept
-	{
-		char_type const* b{other.cbegin()};
-		char_type const* e{other.cend()};
-		size_type const size{static_cast<size_type>(e - b)};
-		constexpr auto ssosize{::fast_io::containers::details::string_sso_size<char_type>};
-		if (size < ssosize)
-		{
-			this->imp = {ssobuffer.buffer, ssobuffer.buffer + size, ssobuffer.buffer + ::fast_io::containers::details::string_sso_sizem1<char_type>};
-			::fast_io::freestanding::non_overlapped_copy_n(b, size, ssobuffer.buffer);
-			ssobuffer.buffer[size] = 0;
-		}
-		else
-		{
-			using untyped_allocator_type = generic_allocator_adapter<allocator_type>;
-			using typed_allocator_type = typed_generic_allocator_adapter<untyped_allocator_type, chtype>;
-			auto ptr{typed_allocator_type::allocate(size + 1u)};
-			this->imp = {ptr, ptr + size, ptr + size};
-			::fast_io::freestanding::non_overlapped_copy_n(b, size, ptr);
-			ptr[size] = 0;
-		}
-
-	}
-
-public:
-
-	constexpr basic_string(basic_string const& other) noexcept 
-	{
-		this->copyconstructorcommon(other);
-	}
-
-	constexpr basic_string& operator= (basic_string const& other) noexcept 
-	{
-		if(__builtin_addressof(other) == this) [[unlikely]]
-		{ 
-			return *this; 
-		}
-		this->destroy();
-		this->copyconstructorcommon(other);
-		return *this;
-	}
+	constexpr basic_string(basic_string const &) noexcept = delete;
+	constexpr basic_string &operator=(basic_string const &) noexcept = delete;
 
 	constexpr void clear() noexcept
 	{
