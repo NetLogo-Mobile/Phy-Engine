@@ -25,7 +25,7 @@ namespace phy_engine
     {
         CKT_mode_type ckt_mode{};  // CKTmode
         ::phy_engine::environment env{};
-        ::phy_engine::model::netlist nl{};
+        ::phy_engine::netlist::netlist nl{};
 
         constexpr ::std::size_t get_component_size() noexcept {}
 
@@ -42,9 +42,9 @@ namespace phy_engine
 
         constexpr bool delete_wire() noexcept {}
 
-        constexpr bool add_netlist(::phy_engine::model::netlist const& nl_add) noexcept {}
+        constexpr bool add_netlist(::phy_engine::netlist::netlist const& nl_add) noexcept {}
 
-        constexpr ::phy_engine::model::netlist get_netlist(::std::size_t* pos_view, ::std::size_t size) noexcept {}
+        constexpr ::phy_engine::netlist::netlist get_netlist(::std::size_t* pos_view, ::std::size_t size) noexcept {}
 
         constexpr void optimize_memory() noexcept {}
 
