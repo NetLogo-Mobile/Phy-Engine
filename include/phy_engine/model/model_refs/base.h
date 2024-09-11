@@ -447,12 +447,4 @@ namespace phy_engine::model
 
 }  // namespace phy_engine::model
 
-namespace fast_io::freestanding
-{
-    template <>
-    struct is_trivially_relocatable<::phy_engine::model::model_base>
-    {
-        inline static constexpr bool value = true;
-    };
 
-}  // namespace fast_io::freestanding

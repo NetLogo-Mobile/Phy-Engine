@@ -184,7 +184,7 @@ inline constexpr model_pos add_model(netlist &nl, mod &&m) noexcept {
         node.pins.clear();
     }
 
-    inline void optimize_memory(netlist& nl) noexcept {}
+    // inline void optimize_memory(netlist& nl) noexcept {}
 
 #if 0
     inline constexpr bool prepare(netlist& nl) noexcept

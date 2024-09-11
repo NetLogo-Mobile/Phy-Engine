@@ -189,3 +189,13 @@ namespace phy_engine::netlist
     };
 
 }  // namespace phy_engine::netlist
+
+namespace fast_io::freestanding
+{
+    template <>
+    struct is_trivially_relocatable<::phy_engine::netlist::details::netlist_block>
+    {
+        inline static constexpr bool value = true;
+    };
+
+}  // namespace fast_io::freestanding
