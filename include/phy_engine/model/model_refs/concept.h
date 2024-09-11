@@ -123,19 +123,20 @@ namespace phy_engine::model
         concept has_get_attribute = requires(mod&& t) {
             { get_attribute_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, ::std::size_t{}) } -> ::std::same_as<::phy_engine::model::variant>;
         };
+
+        template <typename mod>
+        concept can_generate_pin_view = requires(mod&& t) {
+            { generate_pin_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::pin_view>;
+        };
     }  // namespace defines
 
     template <typename mod>
     concept model = requires(mod&& t) {
         // constexpr static value
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::model_name)>, ::fast_io::u8string_view>;
-        requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::type)>, ::phy_engine::model::model_type>;
+        // requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::type)>, ::phy_engine::model::model_type>;
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::device_type)>, ::phy_engine::model::model_device_type>;
         requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::identification_name)>, ::fast_io::u8string_view>;
-        requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::pins)>, ::phy_engine::model::pin_view>;
-
-        // member value
-        requires ::std::same_as<::std::remove_cvref_t<decltype(t.custom_name)>, ::fast_io::u8string_view>;
     };
 
 }  // namespace phy_engine::model

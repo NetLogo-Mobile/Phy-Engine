@@ -1,10 +1,10 @@
 ﻿#pragma once
 #include <cstddef>
 #include <type_traits>
+#include <deque>
 
 #include <fast_io/fast_io_core.h>
 #include <fast_io/fast_io_dsal/vector.h>
-#include <fast_io/fast_io_dsal/deque.h>
 #include "../model/model_refs/base.h"
 
 namespace phy_engine::netlist
@@ -181,6 +181,7 @@ namespace phy_engine::netlist
     {
         using Alloc = ::fast_io::native_global_allocator;
         ::fast_io::vector<details::netlist_block> netlist_memory{};
+        ::std::deque<::phy_engine::model::node_t> nodes{};
         ::std::size_t m_numNodes{};
         ::std::size_t m_numBranches{};
         ::std::size_t m_numTermls{};

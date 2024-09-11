@@ -38,7 +38,10 @@ namespace phy_engine::model
             virtual constexpr bool adapt_step(double& step) noexcept = 0;
             virtual constexpr bool check_convergence() noexcept = 0;
 
-            virtual constexpr ::phy_engine::model::pin_view get_pins() noexcept = 0;
+            virtual constexpr bool set_attribute(::std::size_t index, ::phy_engine::model::variant vi) noexcept = 0;
+            virtual constexpr ::phy_engine::model::variant get_attribute(::std::size_t index) noexcept = 0;
+
+            virtual constexpr ::phy_engine::model::pin_view generate_pin_view() noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_identification_name() noexcept = 0;
         };
@@ -248,7 +251,35 @@ namespace phy_engine::model
                 else { return true; }
             }
 
-            virtual constexpr ::phy_engine::model::pin_view get_pins() noexcept override { return rcvmod_type::pins; }
+            virtual constexpr bool set_attribute(::std::size_t index, ::phy_engine::model::variant vi) noexcept override
+            {
+                // no model-specific checks for convergence
+                if constexpr(::phy_engine::model::defines::has_set_attribute<mod>)
+                {
+                    return set_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index, vi);
+                }
+                else { return false; }
+            }
+
+            virtual constexpr ::phy_engine::model::variant get_attribute(::std::size_t index) noexcept override
+            {
+                // no model-specific checks for convergence
+                if constexpr(::phy_engine::model::defines::has_get_attribute<mod>)
+                {
+                    return get_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index);
+                }
+                else { return {}; }
+            }
+
+            virtual constexpr ::phy_engine::model::pin_view generate_pin_view() noexcept override
+            {
+                // no model-specific checks for convergence
+                if constexpr(::phy_engine::model::defines::can_generate_pin_view<mod>)
+                {
+                    return generate_pin_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
+                }
+                else { return {}; }
+            }
 
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept override { return rcvmod_type::model_name; }
 
@@ -266,15 +297,13 @@ namespace phy_engine::model
         ::std::size_t identification{};  // intertype independence
         ::fast_io::u8string name{};
         ::fast_io::u8string describe{};
-        ::fast_io::vector<::std::size_t> nodes{};
-        ::fast_io::vector<::std::size_t> branchs{};
 
         constexpr model_base() noexcept = default;
 
         template <::phy_engine::model::model mod>
         constexpr model_base(mod&& m) noexcept
         {
-            type = ::std::remove_cvref_t<mod>::type;
+            type = ::phy_engine::model::model_type::normal;
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
     #if __cpp_if_consteval >= 202106L
             if consteval
@@ -299,8 +328,6 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
-            nodes = other.nodes;
-            branchs = other.branchs;
         }
 
         constexpr model_base& operator= (model_base const& other) noexcept
@@ -330,8 +357,6 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
-            nodes = other.nodes;
-            branchs = other.branchs;
             return *this;
         }
 
@@ -345,8 +370,6 @@ namespace phy_engine::model
             other.identification = 0;
             name = ::std::move(other.name);
             describe = ::std::move(other.describe);
-            nodes = ::std::move(other.nodes);
-            branchs = ::std::move(other.branchs);
         }
 
         constexpr model_base operator= (model_base&& other) noexcept
@@ -378,8 +401,6 @@ namespace phy_engine::model
             other.identification = 0;
             name = ::std::move(other.name);
             describe = ::std::move(other.describe);
-            nodes = ::std::move(other.nodes);
-            branchs = ::std::move(other.branchs);
         }
 
         constexpr ~model_base() noexcept { clear(); }
@@ -409,13 +430,7 @@ namespace phy_engine::model
             identification = 0;
             name.clear();
             describe.clear();
-            nodes.clear();
-            branchs.clear();
         }
-
-        constexpr ::std::size_t get_nodes_size() const { return nodes.size(); }
-
-        constexpr ::std::size_t get_branchs_size() const { return branchs.size(); }
     };
 
     struct module_template
@@ -425,9 +440,19 @@ namespace phy_engine::model
         // inline static constexpr ::phy_engine::model::model_type type{::phy_engine::model::model_type::invalid};
         // inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::linear};
         // inline static constexpr ::fast_io::u8string_view identification_name{u8"Mt"};
+        // inline static constexpr ::phy_engine::model::pin_view pins{};
 
         ::fast_io::u8string_view custom_name{};
-
     };
 
 }  // namespace phy_engine::model
+
+namespace fast_io::freestanding
+{
+    template <>
+    struct is_trivially_relocatable<::phy_engine::model::model_base>
+    {
+        inline static constexpr bool value = true;
+    };
+
+}  // namespace fast_io::freestanding

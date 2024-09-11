@@ -220,4 +220,15 @@ namespace phy_engine::model
         else { return {}; }
     }
 
+    template <::phy_engine::model::model mod>
+    inline constexpr ::phy_engine::model::pin_view generate_pin_view(mod&& m) noexcept
+    {
+        // no model-specific checks for convergence
+        if constexpr(::phy_engine::model::defines::can_generate_pin_view<mod>)
+        {
+            return generate_pin_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+        }
+        else { return {}; }
+    }
+
 }  // namespace phy_engine::model
