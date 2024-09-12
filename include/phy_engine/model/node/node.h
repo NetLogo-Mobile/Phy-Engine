@@ -41,15 +41,19 @@ namespace phy_engine::model
         ::std::set<::phy_engine::model::pin*> pins{};
         node_type_t node_type{};
 
-        ~node_t() { clear_node(); }
+        ~node_t() { clear(); }
 
         void clear_node() noexcept
         {
-            for(auto i: pins)
-            {
-                i->nodes = nullptr; 
-            }
+            for(auto i: pins) { i->nodes = nullptr; }
             pins.clear();
+        }
+
+        void clear() noexcept
+        {
+            clear_node();
+            node_information.an.voltage = {};
+            node_type = node_type_t::artifical;
         }
     };
 }  // namespace phy_engine::model

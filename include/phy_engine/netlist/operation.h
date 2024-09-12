@@ -180,11 +180,20 @@ namespace phy_engine::netlist
         return true;
     }
 
-    inline void delete_node(netlist& nl, ::phy_engine::model::node_t& node) noexcept
+    inline constexpr bool
+        add_to_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::model_base& model, ::std::size_t n1, ::phy_engine::model::node_t& node) noexcept
     {
-        node.clear_node();
-        node.node_type = ::phy_engine::model::node_type_t::artifical;
-        node.node_information.an.voltage = 0.0;
+        auto pw1{model.ptr->generate_pin_view()};
+        if(n1 >= pw1.size) [[unlikely]] { return false; }
+
+        auto& p1{pw1.pins[n1]};
+
+        p1.nodes = __builtin_addressof(node);
+        node.pins.insert(__builtin_addressof(p1));
+
+        return true;
     }
+
+    inline void delete_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::node_t& node) noexcept { node.clear(); }
 
 }  // namespace phy_engine::netlist

@@ -403,7 +403,7 @@ namespace phy_engine::model
             describe = ::std::move(other.describe);
         }
 
-        constexpr ~model_base() noexcept { clear(); }
+        constexpr ~model_base() { clear(); }
 
         // member function
         constexpr void remove_from_node() noexcept
