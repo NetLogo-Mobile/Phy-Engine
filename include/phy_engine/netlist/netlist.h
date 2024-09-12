@@ -12,13 +12,13 @@ namespace phy_engine::netlist
     namespace details
     {
 
-        struct netlist_block
+        struct netlist_model_base_block
         {
             using Alloc = ::fast_io::native_typed_global_allocator<::phy_engine::model::model_base>;
             inline static constexpr ::std::size_t chunk_size{4096};
             inline static constexpr ::std::size_t chunk_module_size{chunk_size / sizeof(::phy_engine::model::model_base)};
 
-            constexpr netlist_block() noexcept
+            constexpr netlist_model_base_block() noexcept
             {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
     #if __cpp_if_consteval >= 202106L
@@ -38,7 +38,7 @@ namespace phy_engine::netlist
                 curr = begin;
             }
 
-            constexpr netlist_block(netlist_block const& other) noexcept
+            constexpr netlist_model_base_block(netlist_model_base_block const& other) noexcept
             {
 #if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
     #if __cpp_if_consteval >= 202106L
@@ -61,7 +61,7 @@ namespace phy_engine::netlist
                 for(::std::size_t i{}; i < size; i++) { new(begin + i)::phy_engine::model::model_base{other.begin[i]}; }
             }
 
-            constexpr netlist_block& operator= (netlist_block const& other) noexcept
+            constexpr netlist_model_base_block& operator= (netlist_model_base_block const& other) noexcept
             {
                 if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
 
@@ -74,7 +74,7 @@ namespace phy_engine::netlist
                 return *this;
             }
 
-            constexpr netlist_block(netlist_block&& other) noexcept
+            constexpr netlist_model_base_block(netlist_model_base_block&& other) noexcept
             {
                 begin = other.begin;
                 curr = other.curr;
@@ -84,7 +84,7 @@ namespace phy_engine::netlist
                 other.num_of_null_model = 0;
             }
 
-            constexpr netlist_block& operator= (netlist_block&& other) noexcept
+            constexpr netlist_model_base_block& operator= (netlist_model_base_block&& other) noexcept
             {
                 if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
 
@@ -117,7 +117,7 @@ namespace phy_engine::netlist
                 return *this;
             }
 
-            constexpr netlist_block& move_without_delete_memory(netlist_block&& other) noexcept
+            constexpr netlist_model_base_block& move_without_delete_memory(netlist_model_base_block&& other) noexcept
             {
                 if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
 
@@ -133,7 +133,7 @@ namespace phy_engine::netlist
                 return *this;
             }
 
-            constexpr ~netlist_block() noexcept
+            constexpr ~netlist_model_base_block() noexcept
             {
                 for(::phy_engine::model::model_base* b{begin}; b != curr; b++) { b->~model_base(); }
 
@@ -175,13 +175,181 @@ namespace phy_engine::netlist
             ::phy_engine::model::model_base* curr{};
             ::std::size_t num_of_null_model{};
         };
-    }  // namespace details
 
+        struct netlist_node_block
+        {
+            using Alloc = ::fast_io::native_typed_global_allocator<::phy_engine::model::node_t>;
+            inline static constexpr ::std::size_t chunk_size{4096};
+            inline static constexpr ::std::size_t chunk_module_size{chunk_size / sizeof(::phy_engine::model::node_t)};
+
+            constexpr netlist_node_block() noexcept
+            {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+    #if __cpp_if_consteval >= 202106L
+                if consteval
+    #else
+                if(__builtin_is_constant_evaluated())
+    #endif
+                {
+                    begin = new ::phy_engine::model::node_t[chunk_module_size];
+                }
+                else
+#endif
+                {
+                    begin = Alloc::allocate(chunk_module_size);
+                }
+
+                curr = begin;
+            }
+
+            constexpr netlist_node_block(netlist_node_block const& other) noexcept
+            {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+    #if __cpp_if_consteval >= 202106L
+                if consteval
+    #else
+                if(__builtin_is_constant_evaluated())
+    #endif
+                {
+                    begin = new ::phy_engine::model::node_t[chunk_module_size];
+                }
+                else
+#endif
+                {
+                    begin = Alloc::allocate(chunk_module_size);
+                }
+
+                auto const size{static_cast<::std::size_t>(other.curr - other.begin)};
+                curr = begin + size;
+                for(::std::size_t i{}; i < size; i++) { new(begin + i)::phy_engine::model::node_t{other.begin[i]}; }
+            }
+
+            constexpr netlist_node_block& operator= (netlist_node_block const& other) noexcept
+            {
+                if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
+
+                for(::phy_engine::model::node_t* b{begin}; b != curr; b++) { b->~node_t(); }
+
+                auto const size{static_cast<::std::size_t>(other.curr - other.begin)};
+                curr = begin + size;
+                for(::std::size_t i{}; i < size; i++) { new(begin + i)::phy_engine::model::node_t{other.begin[i]}; }
+                return *this;
+            }
+
+            constexpr netlist_node_block(netlist_node_block&& other) noexcept
+            {
+                begin = other.begin;
+                curr = other.curr;
+                other.begin = nullptr;
+                other.curr = nullptr;
+            }
+
+            constexpr netlist_node_block& operator= (netlist_node_block&& other) noexcept
+            {
+                if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
+
+                for(::phy_engine::model::node_t* b{begin}; b != curr; b++) { b->~node_t(); }
+
+                if(begin != nullptr)
+                {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+    #if __cpp_if_consteval >= 202106L
+                    if consteval
+    #else
+                    if(__builtin_is_constant_evaluated())
+    #endif
+                    {
+                        delete[] begin;
+                    }
+                    else
+#endif
+                    {
+                        Alloc::deallocate(begin);
+                    }
+                }
+
+                begin = other.begin;
+                curr = other.curr;
+                other.begin = nullptr;
+                other.curr = nullptr;
+                return *this;
+            }
+
+            constexpr netlist_node_block& move_without_delete_memory(netlist_node_block&& other) noexcept
+            {
+                if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
+
+                for(::phy_engine::model::node_t* b{begin}; b != curr; b++) { b->~node_t(); }
+                ::phy_engine::model::node_t* const temp_begin{begin};
+
+                begin = other.begin;
+                curr = other.curr;
+                other.begin = temp_begin;
+                other.curr = temp_begin;
+                return *this;
+            }
+
+            constexpr ~netlist_node_block() noexcept
+            {
+                for(::phy_engine::model::node_t* b{begin}; b != curr; b++) { b->~node_t(); }
+
+                if(begin != nullptr)
+                {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+    #if __cpp_if_consteval >= 202106L
+                    if consteval
+    #else
+                    if(__builtin_is_constant_evaluated())
+    #endif
+                    {
+                        delete[] begin;
+                    }
+                    else
+#endif
+                    {
+                        Alloc::deallocate(begin);
+                    }
+                }
+
+                begin = nullptr;
+                curr = nullptr;
+            }
+
+            constexpr void clear() noexcept
+            {
+                for(::phy_engine::model::node_t* b{begin}; b != curr; b++) { b->~node_t(); }
+                curr = begin;
+            }
+
+            ::phy_engine::model::node_t* begin{};
+            ::phy_engine::model::node_t* curr{};
+        };
+
+    }  // namespace details
+}  // namespace phy_engine::netlist
+
+namespace fast_io::freestanding
+{
+    template <>
+    struct is_trivially_relocatable<::phy_engine::netlist::details::netlist_model_base_block>
+    {
+        inline static constexpr bool value = true;
+    };
+
+    template <>
+    struct is_trivially_relocatable<::phy_engine::netlist::details::netlist_node_block>
+    {
+        inline static constexpr bool value = true;
+    };
+}  // namespace fast_io::freestanding
+
+namespace phy_engine::netlist
+{
     struct netlist
     {
         using Alloc = ::fast_io::native_global_allocator;
-        ::fast_io::vector<details::netlist_block> netlist_memory{};
-        ::std::deque<::phy_engine::model::node_t> nodes{};
+        ::fast_io::vector<::phy_engine::netlist::details::netlist_model_base_block> models{};
+        ::fast_io::vector<::phy_engine::netlist::details::netlist_node_block> nodes{};
         ::std::size_t m_numNodes{};
         ::std::size_t m_numBranches{};
         ::std::size_t m_numTermls{};
@@ -190,12 +358,3 @@ namespace phy_engine::netlist
 
 }  // namespace phy_engine::netlist
 
-namespace fast_io::freestanding
-{
-    template <>
-    struct is_trivially_relocatable<::phy_engine::netlist::details::netlist_block>
-    {
-        inline static constexpr bool value = true;
-    };
-
-}  // namespace fast_io::freestanding

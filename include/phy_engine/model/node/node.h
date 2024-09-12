@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <set>
+#include "../pin/pin.h"
 
 namespace phy_engine::model
 {
@@ -34,12 +35,21 @@ namespace phy_engine::model
         digital_node_t dn;
     };
 
-    struct pin;
-
     struct node_t
     {
         node_information_union node_information{};
-        ::std::set<pin*> pins{};
+        ::std::set<::phy_engine::model::pin*> pins{};
         node_type_t node_type{};
+
+        ~node_t() { clear_node(); }
+
+        void clear_node() noexcept
+        {
+            for(auto i: pins)
+            {
+                i->nodes = nullptr; 
+            }
+            pins.clear();
+        }
     };
 }  // namespace phy_engine::model

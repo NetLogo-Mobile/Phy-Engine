@@ -405,8 +405,27 @@ namespace phy_engine::model
 
         constexpr ~model_base() noexcept { clear(); }
 
+        // member function
+        constexpr void remove_from_node() noexcept
+        {
+            if(type == ::phy_engine::model::model_type::normal) [[likely]]
+            {
+                auto pin_view{ptr->generate_pin_view()};
+                for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
+                {
+                    auto node{curr->nodes};
+                    if(node) [[likely]]
+                    {
+                        node->pins.erase(curr);
+                        node = nullptr;
+                    }
+                }
+            }
+        }
+
         constexpr void clear() noexcept
         {
+            remove_from_node();
             type = ::phy_engine::model::model_type::null;
             if(ptr != nullptr)
             {
@@ -437,14 +456,10 @@ namespace phy_engine::model
     {
         // inline static constexpr ::fast_io::u8string_view model_name{u8"Module Template"};
         // inline static constexpr ::fast_io::u8string_view model_description{u8"Describtion."};
-        // inline static constexpr ::phy_engine::model::model_type type{::phy_engine::model::model_type::invalid};
         // inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::linear};
         // inline static constexpr ::fast_io::u8string_view identification_name{u8"Mt"};
         // inline static constexpr ::phy_engine::model::pin_view pins{};
-
-        ::fast_io::u8string_view custom_name{};
     };
 
 }  // namespace phy_engine::model
-
 

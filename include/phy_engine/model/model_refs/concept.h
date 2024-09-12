@@ -10,6 +10,7 @@
 
 #include "type.h"
 #include "../pin/pin_view.h"
+#include "../node/node.h"
 #include "variant.h"
 
 namespace phy_engine::model
