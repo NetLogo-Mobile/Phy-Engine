@@ -328,6 +328,13 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
+
+            auto pin_view{ptr->generate_pin_view()};
+            for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
+            {
+                auto& node{curr->nodes};
+                node = nullptr;
+            }
         }
 
         constexpr model_base& operator= (model_base const& other) noexcept
@@ -357,6 +364,56 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
+
+            auto pin_view{ptr->generate_pin_view()};
+            for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
+            {
+                auto& node{curr->nodes};
+                node = nullptr;
+            }
+
+            return *this;
+        }
+
+        constexpr model_base& copy_with_node(model_base const& other) noexcept
+        {
+            if(__builtin_addressof(other) == this) { return *this; }
+            type = other.type;
+            if(ptr != nullptr)
+            {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+    #if __cpp_if_consteval >= 202106L
+                if consteval
+    #else
+                if(__builtin_is_constant_evaluated())
+    #endif
+                {
+                    delete ptr;
+                }
+                else
+#endif
+                {
+                    ptr->~model_base_impl();  // nullptr will crash
+                    Alloc::deallocate(ptr);
+                }
+            }
+            if(other.ptr) [[likely]] { ptr = other.ptr->clone(); }
+            else { ptr = nullptr; }
+            identification = other.identification;
+            name = other.name;
+            describe = other.describe;
+
+            if(type == ::phy_engine::model::model_type::normal) [[likely]]
+            {
+                auto this_pin_view{ptr->generate_pin_view()};
+
+                for(auto this_curr{this_pin_view.pins}; this_curr != this_pin_view.pins + this_pin_view.size; ++this_curr)
+                {
+                    auto& this_node{this_curr->nodes};
+                    if(this_node) [[likely]] { this_node->pins.insert(this_curr); }
+                }
+            }
+
             return *this;
         }
 
@@ -413,7 +470,7 @@ namespace phy_engine::model
                 auto pin_view{ptr->generate_pin_view()};
                 for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
                 {
-                    auto node{curr->nodes};
+                    auto& node{curr->nodes};
                     if(node) [[likely]]
                     {
                         node->pins.erase(curr);

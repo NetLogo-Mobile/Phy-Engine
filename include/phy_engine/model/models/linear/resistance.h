@@ -18,7 +18,7 @@ namespace phy_engine::model
 
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance&) noexcept
     { 
-        // to do
+        // add to MNA
         return true; 
     }
 

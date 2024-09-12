@@ -41,7 +41,27 @@ namespace phy_engine::model
         ::std::set<::phy_engine::model::pin*> pins{};
         node_type_t node_type{};
 
+        node_t() noexcept = default;
+
+        node_t(node_t const& others) noexcept : node_information{others.node_information}, node_type{others.node_type} {}
+
+        node_t& operator= (node_t const& others) noexcept
+        {
+            node_information = others.node_information;
+            pins.clear();
+            node_type = others.node_type;
+        }
+
         ~node_t() { clear(); }
+
+        constexpr node_t& copy_with_model(node_t const& others) noexcept
+        {
+            node_information = others.node_information;
+            pins = others.pins;
+            node_type = others.node_type;
+
+            return *this;
+        }
 
         void clear_node() noexcept
         {

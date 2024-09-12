@@ -180,6 +180,8 @@ namespace phy_engine::netlist
         return true;
     }
 
+    /* for adl */
+
     inline constexpr bool
         add_to_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::model_base& model, ::std::size_t n1, ::phy_engine::model::node_t& node) noexcept
     {
@@ -196,4 +198,26 @@ namespace phy_engine::netlist
 
     inline void delete_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::node_t& node) noexcept { node.clear(); }
 
+    inline constexpr void merge_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::node_t& node, ::phy_engine::model::node_t& other_node) noexcept
+    {
+        for(auto i: other_node.pins)
+        {
+            node.pins.insert(i);
+            i->nodes = __builtin_addressof(node);
+        }
+        other_node.clear_node();
+    }
+
+#if 0
+    inline constexpr void add_netlist(netlist& nl, netlist const& other_nl) noexcept
+    {
+        for(auto const& i: other_nl.models)
+        {
+            for(auto c{i.begin}; c != i.curr; ++c)
+            {
+                // to do
+            }
+        }
+    }
+#endif
 }  // namespace phy_engine::netlist

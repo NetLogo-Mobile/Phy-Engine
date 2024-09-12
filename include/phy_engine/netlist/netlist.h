@@ -350,10 +350,66 @@ namespace phy_engine::netlist
         using Alloc = ::fast_io::native_global_allocator;
         ::fast_io::vector<::phy_engine::netlist::details::netlist_model_base_block> models{};
         ::fast_io::vector<::phy_engine::netlist::details::netlist_node_block> nodes{};
-        ::std::size_t m_numNodes{};
-        ::std::size_t m_numBranches{};
+        //::std::size_t m_numNodes{};
+        //::std::size_t m_numBranches{};
         ::std::size_t m_numTermls{};
-        bool m_hasGround{};
+        // bool m_hasGround{};
+        constexpr netlist() noexcept = default;
+#if 0
+        constexpr netlist(netlist const& other) noexcept : m_numTermls{other.m_numTermls} 
+        {
+            for(auto& i: other.models) 
+            {
+                for(auto c{i.begin}; c != i.curr; ++c) 
+                { 
+                    ::phy_engine::model::model_base copy{};
+                    copy.copy_with_node(*c);
+                    // to do
+                    using rcvmod_type = ::std::remove_cvref_t<mod>;
+                    auto const pin_view{generate_pin_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m))};
+                    if(nl.models.empty()) [[unlikely]]
+                    {
+                        auto& nlb{nl.models.emplace_back()};
+                        new(nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
+                        nl.m_numTermls += pin_view.size;
+                        return {
+                            nlb.curr++,
+                            {0, 0}
+                        };
+                    }
+                    else
+                    {
+                        auto& nlb{nl.models.back_unchecked()};
+                        if(nlb.curr == nlb.begin + nlb.chunk_module_size) [[unlikely]]
+                        {
+                            auto& new_nlb{nl.models.emplace_back()};
+                            new(new_nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
+                            nl.m_numTermls += pin_view.size;
+                            return {
+                                new_nlb.curr++,
+                                {0, nl.models.size() - 1}
+                            };
+                        }
+                        else
+                        {
+                            new(nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
+                            nl.m_numTermls += pin_view.size;
+                            add_model_retstr return_val{
+                                nlb.curr,
+                                {static_cast<::std::size_t>(nlb.curr - nlb.begin), nl.models.size() - 1}
+                            };
+                            ++nlb.curr;
+                            return return_val;
+                        }
+                    }
+
+                }
+            }
+        }
+#else
+        constexpr netlist(netlist const& other) noexcept = delete;
+#endif
+        constexpr netlist& operator= (netlist const& other) noexcept = delete;  // to do
     };
 
 }  // namespace phy_engine::netlist
