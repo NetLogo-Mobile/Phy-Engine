@@ -4,7 +4,24 @@
 
 int main()
 {
+    // copy
+    {
+        ::phy_engine::netlist::netlist nl{};
+        ::phy_engine::model::resistance r{.r = 0.5};
 
+        auto [model_p, model_pos]{add_model(nl, r)};
+        auto [model_p2, model_pos2]{add_model(nl, r)};
+        auto& node{create_node(nl)};
+        add_to_node(nl, *model_p, 0, node);
+        add_to_node(nl, model_pos2, 0, node);
+        auto& node2{create_node(nl)};
+        add_to_node(nl, model_pos, 1, node2);
+        add_to_node(nl, *model_p2, 1, node2);
+
+        // copy
+        ::phy_engine::netlist::netlist nl2{nl};
+    }
+    // operator 1
     {
         ::phy_engine::netlist::netlist nl{};
         ::phy_engine::model::resistance r{.r = 0.5};
@@ -21,7 +38,7 @@ int main()
         delete_node(nl, node);
         delete_node(nl, node2);
     }
-
+    // operator 2
     {
         ::phy_engine::netlist::netlist nl{};
         ::phy_engine::model::resistance r{.r = 0.5};

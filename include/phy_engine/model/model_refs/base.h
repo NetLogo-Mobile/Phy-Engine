@@ -375,6 +375,39 @@ namespace phy_engine::model
             return *this;
         }
 
+        // only copy node ptr
+        constexpr model_base& copy_with_node_ptr(model_base const& other) noexcept
+        {
+            if(__builtin_addressof(other) == this) { return *this; }
+            type = other.type;
+            if(ptr != nullptr)
+            {
+#if (__cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L) && __cpp_constexpr_dynamic_alloc >= 201907L
+    #if __cpp_if_consteval >= 202106L
+                if consteval
+    #else
+                if(__builtin_is_constant_evaluated())
+    #endif
+                {
+                    delete ptr;
+                }
+                else
+#endif
+                {
+                    ptr->~model_base_impl();  // nullptr will crash
+                    Alloc::deallocate(ptr);
+                }
+            }
+            if(other.ptr) [[likely]] { ptr = other.ptr->clone(); }
+            else { ptr = nullptr; }
+            identification = other.identification;
+            name = other.name;
+            describe = other.describe;
+
+            return *this;
+        }
+
+        // add the new model to the node table
         constexpr model_base& copy_with_node(model_base const& other) noexcept
         {
             if(__builtin_addressof(other) == this) { return *this; }
@@ -403,6 +436,7 @@ namespace phy_engine::model
             name = other.name;
             describe = other.describe;
 
+            // add the new model to the node table
             if(type == ::phy_engine::model::model_type::normal) [[likely]]
             {
                 auto this_pin_view{ptr->generate_pin_view()};

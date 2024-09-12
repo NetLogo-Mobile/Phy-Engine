@@ -198,7 +198,7 @@ namespace phy_engine::netlist
 
     inline void delete_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::node_t& node) noexcept { node.clear(); }
 
-    inline constexpr void merge_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::node_t& node, ::phy_engine::model::node_t& other_node) noexcept
+    inline void merge_node([[maybe_unused]] netlist const& nl, ::phy_engine::model::node_t& node, ::phy_engine::model::node_t& other_node) noexcept
     {
         for(auto i: other_node.pins)
         {

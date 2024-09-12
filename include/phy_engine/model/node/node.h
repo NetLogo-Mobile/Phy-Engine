@@ -43,8 +43,10 @@ namespace phy_engine::model
 
         node_t() noexcept = default;
 
+        // copy and disconnect form the model 
         node_t(node_t const& others) noexcept : node_information{others.node_information}, node_type{others.node_type} {}
 
+        // copy and disconnect form the model 
         node_t& operator= (node_t const& others) noexcept
         {
             node_information = others.node_information;
@@ -54,7 +56,7 @@ namespace phy_engine::model
 
         ~node_t() { clear(); }
 
-        constexpr node_t& copy_with_model(node_t const& others) noexcept
+        node_t& copy_with_model(node_t const& others) noexcept
         {
             node_information = others.node_information;
             pins = others.pins;
