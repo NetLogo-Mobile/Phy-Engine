@@ -23,12 +23,13 @@ namespace phy_engine::model
         digital_node_statement_t state{};
     };
 
+    #if 0
     enum node_type_t : ::std::uint_fast8_t
     {
         digital = 0,
         artifical = 1,
     };
-
+    #endif
     union node_information_union
     {
         digital_node_t dn;
@@ -40,19 +41,17 @@ namespace phy_engine::model
         node_information_union node_information{};
         ::std::set<::phy_engine::model::pin*> pins{};
         ::std::size_t num_of_artifical_node{};
-        node_type_t node_type{};
 
         node_t() noexcept = default;
 
         // copy and disconnect form the model 
-        node_t(node_t const& others) noexcept : node_information{others.node_information}, node_type{others.node_type} {}
+        node_t(node_t const& others) noexcept : node_information{others.node_information} {}
 
         // copy and disconnect form the model 
         node_t& operator= (node_t const& others) noexcept
         {
             node_information = others.node_information;
             pins.clear();
-            node_type = others.node_type;
         }
 
         ~node_t() { clear(); }
@@ -62,7 +61,6 @@ namespace phy_engine::model
             node_information = others.node_information;
             pins = others.pins;
             num_of_artifical_node = others.num_of_artifical_node;
-            node_type = others.node_type;
 
             return *this;
         }
@@ -78,7 +76,6 @@ namespace phy_engine::model
         {
             clear_node();
             node_information.dn.state = {};
-            node_type = node_type_t::digital;
         }
     };
 }  // namespace phy_engine::model
