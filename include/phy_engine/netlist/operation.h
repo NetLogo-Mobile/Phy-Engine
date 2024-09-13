@@ -177,6 +177,10 @@ namespace phy_engine::netlist
         p1.nodes = __builtin_addressof(node);
         node.pins.insert(__builtin_addressof(p1));
 
+        auto const device_type{model1->ptr->get_device_type()};
+
+        if(device_type != ::phy_engine::model::model_device_type::digital) { ++node.num_of_artifical_node; }
+
         return true;
     }
 
@@ -192,6 +196,52 @@ namespace phy_engine::netlist
 
         p1.nodes = __builtin_addressof(node);
         node.pins.insert(__builtin_addressof(p1));
+
+        auto const device_type{model.ptr->get_device_type()};
+
+        if(device_type != ::phy_engine::model::model_device_type::digital) { ++node.num_of_artifical_node; }
+
+        return true;
+    }
+
+    inline constexpr bool remove_from_node(netlist& nl, model_pos mp1, ::std::size_t n1, ::phy_engine::model::node_t& node) noexcept
+    {
+        ::phy_engine::model::model_base* model1{get_model(nl, mp1)};
+        if(model1 == nullptr) [[unlikely]] { return false; }
+
+        auto pw1{model1->ptr->generate_pin_view()};
+        if(n1 >= pw1.size) [[unlikely]] { return false; }
+
+        auto& p1{pw1.pins[n1]};
+
+        p1.nodes = nullptr;
+        node.pins.erase(__builtin_addressof(p1));
+
+        auto const device_type{model1->ptr->get_device_type()};
+
+        if(device_type != ::phy_engine::model::model_device_type::digital) { --node.num_of_artifical_node; }
+
+        return true;
+    }
+
+    /* for adl */
+
+    inline constexpr bool remove_from_node([[maybe_unused]] netlist const& nl,
+                                           ::phy_engine::model::model_base& model,
+                                           ::std::size_t n1,
+                                           ::phy_engine::model::node_t& node) noexcept
+    {
+        auto pw1{model.ptr->generate_pin_view()};
+        if(n1 >= pw1.size) [[unlikely]] { return false; }
+
+        auto& p1{pw1.pins[n1]};
+
+        p1.nodes = nullptr;
+        node.pins.erase(__builtin_addressof(p1));
+
+        auto const device_type{model.ptr->get_device_type()};
+
+        if(device_type != ::phy_engine::model::model_device_type::digital) { --node.num_of_artifical_node; }
 
         return true;
     }

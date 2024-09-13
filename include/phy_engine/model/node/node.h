@@ -25,20 +25,21 @@ namespace phy_engine::model
 
     enum node_type_t : ::std::uint_fast8_t
     {
-        artifical = 0,
-        digital = 1,
+        digital = 0,
+        artifical = 1,
     };
 
     union node_information_union
     {
-        artifical_node_t an;
         digital_node_t dn;
+        artifical_node_t an;
     };
 
     struct node_t
     {
         node_information_union node_information{};
         ::std::set<::phy_engine::model::pin*> pins{};
+        ::std::size_t num_of_artifical_node{};
         node_type_t node_type{};
 
         node_t() noexcept = default;
@@ -60,6 +61,7 @@ namespace phy_engine::model
         {
             node_information = others.node_information;
             pins = others.pins;
+            num_of_artifical_node = others.num_of_artifical_node;
             node_type = others.node_type;
 
             return *this;
@@ -69,13 +71,14 @@ namespace phy_engine::model
         {
             for(auto i: pins) { i->nodes = nullptr; }
             pins.clear();
+            num_of_artifical_node = 0;
         }
 
         void clear() noexcept
         {
             clear_node();
-            node_information.an.voltage = {};
-            node_type = node_type_t::artifical;
+            node_information.dn.state = {};
+            node_type = node_type_t::digital;
         }
     };
 }  // namespace phy_engine::model

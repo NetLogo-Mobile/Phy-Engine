@@ -44,6 +44,7 @@ namespace phy_engine::model
             virtual constexpr ::phy_engine::model::pin_view generate_pin_view() noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_identification_name() noexcept = 0;
+            virtual constexpr ::phy_engine::model::model_device_type get_device_type() noexcept = 0;
         };
 
         template <::phy_engine::model::model mod>
@@ -284,6 +285,8 @@ namespace phy_engine::model
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept override { return rcvmod_type::model_name; }
 
             virtual constexpr ::fast_io::u8string_view get_identification_name() noexcept override { return rcvmod_type::identification_name; }
+
+            virtual constexpr ::phy_engine::model::model_device_type get_device_type() noexcept override { return rcvmod_type::device_type; }
         };
     }  // namespace details
 
@@ -439,12 +442,24 @@ namespace phy_engine::model
             // add the new model to the node table
             if(type == ::phy_engine::model::model_type::normal) [[likely]]
             {
+                auto const this_device_type{ptr->get_device_type()};
+                auto const this_device_type_is_artifical{this_device_type != ::phy_engine::model::model_device_type::digital};
+
                 auto this_pin_view{ptr->generate_pin_view()};
 
                 for(auto this_curr{this_pin_view.pins}; this_curr != this_pin_view.pins + this_pin_view.size; ++this_curr)
                 {
-                    auto& this_node{this_curr->nodes};
-                    if(this_node) [[likely]] { this_node->pins.insert(this_curr); }
+                    auto this_node{this_curr->nodes};
+                    if(this_node)
+                    {
+                        this_node->pins.insert(this_curr);
+
+                        if(this_device_type_is_artifical)
+                        {
+                            // this_node->num_of_artifical_node != 0
+                            ++this_node->num_of_artifical_node;
+                        }
+                    }
                 }
             }
 
@@ -499,6 +514,9 @@ namespace phy_engine::model
         // member function
         constexpr void remove_from_node() noexcept
         {
+            auto const this_device_type{ptr->get_device_type()};
+            auto const this_device_type_is_artifical{this_device_type != ::phy_engine::model::model_device_type::digital};
+
             if(type == ::phy_engine::model::model_type::normal) [[likely]]
             {
                 auto pin_view{ptr->generate_pin_view()};
@@ -508,6 +526,7 @@ namespace phy_engine::model
                     if(node) [[likely]]
                     {
                         node->pins.erase(curr);
+                        if(this_device_type_is_artifical) { --node->num_of_artifical_node; }
                         node = nullptr;
                     }
                 }
