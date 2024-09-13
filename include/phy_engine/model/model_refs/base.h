@@ -40,6 +40,7 @@ namespace phy_engine::model
 
             virtual constexpr bool set_attribute(::std::size_t index, ::phy_engine::model::variant vi) noexcept = 0;
             virtual constexpr ::phy_engine::model::variant get_attribute(::std::size_t index) noexcept = 0;
+            virtual constexpr ::fast_io::u8string_view get_attribute_name(::std::size_t index) noexcept = 0;
 
             virtual constexpr ::phy_engine::model::pin_view generate_pin_view() noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept = 0;
@@ -268,6 +269,16 @@ namespace phy_engine::model
                 if constexpr(::phy_engine::model::defines::has_get_attribute<mod>)
                 {
                     return get_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index);
+                }
+                else { return {}; }
+            }
+
+            virtual constexpr ::fast_io::u8string_view get_attribute_name(::std::size_t index) noexcept override
+            {
+                // no model-specific checks for convergence
+                if constexpr(::phy_engine::model::defines::has_get_attribute_name<mod>)
+                {
+                    return get_attribute_name_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index);
                 }
                 else { return {}; }
             }

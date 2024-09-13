@@ -212,7 +212,6 @@ namespace phy_engine::model
     template <::phy_engine::model::model mod>
     inline constexpr ::phy_engine::model::variant get_attribute(mod&& m, ::std::size_t index) noexcept
     {
-        // no model-specific checks for convergence
         if constexpr(::phy_engine::model::defines::has_get_attribute<mod>)
         {
             return get_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), index);
@@ -221,9 +220,18 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
+    inline constexpr ::fast_io::u8string_view get_attribute_name(mod&& m, ::std::size_t index) noexcept
+    {
+        if constexpr(::phy_engine::model::defines::has_get_attribute_name<mod>)
+        {
+            return get_attribute_name_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), index);
+        }
+        else { return {}; }
+    }
+
+    template <::phy_engine::model::model mod>
     inline constexpr ::phy_engine::model::pin_view generate_pin_view(mod&& m) noexcept
     {
-        // no model-specific checks for convergence
         if constexpr(::phy_engine::model::defines::can_generate_pin_view<mod>)
         {
             return generate_pin_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));

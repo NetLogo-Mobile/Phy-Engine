@@ -126,6 +126,14 @@ namespace phy_engine::model
         };
 
         template <typename mod>
+        concept has_get_attribute_name = requires(mod&& t) {
+            { get_attribute_name_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, ::std::size_t{}) } -> ::std::same_as<::fast_io::u8string_view>;
+        };
+
+        template <typename mod>
+        concept has_attribute = has_set_attribute<mod> && has_get_attribute_name<mod> && has_get_attribute_name<mod>;
+
+        template <typename mod>
         concept can_generate_pin_view = requires(mod&& t) {
             { generate_pin_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::pin_view>;
         };
