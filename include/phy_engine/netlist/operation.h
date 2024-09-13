@@ -208,16 +208,83 @@ namespace phy_engine::netlist
         other_node.clear_node();
     }
 
-#if 0
-    inline constexpr void add_netlist(netlist& nl, netlist const& other_nl) noexcept
+    inline void add_netlist(netlist& nl, netlist const& other_nl) noexcept
     {
-        for(auto const& i: other_nl.models)
+        ::std::map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
+
+        for(auto& i: other_nl.nodes)
         {
             for(auto c{i.begin}; c != i.curr; ++c)
             {
-                // to do
+                if(nl.nodes.empty()) [[unlikely]]
+                {
+                    auto& nlb{nl.nodes.emplace_back()};
+                    // copy and disconnect form the model
+                    new(nlb.curr)::phy_engine::model::node_t{*c};
+                    node_map[c] = nlb.curr;
+                    ++nlb.curr;
+                }
+                else
+                {
+                    auto& nlb{nl.nodes.back_unchecked()};
+                    if(nlb.curr == nlb.begin + nlb.chunk_module_size) [[unlikely]]
+                    {
+                        auto& new_nlb{nl.nodes.emplace_back()};
+                        // copy and disconnect form the model
+                        new(new_nlb.curr)::phy_engine::model::node_t{*c};
+                        node_map[c] = new_nlb.curr;
+                        ++new_nlb.curr;
+                    }
+                    else
+                    {
+                        // copy and disconnect form the model
+                        new(nlb.curr)::phy_engine::model::node_t{*c};
+                        node_map[c] = nlb.curr;
+                        ++nlb.curr;
+                    }
+                }
+            }
+        }
+
+        for(auto& i: other_nl.models)
+        {
+            for(auto c{i.begin}; c != i.curr; ++c)
+            {
+                ::phy_engine::model::model_base copy{};
+                // copy with node ptr, and can use the mapping table to search for new node
+                copy.copy_with_node_ptr(*c);
+
+                auto const copy_pin_view{copy.ptr->generate_pin_view()};
+
+                if(nl.models.empty()) [[unlikely]]
+                {
+                    auto& nlb{nl.models.emplace_back()};
+                    new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)};
+                }
+                else
+                {
+                    auto& nlb{nl.models.back_unchecked()};
+                    if(nlb.curr == nlb.begin + nlb.chunk_module_size) [[unlikely]]
+                    {
+                        auto& new_nlb{nl.models.emplace_back()};
+                        new(new_nlb.curr++)::phy_engine::model::model_base{::std::move(copy)};
+                    }
+                    else { new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)}; }
+                }
+
+                for(auto c{copy_pin_view.pins}; c != copy_pin_view.pins + copy_pin_view.size; ++c)
+                {
+                    auto& this_node{c->nodes};
+                    if(this_node) [[likely]]
+                    {
+                        auto i{node_map.find(this_node)};
+                        // i always != node_map.end()
+                        this_node = i->second;
+                        i->second->pins.insert(c);
+                    }
+                }
             }
         }
     }
-#endif
+
 }  // namespace phy_engine::netlist
