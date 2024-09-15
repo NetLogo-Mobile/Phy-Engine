@@ -179,7 +179,7 @@ namespace phy_engine::netlist
 
         auto const device_type{model1->ptr->get_device_type()};
 
-        if(device_type != ::phy_engine::model::model_device_type::digital) { ++node.num_of_artifical_node; }
+        if(device_type != ::phy_engine::model::model_device_type::digital) { ++node.num_of_analog_node; }
 
         return true;
     }
@@ -199,7 +199,7 @@ namespace phy_engine::netlist
 
         auto const device_type{model.ptr->get_device_type()};
 
-        if(device_type != ::phy_engine::model::model_device_type::digital) { ++node.num_of_artifical_node; }
+        if(device_type != ::phy_engine::model::model_device_type::digital) { ++node.num_of_analog_node; }
 
         return true;
     }
@@ -219,7 +219,7 @@ namespace phy_engine::netlist
 
         auto const device_type{model1->ptr->get_device_type()};
 
-        if(device_type != ::phy_engine::model::model_device_type::digital) { --node.num_of_artifical_node; }
+        if(device_type != ::phy_engine::model::model_device_type::digital) { --node.num_of_analog_node; }
 
         return true;
     }
@@ -241,7 +241,7 @@ namespace phy_engine::netlist
 
         auto const device_type{model.ptr->get_device_type()};
 
-        if(device_type != ::phy_engine::model::model_device_type::digital) { --node.num_of_artifical_node; }
+        if(device_type != ::phy_engine::model::model_device_type::digital) { --node.num_of_analog_node; }
 
         return true;
     }

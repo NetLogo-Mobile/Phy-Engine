@@ -174,6 +174,7 @@ namespace phy_engine::netlist
 
             ::phy_engine::model::model_base* begin{};
             ::phy_engine::model::model_base* curr{};
+            // ::fast_io::vector<::phy_engine::model::model_base*> null_model{};
             ::std::size_t num_of_null_model{};
         };
 

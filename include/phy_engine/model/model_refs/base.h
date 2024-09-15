@@ -311,6 +311,7 @@ namespace phy_engine::model
         ::std::size_t identification{};  // intertype independence
         ::fast_io::u8string name{};
         ::fast_io::u8string describe{};
+        bool has_init{};
 
         constexpr model_base() noexcept = default;
 
@@ -342,6 +343,7 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
+            has_init = other.has_init;
 
             auto pin_view{ptr->generate_pin_view()};
             for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
@@ -378,6 +380,7 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
+            has_init = other.has_init;
 
             auto pin_view{ptr->generate_pin_view()};
             for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
@@ -417,6 +420,7 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
+            has_init = other.has_init;
 
             return *this;
         }
@@ -449,12 +453,13 @@ namespace phy_engine::model
             identification = other.identification;
             name = other.name;
             describe = other.describe;
+            has_init = other.has_init;
 
             // add the new model to the node table
             if(type == ::phy_engine::model::model_type::normal) [[likely]]
             {
                 auto const this_device_type{ptr->get_device_type()};
-                auto const this_device_type_is_artifical{this_device_type != ::phy_engine::model::model_device_type::digital};
+                auto const this_device_type_is_analog{this_device_type != ::phy_engine::model::model_device_type::digital};
 
                 auto this_pin_view{ptr->generate_pin_view()};
 
@@ -465,10 +470,10 @@ namespace phy_engine::model
                     {
                         this_node->pins.insert(this_curr);
 
-                        if(this_device_type_is_artifical)
+                        if(this_device_type_is_analog)
                         {
-                            // this_node->num_of_artifical_node != 0
-                            ++this_node->num_of_artifical_node;
+                            // this_node->num_of_analog_node != 0
+                            ++this_node->num_of_analog_node;
                         }
                     }
                 }
@@ -487,6 +492,8 @@ namespace phy_engine::model
             other.identification = 0;
             name = ::std::move(other.name);
             describe = ::std::move(other.describe);
+            has_init = other.has_init;
+            other.has_init = false;
         }
 
         constexpr model_base operator= (model_base&& other) noexcept
@@ -518,6 +525,8 @@ namespace phy_engine::model
             other.identification = 0;
             name = ::std::move(other.name);
             describe = ::std::move(other.describe);
+            has_init = other.has_init;
+            other.has_init = false;
         }
 
         constexpr ~model_base() { clear(); }
@@ -526,7 +535,7 @@ namespace phy_engine::model
         constexpr void remove_from_node() noexcept
         {
             auto const this_device_type{ptr->get_device_type()};
-            auto const this_device_type_is_artifical{this_device_type != ::phy_engine::model::model_device_type::digital};
+            auto const this_device_type_is_analog{this_device_type != ::phy_engine::model::model_device_type::digital};
 
             if(type == ::phy_engine::model::model_type::normal) [[likely]]
             {
@@ -537,7 +546,7 @@ namespace phy_engine::model
                     if(node) [[likely]]
                     {
                         node->pins.erase(curr);
-                        if(this_device_type_is_artifical) { --node->num_of_artifical_node; }
+                        if(this_device_type_is_analog) { --node->num_of_analog_node; }
                         node = nullptr;
                     }
                 }
@@ -570,6 +579,7 @@ namespace phy_engine::model
             identification = 0;
             name.clear();
             describe.clear();
+            has_init = false;
         }
     };
 

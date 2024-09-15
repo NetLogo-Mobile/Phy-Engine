@@ -5,7 +5,7 @@
 
 namespace phy_engine::model
 {
-    struct artifical_node_t
+    struct analog_node_t
     {
         double voltage{};
     };
@@ -27,20 +27,20 @@ namespace phy_engine::model
     enum node_type_t : ::std::uint_fast8_t
     {
         digital = 0,
-        artifical = 1,
+        analog = 1,
     };
     #endif
     union node_information_union
     {
         digital_node_t dn;
-        artifical_node_t an;
+        analog_node_t an;
     };
 
     struct node_t
     {
         node_information_union node_information{};
         ::std::set<::phy_engine::model::pin*> pins{};
-        ::std::size_t num_of_artifical_node{};
+        ::std::size_t num_of_analog_node{};
 
         node_t() noexcept = default;
 
@@ -60,7 +60,7 @@ namespace phy_engine::model
         {
             node_information = others.node_information;
             pins = others.pins;
-            num_of_artifical_node = others.num_of_artifical_node;
+            num_of_analog_node = others.num_of_analog_node;
 
             return *this;
         }
@@ -69,7 +69,7 @@ namespace phy_engine::model
         {
             for(auto i: pins) { i->nodes = nullptr; }
             pins.clear();
-            num_of_artifical_node = 0;
+            num_of_analog_node = 0;
         }
 
         void clear() noexcept

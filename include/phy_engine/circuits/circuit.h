@@ -17,18 +17,26 @@ namespace phy_engine
         TrOP,
     };
 
-    struct
-#if __has_cpp_attribute(__gnu__::__packed__)
-        [[__gnu__::__packed__]]
-#endif
-        circult
+    struct circult
     {
         CKT_mode_type ckt_mode{};  // CKTmode
         ::phy_engine::environment env{};
         ::phy_engine::netlist::netlist nl{};
 
-        constexpr void prepare() noexcept {
+        constexpr void prepare() noexcept
+        {
+            for(auto& i: nl.models)
+            {
+                for(auto c{i.begin}; c != i.curr; ++c)
+                {
+                    if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
+                    c->ptr->init_model();
+                    c->has_init = true;
+                    
+                }
+            }
+            auto const num_terml{nl.m_numTermls};
         }
     };
 
