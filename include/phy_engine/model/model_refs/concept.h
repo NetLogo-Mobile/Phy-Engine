@@ -12,6 +12,7 @@
 #include "../pin/pin_view.h"
 #include "../node/node.h"
 #include "variant.h"
+#include "../../circuits/MNA/mna.h"
 
 namespace phy_engine::model
 {
@@ -59,28 +60,28 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept can_iterate_ac = requires(mod&& t) {
-            { iterate_ac_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, double{}) } -> ::std::same_as<bool>;
+        concept can_iterate_ac = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
+            { iterate_ac_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna, double{}) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
-        concept can_iterate_dc = requires(mod&& t) {
-            { iterate_dc_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        concept can_iterate_dc = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
+            { iterate_dc_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
-        concept can_iterate_tr = requires(mod&& t) {
-            { iterate_tr_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, double{}) } -> ::std::same_as<bool>;
+        concept can_iterate_tr = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
+            { iterate_tr_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna, double{}) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
-        concept can_iterate_op = requires(mod&& t) {
-            { iterate_op_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        concept can_iterate_op = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
+            { iterate_op_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
-        concept can_iterate_trop = requires(mod&& t) {
-            { iterate_trop_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        concept can_iterate_trop = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
+            { iterate_trop_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
@@ -137,6 +138,10 @@ namespace phy_engine::model
         concept can_generate_pin_view = requires(mod&& t) {
             { generate_pin_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::pin_view>;
         };
+
+        template <typename mod>
+        concept has_branch_size = ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::branch_size)>, ::std::size_t>;
+
     }  // namespace defines
 
     template <typename mod>

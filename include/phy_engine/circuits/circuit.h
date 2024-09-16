@@ -4,6 +4,8 @@
 
 #include "environment/environment.h"
 #include "../netlist/netlist.h"
+#include "MNA/mna.h"
+#include "analyze.h"
 
 namespace phy_engine
 {
@@ -23,8 +25,12 @@ namespace phy_engine
         ::phy_engine::environment env{};
         ::phy_engine::netlist::netlist nl{};
 
-        constexpr void prepare() noexcept
+        ::phy_engine::MNA::MNA mna{};
+
+        constexpr void prepare(::phy_engine::analyze_type at) noexcept
         {
+            mna.resize(nl.nodes.size(), mna.branch_size);
+
             for(auto& i: nl.models)
             {
                 for(auto c{i.begin}; c != i.curr; ++c)
@@ -33,10 +39,8 @@ namespace phy_engine
 
                     c->ptr->init_model();
                     c->has_init = true;
-                    
                 }
             }
-            auto const num_terml{nl.m_numTermls};
         }
     };
 

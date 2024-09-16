@@ -352,14 +352,14 @@ namespace phy_engine::netlist
         using Alloc = ::fast_io::native_global_allocator;
         ::fast_io::vector<::phy_engine::netlist::details::netlist_model_base_block> models{};
         ::fast_io::vector<::phy_engine::netlist::details::netlist_node_block> nodes{};
-        //::std::size_t m_numNodes{};
-        //::std::size_t m_numBranches{};
+
+        ::std::size_t m_numBranches{};
         ::std::size_t m_numTermls{};
-        // bool m_hasGround{};
+        bool m_hasGround{};
+
         constexpr netlist() noexcept = default;
 
-        // need test !!!
-        netlist(netlist const& other) noexcept : m_numTermls{other.m_numTermls}
+        netlist(netlist const& other) noexcept : m_numTermls{other.m_numTermls}, m_numBranches{other.m_numBranches}, m_hasGround{other.m_hasGround}
         {
             ::std::map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
 
@@ -420,10 +420,7 @@ namespace phy_engine::netlist
                             auto& new_nlb{models.emplace_back()};
                             new(new_nlb.curr++)::phy_engine::model::model_base{::std::move(copy)};
                         }
-                        else
-                        {
-                            new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)};
-                        }
+                        else { new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)}; }
                     }
 
                     for(auto c{copy_pin_view.pins}; c != copy_pin_view.pins + copy_pin_view.size; ++c)
@@ -447,6 +444,8 @@ namespace phy_engine::netlist
             models.clear();
             nodes.clear();
             m_numTermls = other.m_numTermls;
+            m_numBranches = other.m_numBranches;
+            m_hasGround = other.m_hasGround;
 
             // deep copy
             ::std::map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
@@ -508,10 +507,7 @@ namespace phy_engine::netlist
                             auto& new_nlb{models.emplace_back()};
                             new(new_nlb.curr++)::phy_engine::model::model_base{::std::move(copy)};
                         }
-                        else
-                        {
-                            new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)};
-                        }
+                        else { new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)}; }
                     }
 
                     for(auto c{copy_pin_view.pins}; c != copy_pin_view.pins + copy_pin_view.size; ++c)

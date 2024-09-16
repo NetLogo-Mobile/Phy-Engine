@@ -73,71 +73,71 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_ac(mod&& m, [[maybe_unused]] double omega) noexcept
+    inline constexpr bool iterate_ac(mod&& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double omega) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_ac<mod>)
         {
-            return iterate_ac_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), omega);
+            return iterate_ac_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, omega);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
-            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else { return false; }
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_dc(mod&& m) noexcept
+    inline constexpr bool iterate_dc(mod&& m, ::phy_engine::MNA::MNA& mna) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
-            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else { return false; }
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_tr(mod&& m, [[maybe_unused]] double tTime) noexcept
+    inline constexpr bool iterate_tr(mod&& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double tTime) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
         {
-            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), tTime);
+            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, tTime);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
-            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else { return false; }
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_op(mod&& m) noexcept
+    inline constexpr bool iterate_op(mod&& m, ::phy_engine::MNA::MNA& mna) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_op<mod>)
         {
-            return iterate_op_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_op_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
-            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else { return false; }
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_trop(mod&& m) noexcept
+    inline constexpr bool iterate_trop(mod&& m, ::phy_engine::MNA::MNA& mna) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_trop<mod>)
         {
-            return iterate_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
         {
-            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), 0.0);
+            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, 0.0);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
-            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else { return false; }
     }
@@ -239,4 +239,10 @@ namespace phy_engine::model
         else { return {}; }
     }
 
+    template <::phy_engine::model::model mod>
+    inline constexpr ::std::size_t get_branch_size() noexcept
+    {
+        if constexpr(::phy_engine::model::defines::has_branch_size<mod>) { return mod::branch_size; }
+        else { return 0; }
+    }
 }  // namespace phy_engine::model

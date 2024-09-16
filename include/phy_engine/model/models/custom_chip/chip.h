@@ -12,7 +12,6 @@ namespace phy_engine::model
         inline static constexpr ::fast_io::u8string_view identification_name{u8"VM"};
     };
 
-    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<custom_clip>, custom_clip&) noexcept { return true; }
 
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<custom_clip>, custom_clip&) noexcept
     {

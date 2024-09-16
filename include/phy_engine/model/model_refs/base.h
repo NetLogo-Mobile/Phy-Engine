@@ -11,6 +11,8 @@
 #include "concept.h"
 #include "operation.h"
 
+#include "../../circuits/MNA/mna.h"
+
 namespace phy_engine::model
 {
     namespace details
@@ -27,11 +29,11 @@ namespace phy_engine::model
             virtual constexpr bool prepare_tr() noexcept = 0;
             virtual constexpr bool prepare_op() noexcept = 0;
             virtual constexpr bool prepare_trop() noexcept = 0;
-            virtual constexpr bool iterate_ac(double omega) noexcept = 0;
-            virtual constexpr bool iterate_dc() noexcept = 0;
-            virtual constexpr bool iterate_tr(double tTime) noexcept = 0;
-            virtual constexpr bool iterate_op() noexcept = 0;
-            virtual constexpr bool iterate_trop() noexcept = 0;
+            virtual constexpr bool iterate_ac(::phy_engine::MNA::MNA& mna, double omega) noexcept = 0;
+            virtual constexpr bool iterate_dc(::phy_engine::MNA::MNA& mna) noexcept = 0;
+            virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime) noexcept = 0;
+            virtual constexpr bool iterate_op(::phy_engine::MNA::MNA& mna) noexcept = 0;
+            virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna) noexcept = 0;
             virtual constexpr bool save_op() noexcept = 0;
             virtual constexpr bool load_temperature(double temp) noexcept = 0;
             virtual constexpr bool step_changed_tr(double tTemp, double nstep) noexcept = 0;
@@ -46,6 +48,8 @@ namespace phy_engine::model
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_identification_name() noexcept = 0;
             virtual constexpr ::phy_engine::model::model_device_type get_device_type() noexcept = 0;
+
+            virtual constexpr ::std::size_t get_branch_size() noexcept = 0;
         };
 
         template <::phy_engine::model::model mod>
@@ -137,67 +141,67 @@ namespace phy_engine::model
                 else { return true; }
             }
 
-            virtual constexpr bool iterate_ac(double omega) noexcept override
+            virtual constexpr bool iterate_ac(::phy_engine::MNA::MNA& mna, double omega) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_ac<mod>)
                 {
-                    return iterate_ac_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, omega);
+                    return iterate_ac_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, omega);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
-                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else { return false; }
             }
 
-            virtual constexpr bool iterate_dc() noexcept override
+            virtual constexpr bool iterate_dc(::phy_engine::MNA::MNA& mna) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
-                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else { return false; }
             }
 
-            virtual constexpr bool iterate_tr(double tTime) noexcept override
+            virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
                 {
-                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, tTime);
+                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, tTime);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
-                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else { return false; }
             }
 
-            virtual constexpr bool iterate_op() noexcept override
+            virtual constexpr bool iterate_op(::phy_engine::MNA::MNA& mna) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_op<mod>)
                 {
-                    return iterate_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
-                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else { return false; }
             }
 
-            virtual constexpr bool iterate_trop() noexcept override
+            virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_trop<mod>)
                 {
-                    return iterate_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
                 {
-                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, 0.0);
+                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, 0.0);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
-                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else { return false; }
             }
@@ -298,6 +302,12 @@ namespace phy_engine::model
             virtual constexpr ::fast_io::u8string_view get_identification_name() noexcept override { return rcvmod_type::identification_name; }
 
             virtual constexpr ::phy_engine::model::model_device_type get_device_type() noexcept override { return rcvmod_type::device_type; }
+
+            virtual constexpr ::std::size_t get_branch_size() noexcept override
+            {
+                if constexpr(::phy_engine::model::defines::has_branch_size<mod>) { return rcvmod_type::branch_size; }
+                else { return 0; }
+            }
         };
     }  // namespace details
 
