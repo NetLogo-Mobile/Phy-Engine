@@ -9,6 +9,8 @@ namespace phy_engine
         OP,
         DC,
         AC,
-        TR //transient
+        ACOP,
+        TR, //transient
+        TROP
     };
 }

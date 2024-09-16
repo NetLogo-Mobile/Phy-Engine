@@ -23,13 +23,13 @@ namespace phy_engine::model
         digital_node_statement_t state{};
     };
 
-    #if 0
+#if 0
     enum node_type_t : ::std::uint_fast8_t
     {
         digital = 0,
         analog = 1,
     };
-    #endif
+#endif
     union node_information_union
     {
         digital_node_t dn;
@@ -42,12 +42,16 @@ namespace phy_engine::model
         ::std::set<::phy_engine::model::pin*> pins{};
         ::std::size_t num_of_analog_node{};
 
+        // storage
+        ::std::size_t node_index{SIZE_MAX};  // for analyze
+
+        // func
         node_t() noexcept = default;
 
-        // copy and disconnect form the model 
+        // copy and disconnect form the model
         node_t(node_t const& others) noexcept : node_information{others.node_information} {}
 
-        // copy and disconnect form the model 
+        // copy and disconnect form the model
         node_t& operator= (node_t const& others) noexcept
         {
             node_information = others.node_information;
@@ -61,7 +65,7 @@ namespace phy_engine::model
             node_information = others.node_information;
             pins = others.pins;
             num_of_analog_node = others.num_of_analog_node;
-
+            node_index = others.node_index;
             return *this;
         }
 
@@ -70,6 +74,7 @@ namespace phy_engine::model
             for(auto i: pins) { i->nodes = nullptr; }
             pins.clear();
             num_of_analog_node = 0;
+            node_index = SIZE_MAX;
         }
 
         void clear() noexcept
