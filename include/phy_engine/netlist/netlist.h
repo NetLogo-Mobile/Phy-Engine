@@ -353,15 +353,19 @@ namespace phy_engine::netlist
         ::fast_io::vector<::phy_engine::netlist::details::netlist_model_base_block> models{};
         ::fast_io::vector<::phy_engine::netlist::details::netlist_node_block> nodes{};
 
+        ::phy_engine::model::node_t ground_node{};
+
         ::std::size_t m_numBranches{};
         ::std::size_t m_numTermls{};
-        bool m_hasGround{};
+        
 
         constexpr netlist() noexcept = default;
 
-        netlist(netlist const& other) noexcept : m_numTermls{other.m_numTermls}, m_numBranches{other.m_numBranches}, m_hasGround{other.m_hasGround}
+        netlist(netlist const& other) noexcept : m_numTermls{other.m_numTermls}, m_numBranches{other.m_numBranches}
         {
-            ::std::map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
+            ::std::map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
+
+            node_map[__builtin_addressof(other.ground_node)] = __builtin_addressof(ground_node);
 
             for(auto& i: other.nodes)
             {
@@ -445,10 +449,10 @@ namespace phy_engine::netlist
             nodes.clear();
             m_numTermls = other.m_numTermls;
             m_numBranches = other.m_numBranches;
-            m_hasGround = other.m_hasGround;
 
             // deep copy
-            ::std::map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
+            ::std::map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
+            node_map[__builtin_addressof(other.ground_node)] = __builtin_addressof(ground_node);
 
             for(auto& i: other.nodes)
             {

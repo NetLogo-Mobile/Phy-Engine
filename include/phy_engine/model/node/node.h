@@ -1,13 +1,14 @@
 #pragma once
 #include <cstdint>
 #include <set>
+#include <complex>
 #include "../pin/pin.h"
 
 namespace phy_engine::model
 {
     struct analog_node_t
     {
-        double voltage{};
+        ::std::complex<double> voltage{};
     };
 
     enum digital_node_statement_t : ::std::uint_fast8_t

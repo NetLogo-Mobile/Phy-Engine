@@ -23,7 +23,7 @@ int main()
         c.at = ::phy_engine::analyze_type::DC;
 
         c.prepare();
-        c.iterate();
+        c.solve();
 
     }
 }

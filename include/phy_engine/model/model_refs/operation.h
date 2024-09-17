@@ -240,9 +240,12 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr ::std::size_t get_branch_size() noexcept
+    inline constexpr ::phy_engine::model::branch_view generate_branch_view(mod&& m) noexcept
     {
-        if constexpr(::phy_engine::model::defines::has_branch_size<mod>) { return mod::branch_size; }
-        else { return 0; }
+        if constexpr(::phy_engine::model::defines::can_generate_branch_view<mod>)
+        {
+            return generate_branch_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+        }
+        else { return {}; }
     }
 }  // namespace phy_engine::model

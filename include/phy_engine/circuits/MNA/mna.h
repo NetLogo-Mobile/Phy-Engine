@@ -33,6 +33,20 @@ namespace phy_engine::MNA
             Z.resize(npm_size, 1);
         }
 
+        void clear() noexcept
+        {
+            A.setZero();
+            X.setZero();
+            Z.setZero();
+        }
+
+        void clear_destroy() noexcept
+        {
+            A.~SparseMatrix();
+            X.~SparseVector();
+            Z.~SparseVector();
+        }
+
         auto& a_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
             if(rox >= node_size + branch_size || col >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
@@ -99,9 +113,9 @@ namespace phy_engine::MNA
             return Z.coeffRef(rox + node_size);
         }
 
-        sparse_matrix A{};
-        sparse_vector X{};
-        sparse_vector Z{};
+        sparse_complex_matrix A{};
+        sparse_complex_vector X{};
+        sparse_complex_vector Z{};
 
         ::std::size_t node_size{};
         ::std::size_t branch_size{};
