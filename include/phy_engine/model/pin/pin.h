@@ -9,8 +9,5 @@ namespace phy_engine::model
     {
         ::fast_io::u8string_view name{};
         node_t* nodes{};
-
-        // storage
-        double current{};
     };
 }  // namespace phy_engine::model

@@ -83,6 +83,7 @@ namespace phy_engine::model
         {
             return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
+        else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
         else { return false; }
     }
 
@@ -93,6 +94,7 @@ namespace phy_engine::model
         {
             return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
+        else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
         else { return false; }
     }
 
@@ -107,6 +109,7 @@ namespace phy_engine::model
         {
             return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
+        else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
         else { return false; }
     }
 
@@ -121,6 +124,7 @@ namespace phy_engine::model
         {
             return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
+        else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
         else { return false; }
     }
 
@@ -139,6 +143,7 @@ namespace phy_engine::model
         {
             return iterate_dc_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
+        else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
         else { return false; }
     }
 

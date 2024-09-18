@@ -76,11 +76,6 @@ namespace phy_engine::model
         return true;
     }
 
-    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& r, ::phy_engine::MNA::MNA& mna) noexcept
-    {
-        return true;
-    }
-
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor& c) noexcept
     {
         return {c.pins, 2};

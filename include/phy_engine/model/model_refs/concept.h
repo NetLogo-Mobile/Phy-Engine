@@ -145,6 +145,9 @@ namespace phy_engine::model
             { generate_branch_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::branch_view>;
         };
 
+        template <typename mod>
+        concept can_iterate_mna = can_iterate_ac<mod> || can_iterate_dc<mod> || can_iterate_op<mod> || can_iterate_tr<mod> || can_iterate_trop<mod>;
+
     }  // namespace defines
 
     template <typename mod>

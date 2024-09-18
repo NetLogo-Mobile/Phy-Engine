@@ -40,8 +40,8 @@ namespace phy_engine::netlist
     };
 
     template <typename mod>
-        requires (::phy_engine::model::model<mod> && ::phy_engine::model::defines::can_iterate_dc<mod> &&
-                  (::phy_engine::model::defines::can_generate_pin_view<mod> || mod::device_type == ::phy_engine::model::model_device_type::digital))
+        requires (::phy_engine::model::model<mod> && ::phy_engine::model::defines::can_generate_pin_view<mod> &&
+                  (::phy_engine::model::defines::can_iterate_mna<mod> || mod::device_type == ::phy_engine::model::model_device_type::digital))
     inline constexpr add_model_retstr add_model(netlist& nl, mod&& m) noexcept
     {
         using rcvmod_type = ::std::remove_cvref_t<mod>;
