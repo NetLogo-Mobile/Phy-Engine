@@ -57,6 +57,7 @@ namespace phy_engine::model
         {
             node_information = others.node_information;
             pins.clear();
+            return *this;
         }
 
         ~node_t() { clear(); }

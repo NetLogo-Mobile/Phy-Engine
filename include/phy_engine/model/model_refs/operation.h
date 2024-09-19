@@ -99,11 +99,14 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_tr(mod&& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double tTime) noexcept
+    inline constexpr bool iterate_tr(mod&& m,
+                                     ::phy_engine::MNA::MNA& mna,
+                                     [[maybe_unused]] double tTime,
+                                     [[maybe_unused]] ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
         {
-            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, tTime);
+            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, tTime, icg);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
@@ -129,15 +132,15 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_trop(mod&& m, ::phy_engine::MNA::MNA& mna) noexcept
+    inline constexpr bool iterate_trop(mod&& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_trop<mod>)
         {
-            return iterate_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
+            return iterate_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, icg);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
         {
-            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, 0.0);
+            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, 0.0, icg);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {

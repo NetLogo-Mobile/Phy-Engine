@@ -14,6 +14,7 @@
 #include "../branch/branch_view.h"
 #include "variant.h"
 #include "../../circuits/MNA/mna.h"
+#include "../../circuits/solver/integral_corrector_gear.h"
 
 namespace phy_engine::model
 {
@@ -71,8 +72,8 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept can_iterate_tr = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
-            { iterate_tr_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna, double{}) } -> ::std::same_as<bool>;
+        concept can_iterate_tr = requires(mod&& t, ::phy_engine::MNA::MNA& mna, ::phy_engine::solver::integral_corrector_gear& icg) {
+            { iterate_tr_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna, double{}, icg) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
@@ -81,8 +82,8 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept can_iterate_trop = requires(mod&& t, ::phy_engine::MNA::MNA& mna) {
-            { iterate_trop_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna) } -> ::std::same_as<bool>;
+        concept can_iterate_trop = requires(mod&& t, ::phy_engine::MNA::MNA& mna, ::phy_engine::solver::integral_corrector_gear& icg) {
+            { iterate_trop_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, mna, icg) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>

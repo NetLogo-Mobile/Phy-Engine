@@ -1,6 +1,8 @@
 #pragma once
 #include <fast_io/fast_io_dsal/string_view.h>
 #include "../../model_refs/base.h"
+#include "../../../circuits/solver/integral_history.h"
+#include "../../../circuits/solver/integral_corrector_gear.h"
 
 namespace phy_engine::model
 {
@@ -13,6 +15,10 @@ namespace phy_engine::model
 
         double m_kZimag{0.001};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
+
+        // private:
+        ::phy_engine::solver::integral_history m_historyX[1]{};
+        ::phy_engine::solver::integral_history m_historyY[1]{};
     };
 
     inline constexpr bool
@@ -71,8 +77,51 @@ namespace phy_engine::model
         return {};
     }
 
-    inline constexpr bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& r, ::phy_engine::MNA::MNA& mna) noexcept
+    inline constexpr bool
+        iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& r, ::phy_engine::MNA::MNA& mna, double omega) noexcept
     {
+        auto const node_0{r.pins[0].nodes};
+        auto const node_1{r.pins[1].nodes};
+
+        if(node_0 && node_1) [[likely]]
+        {
+            ::std::complex<double> z{0.0, r.m_kZimag * omega};
+
+            mna.G_ref(node_0->node_index, node_0->node_index) = z;
+            mna.G_ref(node_0->node_index, node_1->node_index) = -z;
+            mna.G_ref(node_1->node_index, node_0->node_index) = -z;
+            mna.G_ref(node_1->node_index, node_1->node_index) = z;
+        }
+
+        return true;
+    }
+
+    inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>,
+                                            capacitor& r,
+                                            ::phy_engine::MNA::MNA& mna,
+                                            [[maybe_unused]] double t_time,
+                                            ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+    {
+        auto const node_0{r.pins[0].nodes};
+        auto const node_1{r.pins[1].nodes};
+        if(node_0 && node_1) [[likely]]
+        {
+            double voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+
+            double geq{};
+            double Ieq{};
+
+            r.m_historyX[0].set(0, voltage);
+            icg.integrate(r.m_historyX[0], r.m_historyY[1], r.m_kZimag, geq, Ieq);
+
+            mna.G_ref(node_0->node_index, node_0->node_index) = geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) = -geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) = -geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) = geq;
+            mna.I_ref(node_0->node_index) = -Ieq;
+            mna.I_ref(node_1->node_index) = Ieq;
+        }
+
         return true;
     }
 

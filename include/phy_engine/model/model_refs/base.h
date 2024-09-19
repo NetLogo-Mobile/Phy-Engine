@@ -31,9 +31,9 @@ namespace phy_engine::model
             virtual constexpr bool prepare_trop() noexcept = 0;
             virtual constexpr bool iterate_ac(::phy_engine::MNA::MNA& mna, double omega) noexcept = 0;
             virtual constexpr bool iterate_dc(::phy_engine::MNA::MNA& mna) noexcept = 0;
-            virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime) noexcept = 0;
+            virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime, ::phy_engine::solver::integral_corrector_gear& icg) noexcept = 0;
             virtual constexpr bool iterate_op(::phy_engine::MNA::MNA& mna) noexcept = 0;
-            virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna) noexcept = 0;
+            virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna, ::phy_engine::solver::integral_corrector_gear& icg) noexcept = 0;
             virtual constexpr bool save_op() noexcept = 0;
             virtual constexpr bool load_temperature(double temp) noexcept = 0;
             virtual constexpr bool step_changed_tr(double tTemp, double nstep) noexcept = 0;
@@ -151,6 +151,7 @@ namespace phy_engine::model
                 {
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
+                else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else { return false; }
             }
 
@@ -160,19 +161,22 @@ namespace phy_engine::model
                 {
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
+                else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else { return false; }
             }
 
-            virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime) noexcept override
+            virtual constexpr bool
+                iterate_tr(::phy_engine::MNA::MNA& mna, double tTime, [[maybe_unused]] ::phy_engine::solver::integral_corrector_gear& icg) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
                 {
-                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, tTime);
+                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, tTime, icg);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
+                else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else { return false; }
             }
 
@@ -186,23 +190,26 @@ namespace phy_engine::model
                 {
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
+                else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else { return false; }
             }
 
-            virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna) noexcept override
+            virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna,
+                                                [[maybe_unused]] ::phy_engine::solver::integral_corrector_gear& icg) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_iterate_trop<mod>)
                 {
-                    return iterate_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
+                    return iterate_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, icg);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
                 {
-                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, 0.0);
+                    return iterate_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna, 0.0, icg);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
                 {
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
+                else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else { return false; }
             }
 

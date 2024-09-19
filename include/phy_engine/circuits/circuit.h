@@ -7,6 +7,7 @@
 #include "../netlist/netlist.h"
 #include "MNA/mna.h"
 #include "analyze.h"
+#include "solver/integral_corrector_gear.h"
 
 namespace phy_engine
 {
@@ -29,6 +30,8 @@ namespace phy_engine
 
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
+
+        ::phy_engine::solver::integral_corrector_gear icg{};
 
         // func
         void prepare() noexcept
@@ -58,7 +61,7 @@ namespace phy_engine
                 }
             }
 
-            if(nl.ground_node.num_of_analog_node != 0) // ground
+            if(nl.ground_node.num_of_analog_node != 0)  // ground
             {
                 size_t_to_node_p.push_back_unchecked(__builtin_addressof(nl.ground_node));
                 nl.ground_node.node_index = node_counter++;
@@ -289,7 +292,7 @@ namespace phy_engine
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                            if(!c->ptr->iterate_tr(mna, t_time + t_step)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!c->ptr->iterate_tr(mna, t_time + t_step, icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -303,7 +306,7 @@ namespace phy_engine
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                            if(!c->ptr->iterate_trop(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!c->ptr->iterate_trop(mna, icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -329,6 +332,7 @@ namespace phy_engine
                 m_lastFixRow = curRow;
             }
 #endif
+            return false;
         }
     };
 
