@@ -13,13 +13,15 @@ namespace phy_engine::model
         inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::linear};
         inline static constexpr ::fast_io::u8string_view identification_name{u8"C"};
 
-        double m_kZimag{0.001};
+        double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
 
         // private:
-        ::phy_engine::solver::integral_history m_historyX[1]{};
-        ::phy_engine::solver::integral_history m_historyY[1]{};
+        ::phy_engine::solver::integral_history m_historyX{};
+        ::phy_engine::solver::integral_history m_historyY{};
     };
+
+    static_assert(::phy_engine::model::model<capacitor>);
 
     inline constexpr bool
         set_attribute_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor& c, ::std::size_t n, ::phy_engine::model::variant vi) noexcept
@@ -28,7 +30,6 @@ namespace phy_engine::model
         {
             case 0:
             {
-                // Set resistance value
                 if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
                 c.m_kZimag = vi.d;
                 return true;
@@ -41,6 +42,8 @@ namespace phy_engine::model
         return false;
     }
 
+    static_assert(::phy_engine::model::defines::has_set_attribute<capacitor>);
+
     inline constexpr ::phy_engine::model::variant
         get_attribute_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::std::size_t n) noexcept
     {
@@ -48,7 +51,6 @@ namespace phy_engine::model
         {
             case 0:
             {
-                // Get resistance value
                 return {.d{c.m_kZimag}, .type{::phy_engine::model::variant_type::d}};
             }
             default:
@@ -59,6 +61,8 @@ namespace phy_engine::model
         return {};
     }
 
+    static_assert(::phy_engine::model::defines::has_get_attribute<capacitor>);
+
     inline constexpr ::fast_io::u8string_view
         get_attribute_name_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::std::size_t n) noexcept
     {
@@ -67,7 +71,7 @@ namespace phy_engine::model
             case 0:
             {
                 // m_kZimag
-                return {u8"m_kZimag"};
+                return {u8"C"};
             }
             default:
             {
@@ -76,6 +80,8 @@ namespace phy_engine::model
         }
         return {};
     }
+
+    static_assert(::phy_engine::model::defines::has_get_attribute_name<capacitor>);
 
     inline constexpr bool
         iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& r, ::phy_engine::MNA::MNA& mna, double omega) noexcept
@@ -87,14 +93,16 @@ namespace phy_engine::model
         {
             ::std::complex<double> z{0.0, r.m_kZimag * omega};
 
-            mna.G_ref(node_0->node_index, node_0->node_index) = z;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -z;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -z;
-            mna.G_ref(node_1->node_index, node_1->node_index) = z;
+            mna.G_ref(node_0->node_index, node_0->node_index) += z;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= z;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= z;
+            mna.G_ref(node_1->node_index, node_1->node_index) += z;
         }
 
         return true;
     }
+
+    static_assert(::phy_engine::model::defines::can_iterate_ac<capacitor>);
 
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>,
                                             capacitor& r,
@@ -111,23 +119,27 @@ namespace phy_engine::model
             double geq{};
             double Ieq{};
 
-            r.m_historyX[0].set(0, voltage);
-            icg.integrate(r.m_historyX[0], r.m_historyY[1], r.m_kZimag, geq, Ieq);
+            r.m_historyX.set(0, voltage);
+            icg.integrate(r.m_historyX, r.m_historyY, r.m_kZimag, geq, Ieq);
 
-            mna.G_ref(node_0->node_index, node_0->node_index) = geq;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -geq;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -geq;
-            mna.G_ref(node_1->node_index, node_1->node_index) = geq;
-            mna.I_ref(node_0->node_index) = -Ieq;
-            mna.I_ref(node_1->node_index) = Ieq;
+            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
+            mna.I_ref(node_0->node_index) -= Ieq;
+            mna.I_ref(node_1->node_index) += Ieq;
         }
 
         return true;
     }
 
+    static_assert(::phy_engine::model::defines::can_iterate_tr<capacitor>);
+
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor& c) noexcept
     {
         return {c.pins, 2};
     }
+
+    static_assert(::phy_engine::model::defines::can_generate_pin_view<capacitor>);
 
 }  // namespace phy_engine::model

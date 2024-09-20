@@ -16,6 +16,8 @@ namespace phy_engine::model
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
     };
 
+    static_assert(::phy_engine::model::model<resistance>);
+
     inline constexpr bool
         set_attribute_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance& r, ::std::size_t n, ::phy_engine::model::variant vi) noexcept
     {
@@ -36,6 +38,8 @@ namespace phy_engine::model
         return false;
     }
 
+    static_assert(::phy_engine::model::defines::has_set_attribute<resistance>);
+
     inline constexpr ::phy_engine::model::variant
         get_attribute_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance const& r, ::std::size_t n) noexcept
     {
@@ -54,6 +58,8 @@ namespace phy_engine::model
         return {};
     }
 
+    static_assert(::phy_engine::model::defines::has_get_attribute<resistance>);
+
     inline constexpr ::fast_io::u8string_view
         get_attribute_name_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance const& r, ::std::size_t n) noexcept
     {
@@ -62,7 +68,7 @@ namespace phy_engine::model
             case 0:
             {
                 // resistance
-                return {u8"resistance"};
+                return {u8"R"};
             }
             default:
             {
@@ -71,6 +77,8 @@ namespace phy_engine::model
         }
         return {};
     }
+
+    static_assert(::phy_engine::model::defines::has_get_attribute_name<resistance>);
 
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance const& r, ::phy_engine::MNA::MNA& mna) noexcept
     {
@@ -81,18 +89,22 @@ namespace phy_engine::model
         if(node_0 && node_1) [[likely]]
         {
             auto const m_G{1.0 / r.r};
-            mna.G_ref(node_0->node_index, node_0->node_index) = m_G;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -m_G;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -m_G;
-            mna.G_ref(node_1->node_index, node_1->node_index) = m_G;
+            mna.G_ref(node_0->node_index, node_0->node_index) += m_G;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= m_G;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= m_G;
+            mna.G_ref(node_1->node_index, node_1->node_index) += m_G;
         }
 
         return true;
     }
 
+    static_assert(::phy_engine::model::defines::can_iterate_dc<resistance>);
+
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance& r) noexcept
     {
         return {r.pins, 2};
     }
+
+    static_assert(::phy_engine::model::defines::can_generate_pin_view<resistance>);
 
 }  // namespace phy_engine::model
