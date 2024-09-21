@@ -15,6 +15,7 @@
 #include "variant.h"
 #include "../../circuits/MNA/mna.h"
 #include "../../circuits/solver/integral_corrector_gear.h"
+#include "../../circuits/solver/integral_history_view.h"
 
 namespace phy_engine::model
 {
@@ -144,6 +145,11 @@ namespace phy_engine::model
         template <typename mod>
         concept can_generate_branch_view = requires(mod&& t) {
             { generate_branch_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::branch_view>;
+        };
+
+        template <typename mod>
+        concept can_generate_integral_history_view = requires(mod&& t) {
+            { generate_integral_history_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::solver::integral_history_view>;
         };
 
         template <typename mod>

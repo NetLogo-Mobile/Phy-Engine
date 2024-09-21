@@ -108,10 +108,10 @@ namespace phy_engine::model
         {
             ::std::complex<double> z{0.0, c.m_kZimag * omega};
 
-            mna.G_ref(node_0->node_index, node_0->node_index) += z;
-            mna.G_ref(node_0->node_index, node_1->node_index) -= z;
-            mna.G_ref(node_1->node_index, node_0->node_index) -= z;
-            mna.G_ref(node_1->node_index, node_1->node_index) += z;
+            mna.G_ref(node_0->node_index, node_0->node_index) = z;
+            mna.G_ref(node_0->node_index, node_1->node_index) = -z;
+            mna.G_ref(node_1->node_index, node_0->node_index) = -z;
+            mna.G_ref(node_1->node_index, node_1->node_index) = z;
         }
 
         return true;
@@ -137,12 +137,12 @@ namespace phy_engine::model
             c.m_historyX.set(0, voltage);
             icg.integrate(c.m_historyX, c.m_historyY, c.m_kZimag, geq, Ieq);
 
-            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
-            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
-            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
-            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
-            mna.I_ref(node_0->node_index) -= Ieq;
-            mna.I_ref(node_1->node_index) += Ieq;
+            mna.G_ref(node_0->node_index, node_0->node_index) = geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) = -geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) = -geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) = geq;
+            mna.I_ref(node_0->node_index) = -Ieq;
+            mna.I_ref(node_1->node_index) = Ieq;
         }
 
         return true;
@@ -156,5 +156,14 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<capacitor>);
+
+    inline constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view_define(::phy_engine::model::model_reserve_type_t<capacitor>,
+                                                                                                       capacitor& c) noexcept
+    {
+        return {__builtin_addressof(c.m_historyX), __builtin_addressof(c.m_historyY), 1};
+    }
+
+    static_assert(::phy_engine::model::defines::can_generate_integral_history_view<capacitor>);
+
 
 }  // namespace phy_engine::model

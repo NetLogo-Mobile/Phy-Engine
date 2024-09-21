@@ -86,11 +86,11 @@ namespace phy_engine::model
         if(node_A && node_B) [[likely]]
         {
             auto const k{vdc.branchs.index};
-            mna.B_ref(node_A->node_index, k) += 1.0;
-            mna.B_ref(node_B->node_index, k) -= 1.0;
-            mna.C_ref(k, node_A->node_index) += 1.0;
-            mna.C_ref(k, node_B->node_index) -= 1.0;
-            mna.E_ref(k) += vdc.V;
+            mna.B_ref(node_A->node_index, k) = 1.0;
+            mna.B_ref(node_B->node_index, k) = -1.0;
+            mna.C_ref(k, node_A->node_index) = 1.0;
+            mna.C_ref(k, node_B->node_index) = -1.0;
+            mna.E_ref(k) = vdc.V;
         }
         return true;
     }
@@ -105,10 +105,10 @@ namespace phy_engine::model
         if(node_A && node_B) [[likely]]
         {
             auto const k{vdc.branchs.index};
-            mna.B_ref(node_A->node_index, k) += 1.0;
-            mna.B_ref(node_B->node_index, k) -= 1.0;
-            mna.C_ref(k, node_A->node_index) += 1.0;
-            mna.C_ref(k, node_B->node_index) -= 1.0;
+            mna.B_ref(node_A->node_index, k) = 1.0;
+            mna.B_ref(node_B->node_index, k) = -1.0;
+            mna.C_ref(k, node_A->node_index) = 1.0;
+            mna.C_ref(k, node_B->node_index) = -1.0;
             // mna.E_ref(k) += 0.0;
         }
 

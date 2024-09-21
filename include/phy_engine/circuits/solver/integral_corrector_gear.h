@@ -12,6 +12,7 @@ namespace phy_engine::solver
     {
         inline static constexpr ::std::size_t max_order{::phy_engine::solver::integral_history::MaxNumHistoryNum};
         inline static constexpr ::std::size_t matrix_rows{max_order + 1};
+
         double m_coeffs[matrix_rows + 1]{};
         ::std::complex<double> m_A[matrix_rows * matrix_rows]{};
         ::std::complex<double> m_x[matrix_rows]{};

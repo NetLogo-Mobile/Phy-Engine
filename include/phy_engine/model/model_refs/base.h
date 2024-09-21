@@ -50,6 +50,7 @@ namespace phy_engine::model
             virtual constexpr ::phy_engine::model::model_device_type get_device_type() noexcept = 0;
 
             virtual constexpr ::phy_engine::model::branch_view generate_branch_view() noexcept = 0;
+            virtual constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view() noexcept = 0;
         };
 
         template <::phy_engine::model::model mod>
@@ -317,6 +318,16 @@ namespace phy_engine::model
                     return generate_branch_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
                 }
                 else { return {}; }
+            }
+
+            constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view() noexcept override 
+            {
+                if constexpr(::phy_engine::model::defines::can_generate_integral_history_view<mod>)
+                {
+                    return generate_integral_history_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
+                }
+                else { return {}; }
+
             }
         };
     }  // namespace details

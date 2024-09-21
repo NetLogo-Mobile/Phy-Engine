@@ -89,13 +89,13 @@ namespace phy_engine::model
         {
             ::std::size_t k{vcvs.branchs.index};
 
-            mna.B_ref(node_S->node_index, k) += 1.0;
-            mna.B_ref(node_T->node_index, k) -= 1.0;
+            mna.B_ref(node_S->node_index, k) = 1.0;
+            mna.B_ref(node_T->node_index, k) = -1.0;
 
-            mna.C_ref(k, node_S->node_index) += 1.0;
-            mna.C_ref(k, node_T->node_index) -= 1.0;
-            mna.C_ref(k, node_P->node_index) -= vcvs.m_mu;
-            mna.C_ref(k, node_Q->node_index) += vcvs.m_mu;
+            mna.C_ref(k, node_S->node_index) = 1.0;
+            mna.C_ref(k, node_T->node_index) = -1.0;
+            mna.C_ref(k, node_P->node_index) = -vcvs.m_mu;
+            mna.C_ref(k, node_Q->node_index) = vcvs.m_mu;
             // mna.E_ref(k) += 0.0;
         }
         return true;

@@ -129,10 +129,10 @@ namespace phy_engine::model
         if(node_A && node_B) [[likely]]
         {
             auto const k{vac.branchs.index};
-            mna.B_ref(node_A->node_index, k) += 1.0;
-            mna.B_ref(node_B->node_index, k) -= 1.0;
-            mna.C_ref(k, node_A->node_index) += 1.0;
-            mna.C_ref(k, node_B->node_index) -= 1.0;
+            mna.B_ref(node_A->node_index, k) = 1.0;
+            mna.B_ref(node_B->node_index, k) = -1.0;
+            mna.C_ref(k, node_A->node_index) = 1.0;
+            mna.C_ref(k, node_B->node_index) = -1.0;
             // mna.E_ref(k) += 0.0;
         }
         return true;
@@ -148,11 +148,11 @@ namespace phy_engine::model
         if(node_A && node_B) [[likely]]
         {
             auto const k{vac.branchs.index};
-            mna.B_ref(node_A->node_index, k) += 1.0;
-            mna.B_ref(node_B->node_index, k) -= 1.0;
-            mna.C_ref(k, node_A->node_index) += 1.0;
-            mna.C_ref(k, node_B->node_index) -= 1.0;
-            mna.E_ref(k) += vac.m_E;
+            mna.B_ref(node_A->node_index, k) = 1.0;
+            mna.B_ref(node_B->node_index, k) = -1.0;
+            mna.C_ref(k, node_A->node_index) = 1.0;
+            mna.C_ref(k, node_B->node_index) = -1.0;
+            mna.E_ref(k) = vac.m_E;
         }
         return true;
     }
@@ -170,11 +170,11 @@ namespace phy_engine::model
         if(node_A && node_B) [[likely]]
         {
             auto const k{vac.branchs.index};
-            mna.B_ref(node_A->node_index, k) += 1.0;
-            mna.B_ref(node_B->node_index, k) -= 1.0;
-            mna.C_ref(k, node_A->node_index) += 1.0;
-            mna.C_ref(k, node_B->node_index) -= 1.0;
-            mna.E_ref(k) += vac.m_Vp * ::std::sin(vac.m_omega * t_time + vac.m_phase);
+            mna.B_ref(node_A->node_index, k) = 1.0;
+            mna.B_ref(node_B->node_index, k) = -1.0;
+            mna.C_ref(k, node_A->node_index) = 1.0;
+            mna.C_ref(k, node_B->node_index) = -1.0;
+            mna.E_ref(k) = vac.m_Vp * ::std::sin(vac.m_omega * t_time + vac.m_phase);
         }
         return true;
     }

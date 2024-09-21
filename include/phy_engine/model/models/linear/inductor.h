@@ -108,10 +108,10 @@ namespace phy_engine::model
         if(node_0 && node_1) [[likely]]
         {
             auto const k{i.branchs.index};
-            mna.B_ref(node_0->node_index, k) += 1.0;
-            mna.B_ref(node_1->node_index, k) -= 1.0;
-            mna.C_ref(k, node_0->node_index) += 1.0;
-            mna.C_ref(k, node_1->node_index) -= 1.0;
+            mna.B_ref(node_0->node_index, k) = 1.0;
+            mna.B_ref(node_1->node_index, k) = -1.0;
+            mna.C_ref(k, node_0->node_index) = 1.0;
+            mna.C_ref(k, node_1->node_index) = -1.0;
             // mna.E_ref(k) += 0.0;
         }
 
@@ -130,25 +130,25 @@ namespace phy_engine::model
         if(node_0 && node_1) [[likely]]
         {
             auto const k{i.branchs.index};
-            mna.B_ref(node_0->node_index, k) += 1.0;
-            mna.B_ref(node_1->node_index, k) -= 1.0;
+            mna.B_ref(node_0->node_index, k) = 1.0;
+            mna.B_ref(node_1->node_index, k) = -1.0;
 
             if(i.m_kZimag == 0.0) 
             {
-                mna.C_ref(k, node_0->node_index) += 1.0;
-                mna.C_ref(k, node_1->node_index) -= 1.0;
+                mna.C_ref(k, node_0->node_index) = 1.0;
+                mna.C_ref(k, node_1->node_index) = -1.0;
                 // mna.E_ref(k) += 0.0;
             }
             else 
             {
-                mna.D_ref(k, k) += 1.0;  
+                mna.D_ref(k, k) = 1.0;  
                 // mna.E_ref(k) += 0.0;
 
                 ::std::complex<double> z{0.0, -1.0 / (i.m_kZimag * omega)};
-                mna.G_ref(node_0->node_index, node_0->node_index) += z;
-                mna.G_ref(node_0->node_index, node_1->node_index) -= z;
-                mna.G_ref(node_1->node_index, node_0->node_index) -= z;
-                mna.G_ref(node_1->node_index, node_1->node_index) += z;
+                mna.G_ref(node_0->node_index, node_0->node_index) = z;
+                mna.G_ref(node_0->node_index, node_1->node_index) = -z;
+                mna.G_ref(node_1->node_index, node_0->node_index) = -z;
+                mna.G_ref(node_1->node_index, node_1->node_index) = z;
 
 
             }
@@ -180,12 +180,12 @@ namespace phy_engine::model
             icg.integrate(i.m_historyX, i.m_historyY, i.m_kZimag, req, Ueq);
             
             auto const k{i.branchs.index};
-            mna.B_ref(node_0->node_index, k) += 1.0;
-            mna.B_ref(node_1->node_index, k) -= 1.0;
-            mna.C_ref(k, node_0->node_index) += 1.0;
-            mna.C_ref(k, node_1->node_index) -= 1.0;
-            mna.D_ref(k, k) -= req;
-            mna.E_ref(k) += Ueq;
+            mna.B_ref(node_0->node_index, k) = 1.0;
+            mna.B_ref(node_1->node_index, k) = -1.0;
+            mna.C_ref(k, node_0->node_index) = 1.0;
+            mna.C_ref(k, node_1->node_index) = -1.0;
+            mna.D_ref(k, k) = -req;
+            mna.E_ref(k) = Ueq;
 
         }
 
@@ -207,5 +207,13 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<inductor>);
+
+    inline constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view_define(::phy_engine::model::model_reserve_type_t<inductor>,
+                                                                                                       inductor& i) noexcept
+    {
+        return {__builtin_addressof(i.m_historyX), __builtin_addressof(i.m_historyY), 1};
+    }
+
+    static_assert(::phy_engine::model::defines::can_generate_integral_history_view<inductor>);
 
 }  // namespace phy_engine::model

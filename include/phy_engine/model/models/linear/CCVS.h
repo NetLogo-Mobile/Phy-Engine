@@ -90,15 +90,15 @@ namespace phy_engine::model
             ::std::size_t k{ccvs.branchs[0].index};
             ::std::size_t c{ccvs.branchs[1].index};
 
-            mna.B_ref(node_S->node_index, k) += 1.0;
-            mna.B_ref(node_T->node_index, k) -= 1.0;
-            mna.B_ref(node_P->node_index, c) += 1.0;
-            mna.B_ref(node_Q->node_index, c) -= 1.0;
-            mna.C_ref(k, node_S->node_index) += 1.0;
-            mna.C_ref(k, node_T->node_index) -= 1.0;
-            mna.C_ref(c, node_P->node_index) += 1.0;
-            mna.C_ref(c, node_Q->node_index) -= 1.0;
-            mna.D_ref(k, c) -= ccvs.m_r;
+            mna.B_ref(node_S->node_index, k) = 1.0;
+            mna.B_ref(node_T->node_index, k) = -1.0;
+            mna.B_ref(node_P->node_index, c) = 1.0;
+            mna.B_ref(node_Q->node_index, c) = -1.0;
+            mna.C_ref(k, node_S->node_index) = 1.0;
+            mna.C_ref(k, node_T->node_index) = -1.0;
+            mna.C_ref(c, node_P->node_index) = 1.0;
+            mna.C_ref(c, node_Q->node_index) = -1.0;
+            mna.D_ref(k, c) = -ccvs.m_r;
             // mna.D_ref(c, c) += 0.0;
             // mna.E_ref(k) += 0.0;
             // mna.E_ref(c) += 0.0;

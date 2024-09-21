@@ -87,12 +87,12 @@ namespace phy_engine::model
         if(node_S && node_T && node_P && node_Q) [[likely]]
         {
             ::std::size_t c{cccs.branchs.index};
-            mna.B_ref(node_S->node_index, c) += cccs.m_alpha;
-            mna.B_ref(node_T->node_index, c) -= cccs.m_alpha;
-            mna.B_ref(node_P->node_index, c) += 1.0;
-            mna.B_ref(node_Q->node_index, c) -= 1.0;
-            mna.C_ref(c, node_P->node_index) += 1.0;
-            mna.C_ref(c, node_Q->node_index) -= 1.0;
+            mna.B_ref(node_S->node_index, c) = cccs.m_alpha;
+            mna.B_ref(node_T->node_index, c) = -cccs.m_alpha;
+            mna.B_ref(node_P->node_index, c) = 1.0;
+            mna.B_ref(node_Q->node_index, c) = -1.0;
+            mna.C_ref(c, node_P->node_index) = 1.0;
+            mna.C_ref(c, node_Q->node_index) = -1.0;
             // mna.D_ref(c, c) = 0.0;
             // mna.E_ref(c) = 0.0;
         }

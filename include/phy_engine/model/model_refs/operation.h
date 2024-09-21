@@ -256,4 +256,14 @@ namespace phy_engine::model
         }
         else { return {}; }
     }
+
+    template <::phy_engine::model::model mod>
+    inline constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view(mod&& m) noexcept
+    {
+        if constexpr(::phy_engine::model::defines::can_generate_integral_history_view<mod>)
+        {
+            return generate_integral_history_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+        }
+        else { return {}; }
+    }
 }  // namespace phy_engine::model
