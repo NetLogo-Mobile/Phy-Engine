@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <complex>
 #include <algorithm>
+#include <fast_io/fast_io_dsal/vector.h>
 #include "integral_history.h"
 
 namespace phy_engine::solver
@@ -18,6 +19,10 @@ namespace phy_engine::solver
         double m_trucnErrorCoeff{};
 
         ::std::size_t m_order{};
+
+        ::fast_io::vector<::std::size_t> m_integralU{};
+        ::fast_io::vector<::std::size_t> m_integralJ{};
+
 
 #if __cpp_lib_constexpr_cmath >= 202202L
         constexpr

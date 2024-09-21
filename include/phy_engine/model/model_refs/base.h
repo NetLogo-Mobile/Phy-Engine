@@ -26,9 +26,9 @@ namespace phy_engine::model
             virtual constexpr bool init_model() noexcept = 0;
             virtual constexpr bool prepare_ac() noexcept = 0;
             virtual constexpr bool prepare_dc() noexcept = 0;
-            virtual constexpr bool prepare_tr() noexcept = 0;
+            virtual constexpr bool prepare_tr(::phy_engine::solver::integral_corrector_gear& icg) noexcept = 0;
             virtual constexpr bool prepare_op() noexcept = 0;
-            virtual constexpr bool prepare_trop() noexcept = 0;
+            virtual constexpr bool prepare_trop(::phy_engine::solver::integral_corrector_gear& icg) noexcept = 0;
             virtual constexpr bool iterate_ac(::phy_engine::MNA::MNA& mna, double omega) noexcept = 0;
             virtual constexpr bool iterate_dc(::phy_engine::MNA::MNA& mna) noexcept = 0;
             virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime, ::phy_engine::solver::integral_corrector_gear& icg) noexcept = 0;
@@ -106,11 +106,11 @@ namespace phy_engine::model
                 else { return true; }
             }
 
-            virtual constexpr bool prepare_tr() noexcept override
+            virtual constexpr bool prepare_tr(::phy_engine::solver::integral_corrector_gear& icg) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
                 {
-                    return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, icg);
                 }
                 else { return true; }
             }
@@ -128,15 +128,15 @@ namespace phy_engine::model
                 else { return true; }
             }
 
-            virtual constexpr bool prepare_trop() noexcept override
+            virtual constexpr bool prepare_trop(::phy_engine::solver::integral_corrector_gear& icg) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_prepare_trop<mod>)
                 {
-                    return prepare_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return prepare_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, icg);
                 }
                 else if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
                 {
-                    return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                    return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, icg);
                 }
                 else { return true; }
             }

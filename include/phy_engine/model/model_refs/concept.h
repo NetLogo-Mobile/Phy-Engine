@@ -47,8 +47,8 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept can_prepare_tr = requires(mod&& t) {
-            { prepare_tr_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        concept can_prepare_tr = requires(mod&& t, ::phy_engine::solver::integral_corrector_gear& icg) {
+            { prepare_tr_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, icg) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>
@@ -57,8 +57,8 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept can_prepare_trop = requires(mod&& t) {
-            { prepare_trop_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        concept can_prepare_trop = requires(mod&& t, ::phy_engine::solver::integral_corrector_gear& icg) {
+            { prepare_trop_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, icg) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>

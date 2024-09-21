@@ -35,11 +35,11 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool prepare_tr(mod&& m) noexcept
+    inline constexpr bool prepare_tr(mod&& m, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
         {
-            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), icg);
         }
         else { return true; }
     }
@@ -59,15 +59,15 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool prepare_trop(mod&& m) noexcept
+    inline constexpr bool prepare_trop(mod&& m, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_prepare_trop<mod>)
         {
-            return prepare_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return prepare_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), icg);
         }
         else if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
         {
-            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), icg);
         }
         else { return true; }
     }

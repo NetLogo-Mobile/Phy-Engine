@@ -82,8 +82,6 @@ namespace phy_engine::model
 
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance const& r, ::phy_engine::MNA::MNA& mna) noexcept
     {
-        if(r.r <= 0.0) [[unlikely]] { return false; }
-
         auto const node_0{r.pins[0].nodes};
         auto const node_1{r.pins[1].nodes};
         if(node_0 && node_1) [[likely]]

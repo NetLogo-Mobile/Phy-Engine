@@ -84,14 +84,29 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::has_get_attribute_name<capacitor>);
 
     inline constexpr bool
-        iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& r, ::phy_engine::MNA::MNA& mna, double omega) noexcept
+        prepare_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
-        auto const node_0{r.pins[0].nodes};
-        auto const node_1{r.pins[1].nodes};
+        auto const node_0{c.pins[0].nodes};
+        auto const node_1{c.pins[1].nodes};
 
         if(node_0 && node_1) [[likely]]
         {
-            ::std::complex<double> z{0.0, r.m_kZimag * omega};
+            icg.m_integralU.push_back(node_0->node_index);
+            icg.m_integralU.push_back(node_1->node_index);
+        }
+    }
+
+    static_assert(::phy_engine::model::defines::can_prepare_tr<capacitor>);
+
+    inline constexpr bool
+        iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::MNA::MNA& mna, double omega) noexcept
+    {
+        auto const node_0{c.pins[0].nodes};
+        auto const node_1{c.pins[1].nodes};
+
+        if(node_0 && node_1) [[likely]]
+        {
+            ::std::complex<double> z{0.0, c.m_kZimag * omega};
 
             mna.G_ref(node_0->node_index, node_0->node_index) += z;
             mna.G_ref(node_0->node_index, node_1->node_index) -= z;
@@ -105,13 +120,13 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::can_iterate_ac<capacitor>);
 
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>,
-                                            capacitor& r,
+                                            capacitor& c,
                                             ::phy_engine::MNA::MNA& mna,
                                             [[maybe_unused]] double t_time,
                                             ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
-        auto const node_0{r.pins[0].nodes};
-        auto const node_1{r.pins[1].nodes};
+        auto const node_0{c.pins[0].nodes};
+        auto const node_1{c.pins[1].nodes};
         if(node_0 && node_1) [[likely]]
         {
             double voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
@@ -119,8 +134,8 @@ namespace phy_engine::model
             double geq{};
             double Ieq{};
 
-            r.m_historyX.set(0, voltage);
-            icg.integrate(r.m_historyX, r.m_historyY, r.m_kZimag, geq, Ieq);
+            c.m_historyX.set(0, voltage);
+            icg.integrate(c.m_historyX, c.m_historyY, c.m_kZimag, geq, Ieq);
 
             mna.G_ref(node_0->node_index, node_0->node_index) += geq;
             mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
