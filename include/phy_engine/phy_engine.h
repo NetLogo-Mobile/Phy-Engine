@@ -17,3 +17,6 @@
 #include "model/models/linear/VCCS.h"
 #include "model/models/linear/VCVS.h"
 #include "model/models/linear/VDC.h"
+
+#include "model/models/controller/switch.h"
+

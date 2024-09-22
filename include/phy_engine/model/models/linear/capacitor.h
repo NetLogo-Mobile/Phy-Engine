@@ -83,7 +83,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<capacitor>);
 
-    inline constexpr bool
+    inline bool
         prepare_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
         auto const node_0{c.pins[0].nodes};
@@ -94,9 +94,31 @@ namespace phy_engine::model
             icg.m_integralU.push_back(node_0->node_index);
             icg.m_integralU.push_back(node_1->node_index);
         }
+
+        return true;
     }
 
     static_assert(::phy_engine::model::defines::can_prepare_tr<capacitor>);
+
+    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::MNA::MNA& mna) noexcept
+    {
+        auto const node_0{c.pins[0].nodes};
+        auto const node_1{c.pins[1].nodes};
+
+        if(node_0 && node_1) [[likely]]
+        {
+            constexpr auto G_min{::std::numeric_limits<double>::min()};
+
+            mna.G_ref(node_0->node_index, node_0->node_index) += G_min;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= G_min;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= G_min;
+            mna.G_ref(node_1->node_index, node_1->node_index) += G_min;
+        }
+
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_iterate_dc<capacitor>);
 
     inline constexpr bool
         iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::MNA::MNA& mna, double omega) noexcept
@@ -108,10 +130,10 @@ namespace phy_engine::model
         {
             ::std::complex<double> z{0.0, c.m_kZimag * omega};
 
-            mna.G_ref(node_0->node_index, node_0->node_index) = z;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -z;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -z;
-            mna.G_ref(node_1->node_index, node_1->node_index) = z;
+            mna.G_ref(node_0->node_index, node_0->node_index) += z;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= z;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= z;
+            mna.G_ref(node_1->node_index, node_1->node_index) += z;
         }
 
         return true;
@@ -137,12 +159,12 @@ namespace phy_engine::model
             c.m_historyX.set(0, voltage);
             icg.integrate(c.m_historyX, c.m_historyY, c.m_kZimag, geq, Ieq);
 
-            mna.G_ref(node_0->node_index, node_0->node_index) = geq;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -geq;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -geq;
-            mna.G_ref(node_1->node_index, node_1->node_index) = geq;
-            mna.I_ref(node_0->node_index) = -Ieq;
-            mna.I_ref(node_1->node_index) = Ieq;
+            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
+            mna.I_ref(node_0->node_index) -= Ieq;
+            mna.I_ref(node_1->node_index) += Ieq;
         }
 
         return true;
@@ -164,6 +186,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_integral_history_view<capacitor>);
-
 
 }  // namespace phy_engine::model

@@ -24,7 +24,7 @@ int main()
         auto& node2{create_node(nl)};
         add_to_node(nl, *VDC, 0, node2);
         add_to_node(nl, *R1, 0, node2);
-        auto& node3{nl.ground_node};  // ground
+        auto& node3{create_node(nl)};  // ground
         add_to_node(nl, *VDC, 1, node3);
         add_to_node(nl, *SPS, 1, node3);
 

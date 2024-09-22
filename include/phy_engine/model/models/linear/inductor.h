@@ -84,7 +84,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<inductor>);
 
-    inline constexpr bool
+    inline bool
         prepare_tr_define(::phy_engine::model::model_reserve_type_t<inductor>, inductor const& i, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
     {
         auto const node_0{i.pins[0].nodes};
@@ -96,6 +96,8 @@ namespace phy_engine::model
             icg.m_integralU.push_back(node_1->node_index);
             icg.m_integralJ.push_back(i.branches.index);
         }
+
+        return true;
     }
 
     static_assert(::phy_engine::model::defines::can_prepare_tr<inductor>);
@@ -145,10 +147,10 @@ namespace phy_engine::model
                 // mna.E_ref(k) += 0.0;
 
                 ::std::complex<double> z{0.0, -1.0 / (i.m_kZimag * omega)};
-                mna.G_ref(node_0->node_index, node_0->node_index) = z;
-                mna.G_ref(node_0->node_index, node_1->node_index) = -z;
-                mna.G_ref(node_1->node_index, node_0->node_index) = -z;
-                mna.G_ref(node_1->node_index, node_1->node_index) = z;
+                mna.G_ref(node_0->node_index, node_0->node_index) += z;
+                mna.G_ref(node_0->node_index, node_1->node_index) -= z;
+                mna.G_ref(node_1->node_index, node_0->node_index) -= z;
+                mna.G_ref(node_1->node_index, node_1->node_index) += z;
 
 
             }

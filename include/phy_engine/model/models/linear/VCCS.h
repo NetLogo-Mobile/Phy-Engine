@@ -86,10 +86,10 @@ namespace phy_engine::model
         if(node_S && node_T && node_P && node_Q) [[likely]]
         {
 
-            mna.G_ref(node_S->node_index, node_P->node_index) = vccs.m_g;
-            mna.G_ref(node_S->node_index, node_Q->node_index) = -vccs.m_g;
-            mna.G_ref(node_T->node_index, node_P->node_index) = -vccs.m_g;
-            mna.G_ref(node_T->node_index, node_Q->node_index) = vccs.m_g;
+            mna.G_ref(node_S->node_index, node_P->node_index) += vccs.m_g;
+            mna.G_ref(node_S->node_index, node_Q->node_index) -= vccs.m_g;
+            mna.G_ref(node_T->node_index, node_P->node_index) -= vccs.m_g;
+            mna.G_ref(node_T->node_index, node_Q->node_index) += vccs.m_g;
         }
         return true;
     }

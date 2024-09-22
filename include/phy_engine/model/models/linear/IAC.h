@@ -127,8 +127,8 @@ namespace phy_engine::model
         auto const node_B{iac.pins[1].nodes};
         if(node_A && node_B) [[likely]]
         {
-            mna.I_ref(node_A->node_index) = -iac.m_Ip;
-            mna.I_ref(node_B->node_index) = iac.m_Ip;
+            mna.I_ref(node_A->node_index) -= iac.m_Ip;
+            mna.I_ref(node_B->node_index) += iac.m_Ip;
         }
         return true;
     }
@@ -142,8 +142,8 @@ namespace phy_engine::model
         auto const node_B{iac.pins[1].nodes};
         if(node_A && node_B) [[likely]]
         {
-            mna.I_ref(node_A->node_index) = -iac.m_I;
-            mna.I_ref(node_B->node_index) = iac.m_I;
+            mna.I_ref(node_A->node_index) -= iac.m_I;
+            mna.I_ref(node_B->node_index) += iac.m_I;
         }
         return true;
     }
@@ -162,8 +162,8 @@ namespace phy_engine::model
         {
             double I{iac.m_Ip * ::std::sin(iac.m_omega * t_time + iac.m_phase)};
 
-            mna.I_ref(node_A->node_index) = -I;
-            mna.I_ref(node_B->node_index) = I;
+            mna.I_ref(node_A->node_index) -= I;
+            mna.I_ref(node_B->node_index) += I;
         }
         return true;
     }

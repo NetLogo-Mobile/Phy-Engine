@@ -87,10 +87,10 @@ namespace phy_engine::model
         if(node_0 && node_1) [[likely]]
         {
             auto const m_G{1.0 / r.r};
-            mna.G_ref(node_0->node_index, node_0->node_index) = m_G;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -m_G;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -m_G;
-            mna.G_ref(node_1->node_index, node_1->node_index) = m_G;
+            mna.G_ref(node_0->node_index, node_0->node_index) += m_G;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= m_G;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= m_G;
+            mna.G_ref(node_1->node_index, node_1->node_index) += m_G;
         }
 
         return true;

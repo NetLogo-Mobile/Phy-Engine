@@ -87,8 +87,8 @@ namespace phy_engine::model
         auto const node_B{idc.pins[1].nodes};
         if(node_A && node_B) [[likely]]
         {
-            mna.I_ref(node_A->node_index) = -idc.I;
-            mna.I_ref(node_B->node_index) = idc.I;
+            mna.I_ref(node_A->node_index) -= idc.I;
+            mna.I_ref(node_B->node_index) += idc.I;
         }
         return true;
     }

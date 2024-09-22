@@ -2,7 +2,9 @@
 #include <cstdint>
 #include <utility>
 #include <fast_io/fast_io_dsal/vector.h>
-
+#ifdef PHY_ENGINE_PRINT_MARTIX
+    #include <iostream>
+#endif
 #include <Eigen/Sparse>
 #include <Eigen/SparseLU>
 
@@ -82,18 +84,11 @@ namespace phy_engine
 
                     if(!solve()) [[unlikely]] { return false; }
 
-                    // ground
-                    ::std::complex<double> ground_voltage_deviation{};
-                    if(nl.ground_node.num_of_analog_node != 0)
-                    {
-                        auto const ground_voltage{mna.X_ref(nl.ground_node.node_index)};
-                        ground_voltage_deviation = -ground_voltage;
-                    }
-
                     ::std::size_t i{};
-                    for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i) + ground_voltage_deviation; }
+                    for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
+                    nl.ground_node.node_information.an.voltage = {};
                     ::std::size_t c{};
-                    for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c]->current = mna.X_ref(i); }
+                    for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c++]->current = mna.X_ref(i); }
 
                     break;
                 }
@@ -108,7 +103,6 @@ namespace phy_engine
         }
 
     private:
-        
         void prepare() noexcept
         {
             m_currentOmega = 0.0;
@@ -124,7 +118,7 @@ namespace phy_engine
 
             size_t_to_node_p.clear();
             auto all_node_size{nl.nodes.size() * ::phy_engine::netlist::details::netlist_node_block::chunk_module_size};
-            if(nl.ground_node.num_of_analog_node != 0) { ++all_node_size; }
+            // if(nl.ground_node.num_of_analog_node != 0) { ++all_node_size; }
             size_t_to_node_p.reserve(all_node_size);
 
             for(auto& i: nl.nodes)
@@ -139,11 +133,7 @@ namespace phy_engine
                 }
             }
 
-            if(nl.ground_node.num_of_analog_node != 0)  // ground
-            {
-                size_t_to_node_p.push_back_unchecked(__builtin_addressof(nl.ground_node));
-                nl.ground_node.node_index = node_counter++;
-            }
+            nl.ground_node.node_index = SIZE_MAX;
 
             // clear mna (set zero)
             mna.clear();
@@ -414,6 +404,11 @@ namespace phy_engine
                         ::fast_io::unreachable();
                     }
                 }
+
+#ifdef PHY_ENGINE_PRINT_MARTIX
+                ::std::cout << mna.A << "\n";
+                ::std::cout << mna.Z << "\n";
+#endif  // _DEBUG
 
                 ::std::ranges::sort(icg.m_integralU);
                 ::std::ranges::sort(icg.m_integralJ);

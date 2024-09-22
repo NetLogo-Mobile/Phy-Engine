@@ -3,7 +3,6 @@
 #include <fast_io/fast_io.h>
 #include <Eigen/Sparse>
 
-
 namespace phy_engine::MNA
 {
     using sparse_vector = ::Eigen::SparseVector<double>;
@@ -47,68 +46,133 @@ namespace phy_engine::MNA
             Z.~SparseVector();
         }
 
-        auto& a_ref(::std::size_t rox, ::std::size_t col) noexcept
+        auto& A_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
+            if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= node_size + branch_size || col >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return A.coeffRef(rox, col);
         }
 
         auto& G_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
+            if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
             if(rox >= node_size || col >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return A.coeffRef(rox, col);
         }
 
         auto& B_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
+            if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= node_size || col >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return A.coeffRef(rox, col + node_size);
         }
 
         auto& C_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
+            if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= branch_size || col >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return A.coeffRef(rox + node_size, col);
         }
 
         auto& D_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
+            if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= branch_size || col >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return A.coeffRef(rox + node_size, col + node_size);
         }
 
         auto& X_ref(::std::size_t rox) noexcept
         {
+            if(rox == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return X.coeffRef(rox);
         }
 
         auto& V_ref(::std::size_t rox) noexcept
         {
+            if(rox == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return X.coeffRef(rox);
         }
 
         auto& J_ref(::std::size_t rox) noexcept
         {
+            if(rox == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return X.coeffRef(rox + node_size);
         }
 
         auto& Z_ref(::std::size_t rox) noexcept
         {
+            if(rox == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return Z.coeffRef(rox);
         }
 
         auto& I_ref(::std::size_t rox) noexcept
         {
+            if(rox == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return Z.coeffRef(rox);
         }
 
         auto& E_ref(::std::size_t rox) noexcept
         {
+            if(rox == SIZE_MAX) [[unlikely]]
+            {
+                ::std::complex<double> d_temp{};
+                return d_temp;
+            }
+
             if(rox >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
             return Z.coeffRef(rox + node_size);
         }
