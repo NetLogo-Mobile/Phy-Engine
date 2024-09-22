@@ -51,7 +51,6 @@ int main()
     }
     {
         ::fast_io::io::print("\nR1=0 ohm, R2=10 ohm, U=3V\n");
-
         ::phy_engine::circult c{};
         c.set_analyze_type(::phy_engine::analyze_type::DC);
 
