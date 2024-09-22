@@ -9,9 +9,8 @@ int main()
 {
     {
         ::phy_engine::circult c{};
-        c.set_analyze_type(::phy_engine::analyze_type::DC);
+        c.set_analyze_type(::phy_engine::analyze_type::OP);
 
-       
         auto& nl{c.get_netlist()};
 
         auto [R1, R1_pos]{add_model(nl, ::phy_engine::model::resistance{.r = 10.0})};
@@ -40,9 +39,8 @@ int main()
                                ::fast_io::mnp::fixed(r2_pin_view.pins[0].nodes->node_information.an.voltage),
                                ", VB=",
                                ::fast_io::mnp::fixed(r2_pin_view.pins[1].nodes->node_information.an.voltage));
-        
+
         auto const VDC_branch_view{VDC->ptr->generate_branch_view()};
         ::fast_io::io::println("VDC: current=", ::fast_io::mnp::fixed(-VDC_branch_view.branches[0].current));
-
     }
 }

@@ -54,14 +54,15 @@ namespace phy_engine
 
         constexpr ::phy_engine::analyzer::analyzer_storage_t& get_analyze_setting() noexcept { return analyzer_setting; }
 
-        constexpr void analyze() noexcept
+        constexpr bool analyze() noexcept
         {
             switch(at)
             {
-                case phy_engine::OP: break;
-                case phy_engine::DC:
+                case phy_engine::OP: [[fallthrough]];
+                case phy_engine::DC: [[fallthrough]];
+                case phy_engine::AC: [[fallthrough]];
+                case phy_engine::ACOP:
                 {
-
                     prepare();
 
                     /* Rotate state queue */
@@ -79,7 +80,7 @@ namespace phy_engine
                         }
                     }
 
-                    solve();
+                    if(!solve()) [[unlikely]] { return false; }
 
                     // ground
                     ::std::complex<double> ground_voltage_deviation{};
@@ -96,8 +97,6 @@ namespace phy_engine
 
                     break;
                 }
-                case phy_engine::AC: break;
-                case phy_engine::ACOP: break;
                 case phy_engine::TR: break;
                 case phy_engine::TROP: break;
                 default:
@@ -105,9 +104,11 @@ namespace phy_engine
                     ::fast_io::unreachable();
                 }
             }
+            return true;
         }
 
     private:
+        
         void prepare() noexcept
         {
             m_currentOmega = 0.0;
@@ -314,7 +315,7 @@ namespace phy_engine
             // to do
         }
 
-        void solve() noexcept
+        bool solve() noexcept
         {
             int rc{};
             bool converged{};
@@ -422,8 +423,11 @@ namespace phy_engine
                     ::Eigen::SparseLU<::phy_engine::MNA::sparse_complex_matrix, ::Eigen::COLAMDOrdering<int>> solver{};
                     solver.analyzePattern(mna.A);
                     solver.factorize(mna.A);
+                    if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
                     mna.X = solver.solve(mna.Z);
                 }
+
+                if(at != analyze_type::TR && at != analyze_type::TROP) { break; }
 
                 if(iteration) [[likely]] { converged = is_converged(); }
                 cont = !converged;
@@ -435,6 +439,8 @@ namespace phy_engine
                 iteration++;
             }
             while(cont && (iteration < max_iterations));
+
+            return true;
         }
 
         constexpr bool is_converged() noexcept

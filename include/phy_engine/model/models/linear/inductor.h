@@ -15,7 +15,7 @@ namespace phy_engine::model
 
         double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
-        ::phy_engine::model::branch branchs{};
+        ::phy_engine::model::branch branches{};
 
         // private:
         ::phy_engine::solver::integral_history m_historyX{};
@@ -94,7 +94,7 @@ namespace phy_engine::model
         {
             icg.m_integralU.push_back(node_0->node_index);
             icg.m_integralU.push_back(node_1->node_index);
-            icg.m_integralJ.push_back(i.branchs.index);
+            icg.m_integralJ.push_back(i.branches.index);
         }
     }
 
@@ -107,7 +107,7 @@ namespace phy_engine::model
         auto const node_1{i.pins[1].nodes};
         if(node_0 && node_1) [[likely]]
         {
-            auto const k{i.branchs.index};
+            auto const k{i.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;
             mna.B_ref(node_1->node_index, k) = -1.0;
             mna.C_ref(k, node_0->node_index) = 1.0;
@@ -129,7 +129,7 @@ namespace phy_engine::model
 
         if(node_0 && node_1) [[likely]]
         {
-            auto const k{i.branchs.index};
+            auto const k{i.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;
             mna.B_ref(node_1->node_index, k) = -1.0;
 
@@ -171,7 +171,7 @@ namespace phy_engine::model
         auto const node_1{i.pins[1].nodes};
         if(node_0 && node_1) [[likely]]
         {
-            double I{mna.J_ref(i.branchs.index).real()};
+            double I{mna.J_ref(i.branches.index).real()};
 
             double req{};
             double Ueq{};
@@ -179,7 +179,7 @@ namespace phy_engine::model
             i.m_historyX.set(0, I);
             icg.integrate(i.m_historyX, i.m_historyY, i.m_kZimag, req, Ueq);
             
-            auto const k{i.branchs.index};
+            auto const k{i.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;
             mna.B_ref(node_1->node_index, k) = -1.0;
             mna.C_ref(k, node_0->node_index) = 1.0;
@@ -203,7 +203,7 @@ namespace phy_engine::model
 
     inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<inductor>, inductor& i) noexcept
     {
-        return {__builtin_addressof(i.branchs), 1};
+        return {__builtin_addressof(i.branches), 1};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<inductor>);

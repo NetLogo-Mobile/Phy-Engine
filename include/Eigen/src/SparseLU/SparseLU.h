@@ -455,6 +455,8 @@ class SparseLU : public SparseSolverBase<SparseLU<_MatrixType,_OrderingType> >, 
     Index nnzL() const { return m_nnzL; };
     Index nnzU() const { return m_nnzU; };
 
+    bool factorizationIsOk() const { return m_factorizationIsOk; };
+
   protected:
     // Functions 
     void initperfvalues()

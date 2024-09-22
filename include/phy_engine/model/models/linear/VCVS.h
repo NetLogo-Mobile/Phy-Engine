@@ -13,7 +13,7 @@ namespace phy_engine::model
 
         double m_mu{1.0};
         ::phy_engine::model::pin pins[4]{{{u8"S"}}, {{u8"T"}}, {{u8"P"}}, {{u8"Q"}}};
-        ::phy_engine::model::branch branchs{};
+        ::phy_engine::model::branch branches{};
     };
 
     static_assert(::phy_engine::model::model<VCVS>);
@@ -87,7 +87,7 @@ namespace phy_engine::model
         auto const node_Q{vcvs.pins[3].nodes};
         if(node_S && node_T && node_P && node_Q) [[likely]]
         {
-            ::std::size_t k{vcvs.branchs.index};
+            ::std::size_t k{vcvs.branches.index};
 
             mna.B_ref(node_S->node_index, k) = 1.0;
             mna.B_ref(node_T->node_index, k) = -1.0;
@@ -112,7 +112,7 @@ namespace phy_engine::model
 
     inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<VCVS>, VCVS& vcvs) noexcept
     {
-        return {__builtin_addressof(vcvs.branchs), 1};
+        return {__builtin_addressof(vcvs.branches), 1};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<VCVS>);

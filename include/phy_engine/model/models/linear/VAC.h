@@ -18,7 +18,7 @@ namespace phy_engine::model
         double m_phase{0.0};
 
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
-        ::phy_engine::model::branch branchs{};
+        ::phy_engine::model::branch branches{};
 
         // private:
         ::std::complex<double> m_E{};
@@ -128,7 +128,7 @@ namespace phy_engine::model
         auto const node_B{vac.pins[1].nodes};
         if(node_A && node_B) [[likely]]
         {
-            auto const k{vac.branchs.index};
+            auto const k{vac.branches.index};
             mna.B_ref(node_A->node_index, k) = 1.0;
             mna.B_ref(node_B->node_index, k) = -1.0;
             mna.C_ref(k, node_A->node_index) = 1.0;
@@ -147,7 +147,7 @@ namespace phy_engine::model
         auto const node_B{vac.pins[1].nodes};
         if(node_A && node_B) [[likely]]
         {
-            auto const k{vac.branchs.index};
+            auto const k{vac.branches.index};
             mna.B_ref(node_A->node_index, k) = 1.0;
             mna.B_ref(node_B->node_index, k) = -1.0;
             mna.C_ref(k, node_A->node_index) = 1.0;
@@ -169,7 +169,7 @@ namespace phy_engine::model
         auto const node_B{vac.pins[1].nodes};
         if(node_A && node_B) [[likely]]
         {
-            auto const k{vac.branchs.index};
+            auto const k{vac.branches.index};
             mna.B_ref(node_A->node_index, k) = 1.0;
             mna.B_ref(node_B->node_index, k) = -1.0;
             mna.C_ref(k, node_A->node_index) = 1.0;
@@ -190,7 +190,7 @@ namespace phy_engine::model
 
     inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<VAC>, VAC& vac) noexcept
     {
-        return {__builtin_addressof(vac.branchs), 1};
+        return {__builtin_addressof(vac.branches), 1};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<VAC>);
