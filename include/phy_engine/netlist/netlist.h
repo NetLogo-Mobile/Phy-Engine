@@ -353,15 +353,11 @@ namespace phy_engine::netlist
         ::fast_io::vector<::phy_engine::netlist::details::netlist_model_base_block> models{};
         ::fast_io::vector<::phy_engine::netlist::details::netlist_node_block> nodes{};
 
-        ::phy_engine::model::node_t ground_node{};
-
-        ::std::size_t m_numBranches{};
-        ::std::size_t m_numTermls{};
-        
+        ::phy_engine::model::node_t ground_node{};    
 
         constexpr netlist() noexcept = default;
 
-        netlist(netlist const& other) noexcept : m_numTermls{other.m_numTermls}, m_numBranches{other.m_numBranches}
+        netlist(netlist const& other) noexcept 
         {
             ::std::map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
 
@@ -447,8 +443,6 @@ namespace phy_engine::netlist
             if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
             models.clear();
             nodes.clear();
-            m_numTermls = other.m_numTermls;
-            m_numBranches = other.m_numBranches;
 
             // deep copy
             ::std::map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};

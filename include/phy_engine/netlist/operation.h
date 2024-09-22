@@ -45,18 +45,10 @@ namespace phy_engine::netlist
     inline constexpr add_model_retstr add_model(netlist& nl, mod&& m) noexcept
     {
         using rcvmod_type = ::std::remove_cvref_t<mod>;
-        auto const pin_view{generate_pin_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m)};
         if(nl.models.empty()) [[unlikely]]
         {
             auto& nlb{nl.models.emplace_back()};
             new(nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
-            nl.m_numTermls += pin_view.size;
-            if constexpr(::phy_engine::model::defines::can_generate_branch_view<mod>)
-            {
-                auto const bv{nlb.curr->ptr->generate_branch_view()};
-                nl.m_numBranches += bv.size;
-            }
-
             return {
                 nlb.curr++,
                 {0, 0}
@@ -69,12 +61,6 @@ namespace phy_engine::netlist
             {
                 auto& new_nlb{nl.models.emplace_back()};
                 new(new_nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
-                nl.m_numTermls += pin_view.size;
-                if constexpr(::phy_engine::model::defines::can_generate_branch_view<mod>)
-                {
-                    auto const bv{nlb.curr->ptr->generate_branch_view()};
-                    nl.m_numBranches += bv.size;
-                }
 
                 return {
                     new_nlb.curr++,
@@ -84,12 +70,6 @@ namespace phy_engine::netlist
             else
             {
                 new(nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
-                nl.m_numTermls += pin_view.size;
-                if constexpr(::phy_engine::model::defines::can_generate_branch_view<mod>)
-                {
-                    auto const bv{nlb.curr->ptr->generate_branch_view()};
-                    nl.m_numBranches += bv.size;
-                }
 
                 add_model_retstr return_val{
                     nlb.curr,
@@ -121,12 +101,6 @@ namespace phy_engine::netlist
                 return false;
             }
 
-            auto const i_pin_view{i->ptr->generate_pin_view()};
-            nl.m_numTermls -= i_pin_view.size;
-
-            auto const branch_size{i->ptr->generate_branch_view()};
-            nl.m_numBranches -= branch_size.size;
-
             i->~model_base();
             --nlb.curr;
         }
@@ -134,13 +108,7 @@ namespace phy_engine::netlist
         {
             if(i->type != ::phy_engine::model::model_type::null)
             {
-                auto const i_pin_view{i->ptr->generate_pin_view()};
-
                 ++nlb.num_of_null_model;
-                nl.m_numTermls -= i_pin_view.size;
-
-                auto const branch_size{i->ptr->generate_branch_view()};
-                nl.m_numBranches -= branch_size.size;
 
                 i->clear();
             }

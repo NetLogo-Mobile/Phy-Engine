@@ -135,6 +135,24 @@ namespace phy_engine
 
             nl.ground_node.node_index = SIZE_MAX;
 
+            // count branch
+            branch_counter = 0;
+            size_t_to_branch_p.clear();
+
+            for(auto& i: nl.models)
+            {
+                for(auto c{i.begin}; c != i.curr; ++c)
+                {
+                    auto const branch_view{c->ptr->generate_branch_view()};
+                    for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
+                    {
+
+                        size_t_to_branch_p.push_back(branch_c);
+                        branch_c->index = branch_counter++;
+                    }
+                }
+            }
+
             // clear mna (set zero)
             mna.clear();
 
@@ -143,12 +161,7 @@ namespace phy_engine
                 + static_cast<::std::size_t>(env.g_min != 0.0) // Gmin, to do
 #endif
                        ,
-                       nl.m_numBranches);
-
-            // clear
-            size_t_to_branch_p.clear();
-            size_t_to_branch_p.reserve(nl.m_numBranches);
-            branch_counter = 0;
+                       branch_counter);
 
             // prepare MNA
             switch(at)
@@ -169,14 +182,6 @@ namespace phy_engine
                             }
                             if(!c->ptr->prepare_op()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
-
-                            auto const branch_view{c->ptr->generate_branch_view()};
-                            for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
-                            {
-
-                                size_t_to_branch_p.push_back_unchecked(branch_c);
-                                branch_c->index = branch_counter++;
-                            }
                         }
                     }
 
@@ -197,14 +202,6 @@ namespace phy_engine
                             }
                             if(!c->ptr->prepare_dc()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
-
-                            auto const branch_view{c->ptr->generate_branch_view()};
-                            for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
-                            {
-
-                                size_t_to_branch_p.push_back(branch_c);
-                                branch_c->index = branch_counter++;
-                            }
                         }
                     }
 
@@ -225,14 +222,6 @@ namespace phy_engine
                             }
                             if(!c->ptr->prepare_ac()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
-
-                            auto const branch_view{c->ptr->generate_branch_view()};
-                            for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
-                            {
-
-                                size_t_to_branch_p.push_back(branch_c);
-                                branch_c->index = branch_counter++;
-                            }
                         }
                     }
 
@@ -254,14 +243,6 @@ namespace phy_engine
                             }
                             if(!c->ptr->prepare_tr(icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
-
-                            auto const branch_view{c->ptr->generate_branch_view()};
-                            for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
-                            {
-
-                                size_t_to_branch_p.push_back(branch_c);
-                                branch_c->index = branch_counter++;
-                            }
                         }
                     }
 
@@ -282,14 +263,6 @@ namespace phy_engine
                             }
                             if(!c->ptr->prepare_trop(icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
-
-                            auto const branch_view{c->ptr->generate_branch_view()};
-                            for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
-                            {
-
-                                size_t_to_branch_p.push_back(branch_c);
-                                branch_c->index = branch_counter++;
-                            }
                         }
                     }
 
@@ -321,7 +294,7 @@ namespace phy_engine
                 + static_cast<::std::size_t>(env.g_min != 0.0) // Gmin, to do
 #endif
                            ,
-                           nl.m_numBranches);
+                           branch_counter);
 
                 converged = false;
 

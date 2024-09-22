@@ -14,6 +14,7 @@ namespace phy_engine::model
 
         bool cut_through{};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
+        ::phy_engine::model::branch branches{};
     };
 
     static_assert(::phy_engine::model::model<single_pole_switch>);
@@ -85,22 +86,20 @@ namespace phy_engine::model
     inline constexpr bool
         iterate_dc_define(::phy_engine::model::model_reserve_type_t<single_pole_switch>, single_pole_switch const& sps, ::phy_engine::MNA::MNA& mna) noexcept
     {
-        auto const node_0{sps.pins[0].nodes};
-        auto const node_1{sps.pins[1].nodes};
-        if(node_0 && node_1) [[likely]]
+        if(sps.cut_through)
         {
-
-            constexpr auto G_min{::std::numeric_limits<double>::min()};
-            constexpr auto G_max{::std::numeric_limits<double>::max()};
-            auto const m_G{sps.cut_through ? G_max : G_min};
-
-            mna.G_ref(node_0->node_index, node_0->node_index) = m_G;
-            mna.G_ref(node_0->node_index, node_1->node_index) = -m_G;
-            mna.G_ref(node_1->node_index, node_0->node_index) = -m_G;
-            mna.G_ref(node_1->node_index, node_1->node_index) = m_G;
-
+            auto const node_0{sps.pins[0].nodes};
+            auto const node_1{sps.pins[1].nodes};
+            if(node_0 && node_1) [[likely]]
+            {
+                auto const k{sps.branches.index};
+                mna.B_ref(node_0->node_index, k) = 1.0;
+                mna.B_ref(node_1->node_index, k) = -1.0;
+                mna.C_ref(k, node_0->node_index) = 1.0;
+                mna.C_ref(k, node_1->node_index) = -1.0;
+                // mna.E_ref(k) = 0.0;
+            }
         }
-
         return true;
     }
 
@@ -113,5 +112,14 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<single_pole_switch>);
+
+    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<single_pole_switch>,
+                                                                            single_pole_switch& sps) noexcept
+    {
+        if(sps.cut_through) { return {__builtin_addressof(sps.branches), 1}; }
+        else { return {}; }
+    }
+
+    static_assert(::phy_engine::model::defines::can_generate_branch_view<single_pole_switch>);
 
 }  // namespace phy_engine::model
