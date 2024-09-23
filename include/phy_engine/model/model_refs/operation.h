@@ -35,11 +35,11 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool prepare_tr(mod&& m, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+    inline constexpr bool prepare_tr(mod&& m) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
         {
-            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), icg);
+            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
         }
         else { return true; }
     }
@@ -59,15 +59,15 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool prepare_trop(mod&& m, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+    inline constexpr bool prepare_trop(mod&& m) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_prepare_trop<mod>)
         {
-            return prepare_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), icg);
+            return prepare_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
         }
         else if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
         {
-            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), icg);
+            return prepare_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
         }
         else { return true; }
     }
@@ -99,14 +99,11 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_tr(mod&& m,
-                                     ::phy_engine::MNA::MNA& mna,
-                                     [[maybe_unused]] double tTime,
-                                     [[maybe_unused]] ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+    inline constexpr bool iterate_tr(mod&& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double tTime) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
         {
-            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, tTime, icg);
+            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, tTime);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
@@ -132,15 +129,15 @@ namespace phy_engine::model
     }
 
     template <::phy_engine::model::model mod>
-    inline constexpr bool iterate_trop(mod&& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+    inline constexpr bool iterate_trop(mod&& m, ::phy_engine::MNA::MNA& mna) noexcept
     {
         if constexpr(::phy_engine::model::defines::can_iterate_trop<mod>)
         {
-            return iterate_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, icg);
+            return iterate_trop_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_tr<mod>)
         {
-            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, 0.0, icg);
+            return iterate_tr_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m), mna, 0.0);
         }
         else if constexpr(::phy_engine::model::defines::can_iterate_dc<mod>)
         {
@@ -257,13 +254,4 @@ namespace phy_engine::model
         else { return {}; }
     }
 
-    template <::phy_engine::model::model mod>
-    inline constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view(mod&& m) noexcept
-    {
-        if constexpr(::phy_engine::model::defines::can_generate_integral_history_view<mod>)
-        {
-            return generate_integral_history_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
-        }
-        else { return {}; }
-    }
 }  // namespace phy_engine::model

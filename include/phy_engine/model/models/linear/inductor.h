@@ -1,8 +1,6 @@
 #pragma once
 #include <fast_io/fast_io_dsal/string_view.h>
 #include "../../model_refs/base.h"
-#include "../../../circuits/solver/integral_history.h"
-#include "../../../circuits/solver/integral_corrector_gear.h"
 
 namespace phy_engine::model
 {
@@ -16,10 +14,6 @@ namespace phy_engine::model
         double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
         ::phy_engine::model::branch branches{};
-
-        // private:
-        ::phy_engine::solver::integral_history m_historyX{};
-        ::phy_engine::solver::integral_history m_historyY{};
     };
 
     static_assert(::phy_engine::model::model<inductor>);
@@ -84,24 +78,6 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<inductor>);
 
-    inline bool
-        prepare_tr_define(::phy_engine::model::model_reserve_type_t<inductor>, inductor const& i, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
-    {
-        auto const node_0{i.pins[0].nodes};
-        auto const node_1{i.pins[1].nodes};
-
-        if(node_0 && node_1) [[likely]]
-        {
-            icg.m_integralU.push_back(node_0->node_index);
-            icg.m_integralU.push_back(node_1->node_index);
-            icg.m_integralJ.push_back(i.branches.index);
-        }
-
-        return true;
-    }
-
-    static_assert(::phy_engine::model::defines::can_prepare_tr<inductor>);
-
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<inductor>, inductor const& i, ::phy_engine::MNA::MNA& mna) noexcept
     {
 
@@ -135,15 +111,15 @@ namespace phy_engine::model
             mna.B_ref(node_0->node_index, k) = 1.0;
             mna.B_ref(node_1->node_index, k) = -1.0;
 
-            if(i.m_kZimag == 0.0) 
+            if(i.m_kZimag == 0.0)
             {
                 mna.C_ref(k, node_0->node_index) = 1.0;
                 mna.C_ref(k, node_1->node_index) = -1.0;
                 // mna.E_ref(k) += 0.0;
             }
-            else 
+            else
             {
-                mna.D_ref(k, k) = 1.0;  
+                mna.D_ref(k, k) = 1.0;
                 // mna.E_ref(k) += 0.0;
 
                 ::std::complex<double> z{0.0, -1.0 / (i.m_kZimag * omega)};
@@ -151,10 +127,7 @@ namespace phy_engine::model
                 mna.G_ref(node_0->node_index, node_1->node_index) -= z;
                 mna.G_ref(node_1->node_index, node_0->node_index) -= z;
                 mna.G_ref(node_1->node_index, node_1->node_index) += z;
-
-
             }
-
         }
 
         return true;
@@ -165,32 +138,9 @@ namespace phy_engine::model
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<inductor>,
                                             inductor& i,
                                             ::phy_engine::MNA::MNA& mna,
-                                            [[maybe_unused]] double t_time,
-                                            ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+                                            [[maybe_unused]] double t_time) noexcept
     {
-
-        auto const node_0{i.pins[0].nodes};
-        auto const node_1{i.pins[1].nodes};
-        if(node_0 && node_1) [[likely]]
-        {
-            double I{mna.J_ref(i.branches.index).real()};
-
-            double req{};
-            double Ueq{};
-
-            i.m_historyX.set(0, I);
-            icg.integrate(i.m_historyX, i.m_historyY, i.m_kZimag, req, Ueq);
-            
-            auto const k{i.branches.index};
-            mna.B_ref(node_0->node_index, k) = 1.0;
-            mna.B_ref(node_1->node_index, k) = -1.0;
-            mna.C_ref(k, node_0->node_index) = 1.0;
-            mna.C_ref(k, node_1->node_index) = -1.0;
-            mna.D_ref(k, k) = -req;
-            mna.E_ref(k) = Ueq;
-
-        }
-
+        // to do
         return true;
     }
 
@@ -209,13 +159,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<inductor>);
-
-    inline constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view_define(::phy_engine::model::model_reserve_type_t<inductor>,
-                                                                                                       inductor& i) noexcept
-    {
-        return {__builtin_addressof(i.m_historyX), __builtin_addressof(i.m_historyY), 1};
-    }
-
-    static_assert(::phy_engine::model::defines::can_generate_integral_history_view<inductor>);
 
 }  // namespace phy_engine::model

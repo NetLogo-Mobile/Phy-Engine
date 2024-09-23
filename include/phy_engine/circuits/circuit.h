@@ -12,7 +12,6 @@
 #include "../netlist/netlist.h"
 #include "MNA/mna.h"
 #include "analyze.h"
-#include "solver/integral_corrector_gear.h"
 #include "analyzer/impl.h"
 
 namespace phy_engine
@@ -42,8 +41,6 @@ namespace phy_engine
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
 
-        ::phy_engine::solver::integral_corrector_gear icg{};
-
         ::phy_engine::MNA::sparse_complex_vector last_X{};
         ::phy_engine::MNA::sparse_complex_vector last_Z{};
 
@@ -66,21 +63,6 @@ namespace phy_engine
                 case phy_engine::ACOP:
                 {
                     prepare();
-
-                    /* Rotate state queue */
-
-                    for(auto& i: nl.models)
-                    {
-                        for(auto c{i.begin}; c != i.curr; ++c)
-                        {
-                            if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                            auto const [integral_X, integral_Y, integral_size]{c->ptr->generate_integral_history_view()};
-
-                            if(integral_size == 0) { continue; }
-                            for(auto ci{integral_X}; ci != integral_X + integral_size; ++ci) { ci->push(); }
-                            for(auto ci{integral_Y}; ci != integral_Y + integral_size; ++ci) { ci->push(); }
-                        }
-                    }
 
                     if(!solve()) [[unlikely]] { return false; }
 
@@ -106,9 +88,6 @@ namespace phy_engine
         void prepare() noexcept
         {
             m_currentOmega = 0.0;
-
-            icg.m_integralU.clear();
-            icg.m_integralJ.clear();
 
             // set gmin optimizer
             if(env.g_min != 0.0) { _lastFixRow = static_cast<::std::size_t>(-1); }
@@ -241,7 +220,7 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_tr(icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!c->ptr->prepare_tr()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
@@ -261,7 +240,7 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_trop(icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!c->ptr->prepare_trop()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
@@ -352,7 +331,7 @@ namespace phy_engine
                             {
                                 if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                                if(!c->ptr->iterate_tr(mna, t_time + t_step, icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                                if(!c->ptr->iterate_tr(mna, t_time + t_step)) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
                         }
 
@@ -366,7 +345,7 @@ namespace phy_engine
                             {
                                 if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                                if(!c->ptr->iterate_trop(mna, icg)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                                if(!c->ptr->iterate_trop(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
                         }
 
@@ -382,9 +361,6 @@ namespace phy_engine
                 ::std::cout << mna.A << "\n";
                 ::std::cout << mna.Z << "\n";
 #endif  // _DEBUG
-
-                ::std::ranges::sort(icg.m_integralU);
-                ::std::ranges::sort(icg.m_integralJ);
 
                 // solve
                 {

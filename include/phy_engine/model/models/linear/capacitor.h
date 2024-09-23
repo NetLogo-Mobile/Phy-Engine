@@ -1,8 +1,6 @@
 #pragma once
 #include <fast_io/fast_io_dsal/string_view.h>
 #include "../../model_refs/base.h"
-#include "../../../circuits/solver/integral_history.h"
-#include "../../../circuits/solver/integral_corrector_gear.h"
 
 namespace phy_engine::model
 {
@@ -15,10 +13,6 @@ namespace phy_engine::model
 
         double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
-
-        // private:
-        ::phy_engine::solver::integral_history m_historyX{};
-        ::phy_engine::solver::integral_history m_historyY{};
     };
 
     static_assert(::phy_engine::model::model<capacitor>);
@@ -83,23 +77,6 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<capacitor>);
 
-    inline bool
-        prepare_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::solver::integral_corrector_gear& icg) noexcept
-    {
-        auto const node_0{c.pins[0].nodes};
-        auto const node_1{c.pins[1].nodes};
-
-        if(node_0 && node_1) [[likely]]
-        {
-            icg.m_integralU.push_back(node_0->node_index);
-            icg.m_integralU.push_back(node_1->node_index);
-        }
-
-        return true;
-    }
-
-    static_assert(::phy_engine::model::defines::can_prepare_tr<capacitor>);
-
     inline constexpr bool
         iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::MNA::MNA& mna, double omega) noexcept
     {
@@ -124,29 +101,9 @@ namespace phy_engine::model
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>,
                                             capacitor& c,
                                             ::phy_engine::MNA::MNA& mna,
-                                            [[maybe_unused]] double t_time,
-                                            ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+                                            [[maybe_unused]] double t_time) noexcept
     {
-        auto const node_0{c.pins[0].nodes};
-        auto const node_1{c.pins[1].nodes};
-        if(node_0 && node_1) [[likely]]
-        {
-            double voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
-
-            double geq{};
-            double Ieq{};
-
-            c.m_historyX.set(0, voltage);
-            icg.integrate(c.m_historyX, c.m_historyY, c.m_kZimag, geq, Ieq);
-
-            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
-            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
-            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
-            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
-            mna.I_ref(node_0->node_index) -= Ieq;
-            mna.I_ref(node_1->node_index) += Ieq;
-        }
-
+        // to do
         return true;
     }
 
@@ -158,13 +115,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<capacitor>);
-
-    inline constexpr ::phy_engine::solver::integral_history_view generate_integral_history_view_define(::phy_engine::model::model_reserve_type_t<capacitor>,
-                                                                                                       capacitor& c) noexcept
-    {
-        return {__builtin_addressof(c.m_historyX), __builtin_addressof(c.m_historyY), 1};
-    }
-
-    static_assert(::phy_engine::model::defines::can_generate_integral_history_view<capacitor>);
 
 }  // namespace phy_engine::model

@@ -153,8 +153,7 @@ namespace phy_engine::model
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<IAC>,
                                             IAC const& iac,
                                             ::phy_engine::MNA::MNA& mna,
-                                            [[maybe_unused]] double t_time,
-                                            ::phy_engine::solver::integral_corrector_gear& icg) noexcept
+                                            [[maybe_unused]] double t_time) noexcept
     {
         auto const node_A{iac.pins[0].nodes};
         auto const node_B{iac.pins[1].nodes};
