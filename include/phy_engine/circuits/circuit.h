@@ -27,22 +27,16 @@ namespace phy_engine
         ::phy_engine::analyzer::analyzer_storage_t analyzer_setting{};
 
         // storage
-        double t_time{};
-        double t_step{};
+
+        bool has_prepare{};
 
         ::phy_engine::MNA::MNA mna{};
-        double m_currentOmega{};  // AC
 
         ::std::size_t node_counter{};
         ::std::size_t branch_counter{};
 
-        ::std::size_t _lastFixRow{static_cast<::std::size_t>(-1)};  // Gmin Optimizer
-
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
-
-        ::phy_engine::MNA::sparse_complex_vector last_X{};
-        ::phy_engine::MNA::sparse_complex_vector last_Z{};
 
         // func
         constexpr ::phy_engine::environment& get_environment() noexcept { return env; }
@@ -74,8 +68,26 @@ namespace phy_engine
 
                     break;
                 }
-                case phy_engine::TR: break;
-                case phy_engine::TROP: break;
+                case phy_engine::TR: [[fallthrough]];
+                case phy_engine::TROP:
+                {
+                    double t_time{};
+                    auto const t_step{analyzer_setting.tr.t_step};
+                    auto const t_stop{analyzer_setting.tr.t_stop};
+                    prepare();
+
+                    for(; t_time < t_stop; t_time += t_step)
+                    {
+                        if(!solve()) [[unlikely]] { return false; }
+
+                        ::std::size_t i{};
+                        for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
+                        nl.ground_node.node_information.an.voltage = {};
+                        ::std::size_t c{};
+                        for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c++]->current = mna.X_ref(i); }
+                    }
+                    break;
+                }
                 default:
                 {
                     ::fast_io::unreachable();
@@ -84,14 +96,30 @@ namespace phy_engine
             return true;
         }
 
+        inline constexpr bool TR_one_step() noexcept
+        {
+            if(at != phy_engine::TR && at != phy_engine::TROP) [[unlikely]] { return false; }
+
+            double t_time{};
+            auto const t_step{analyzer_setting.tr.t_step};
+            auto const t_stop{analyzer_setting.tr.t_stop};
+
+            for(; t_time < t_stop; t_time += t_step)
+            {
+                if(!solve()) [[unlikely]] { return false; }
+
+                ::std::size_t i{};
+                for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
+                nl.ground_node.node_information.an.voltage = {};
+                ::std::size_t c{};
+                for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c++]->current = mna.X_ref(i); }
+            }
+            return true;
+        };
+
     private:
         void prepare() noexcept
         {
-            m_currentOmega = 0.0;
-
-            // set gmin optimizer
-            if(env.g_min != 0.0) { _lastFixRow = static_cast<::std::size_t>(-1); }
-
             // node
             node_counter = 0;
 
@@ -159,7 +187,10 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_op()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!has_prepare)
+                            {
+                                if(!c->ptr->prepare_op()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
@@ -179,7 +210,10 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_dc()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!has_prepare)
+                            {
+                                if(!c->ptr->prepare_dc()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
@@ -199,14 +233,16 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_ac()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!has_prepare)
+                            {
+                                if(!c->ptr->prepare_ac()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
                     break;
                 }
-
                 case ::phy_engine::TR:
                 {
                     for(auto& i: nl.models)
@@ -220,7 +256,10 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_tr()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!has_prepare)
+                            {
+                                if(!c->ptr->prepare_tr()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
@@ -240,7 +279,10 @@ namespace phy_engine
 
                                 c->has_init = true;
                             }
-                            if(!c->ptr->prepare_trop()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!has_prepare)
+                            {
+                                if(!c->ptr->prepare_trop()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            }
                             if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
@@ -255,195 +297,114 @@ namespace phy_engine
 
             // Gmin
             // to do
+            has_prepare = true;
         }
 
         bool solve() noexcept
         {
-            int rc{};
-            bool converged{};
-            bool cont{true};
-            ::std::size_t iteration{};
-            constexpr ::std::size_t max_iterations{100};
+            mna.clear();
 
-            do {
-                mna.clear();
-
-                mna.resize(node_counter
+            mna.resize(node_counter
 #if 0
                 + static_cast<::std::size_t>(env.g_min != 0.0) // Gmin, to do
 #endif
-                           ,
-                           branch_counter);
+                       ,
+                       branch_counter);
 
-                converged = false;
-
-                // iterate
-                switch(at)
+            // iterate
+            switch(at)
+            {
+                case ::phy_engine::OP:
                 {
-                    case ::phy_engine::OP:
+                    for(auto& i: nl.models)
                     {
-                        for(auto& i: nl.models)
+                        for(auto c{i.begin}; c != i.curr; ++c)
                         {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+                            if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                                if(!c->ptr->iterate_op(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
-                            }
+                            if(!c->ptr->iterate_op(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
-
-                        break;
                     }
-                    case ::phy_engine::DC:
-                    {
-                        for(auto& i: nl.models)
-                        {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                                if(!c->ptr->iterate_dc(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
-                            }
-                        }
-
-                        break;
-                    }
-                    case ::phy_engine::ACOP: [[fallthrough]];
-                    case ::phy_engine::AC:
-                    {
-                        for(auto& i: nl.models)
-                        {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-
-                                if(!c->ptr->iterate_ac(mna, m_currentOmega)) [[unlikely]] { ::fast_io::fast_terminate(); }
-                            }
-                        }
-
-                        break;
-                    }
-                    case ::phy_engine::TR:
-                    {
-                        for(auto& i: nl.models)
-                        {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-
-                                if(!c->ptr->iterate_tr(mna, t_time + t_step)) [[unlikely]] { ::fast_io::fast_terminate(); }
-                            }
-                        }
-
-                        break;
-                    }
-                    case ::phy_engine::TROP:
-                    {
-                        for(auto& i: nl.models)
-                        {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-
-                                if(!c->ptr->iterate_trop(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
-                            }
-                        }
-
-                        break;
-                    }
-                    default:
-                    {
-                        ::fast_io::unreachable();
-                    }
+                    break;
                 }
+                case ::phy_engine::DC:
+                {
+                    for(auto& i: nl.models)
+                    {
+                        for(auto c{i.begin}; c != i.curr; ++c)
+                        {
+                            if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+
+                            if(!c->ptr->iterate_dc(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                        }
+                    }
+
+                    break;
+                }
+                case ::phy_engine::ACOP: [[fallthrough]];
+                case ::phy_engine::AC:
+                {
+                    for(auto& i: nl.models)
+                    {
+                        for(auto c{i.begin}; c != i.curr; ++c)
+                        {
+                            if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+
+                            if(!c->ptr->iterate_ac(mna, analyzer_setting.dc.m_currentOmega)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                        }
+                    }
+
+                    break;
+                }
+                case ::phy_engine::TR:
+                {
+                    for(auto& i: nl.models)
+                    {
+                        for(auto c{i.begin}; c != i.curr; ++c)
+                        {
+                            if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+
+                            if(!c->ptr->iterate_tr(mna, analyzer_setting.tr.t_step)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                        }
+                    }
+
+                    break;
+                }
+                case ::phy_engine::TROP:
+                {
+                    for(auto& i: nl.models)
+                    {
+                        for(auto c{i.begin}; c != i.curr; ++c)
+                        {
+                            if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+
+                            if(!c->ptr->iterate_trop(mna)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                        }
+                    }
+
+                    break;
+                }
+                default:
+                {
+                    ::fast_io::unreachable();
+                }
+            }
 
 #ifdef PHY_ENGINE_PRINT_MARTIX
-                ::std::cout << mna.A << "\n";
-                ::std::cout << mna.Z << "\n";
+            ::std::cout << mna.A << "\n";
+            ::std::cout << mna.Z << "\n";
 #endif  // _DEBUG
 
-                // solve
-                {
-                    ::Eigen::SparseLU<::phy_engine::MNA::sparse_complex_matrix, ::Eigen::COLAMDOrdering<int>> solver{};
-                    solver.analyzePattern(mna.A);
-                    solver.factorize(mna.A);
-                    if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
-                    mna.X = solver.solve(mna.Z);
-                }
-
-                if(at != analyze_type::TR && at != analyze_type::TROP) { break; }
-
-                if(iteration) [[likely]] { converged = is_converged(); }
-                cont = !converged;
-
-                // copy x and z
-                last_X = mna.X;
-                last_Z = mna.Z;
-
-                iteration++;
-            }
-            while(cont && (iteration < max_iterations));
-
-            return true;
-        }
-
-        constexpr bool is_converged() noexcept
-        {
-            /*
-             * Check infinity norm || x - x_1 || and norm || z - z_1 ||
-             */
-            for(::std::size_t i{}; i < node_counter; i++)
+            // solve
             {
-                auto const x_i{mna.X_ref(i)};
-                auto const last_x_i{last_X.coeffRef(i)};
-                auto const z_i{mna.Z_ref(i)};
-                auto const last_z_i{last_Z.coeffRef(i)};
-
-                double maxX{::std::max(::std::abs(x_i), ::std::abs(last_x_i))};
-                double maxZ{::std::max(::std::abs(z_i), ::std::abs(last_z_i))};
-
-                /* U */
-                double Veps{::std::abs(x_i - last_x_i)};
-                if(Veps > env.V_eps_max + env.V_epsr_max * maxX) [[unlikely]] { return false; }
-
-                /* I */
-                double Ieps{std::abs(z_i - last_z_i)};
-                if(Ieps > env.I_eps_max + env.I_epsr_max * maxZ) [[unlikely]] { return false; }
+                ::Eigen::SparseLU<::phy_engine::MNA::sparse_complex_matrix, ::Eigen::COLAMDOrdering<int>> solver{};
+                solver.analyzePattern(mna.A);
+                solver.factorize(mna.A);
+                if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
+                mna.X = solver.solve(mna.Z);
             }
 
-            ::std::size_t lowerb{node_counter};
-            ::std::size_t upperb{node_counter + branch_counter};
-
-            for(::std::size_t i{lowerb}; i < upperb; i++)
-            {
-                auto const x_i{mna.X_ref(i)};
-                auto const last_x_i{last_X.coeffRef(i)};
-                auto const z_i{mna.Z_ref(i)};
-                auto const last_z_i{last_Z.coeffRef(i)};
-
-                double maxX{::std::max(::std::abs(x_i), ::std::abs(last_x_i))};
-                double maxZ{::std::max(::std::abs(z_i), ::std::abs(last_z_i))};
-
-                /* J */
-                double Ieps{::std::abs(x_i - last_x_i)};
-                if(Ieps > env.I_eps_max + env.I_epsr_max * maxX) [[unlikely]] { return false; }
-
-                /* E */
-                double Veps = std::abs(z_i - last_z_i);
-                if(Veps > env.V_eps_max + env.V_epsr_max * maxZ) [[unlikely]] { return false; }
-            }
-
-            /*
-             * Call model-specific convergence check
-             */
-            for(auto& i: nl.models)
-            {
-                for(auto c{i.begin}; c != i.curr; ++c)
-                {
-                    if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                    c->ptr->check_convergence();
-                }
-            }
             return true;
         }
 

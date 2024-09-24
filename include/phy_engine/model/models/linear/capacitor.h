@@ -13,6 +13,9 @@ namespace phy_engine::model
 
         double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
+
+        // private:
+        double last_current{};
     };
 
     static_assert(::phy_engine::model::model<capacitor>);
@@ -77,6 +80,14 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<capacitor>);
 
+    inline constexpr bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor& c) noexcept
+    {
+        c.last_current = {};
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_prepare_tr<capacitor>);
+
     inline constexpr bool
         iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::MNA::MNA& mna, double omega) noexcept
     {
@@ -103,7 +114,26 @@ namespace phy_engine::model
                                             ::phy_engine::MNA::MNA& mna,
                                             [[maybe_unused]] double t_time) noexcept
     {
-        // to do
+        auto const node_0{c.pins[0].nodes};
+        auto const node_1{c.pins[1].nodes};
+
+        if(node_0 && node_1) [[likely]]
+        {
+            double voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+
+            double const geq{c.m_kZimag / t_time};
+
+            double const Ieq{-voltage * c.m_kZimag / t_time};
+            // c.last_current = Ieq;
+
+            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
+            mna.I_ref(node_0->node_index) -= Ieq;
+            mna.I_ref(node_1->node_index) += Ieq;
+        }
+
         return true;
     }
 

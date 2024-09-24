@@ -27,6 +27,8 @@ namespace phy_engine::netlist
         }
     }
 
+    inline constexpr ::phy_engine::model::node_t& get_ground_node(netlist& nl) noexcept { return nl.ground_node; }
+
     struct model_pos
     {
         ::std::size_t vec_pos{};

@@ -11,5 +11,6 @@ namespace phy_engine::analyzer
         ::phy_engine::analyzer::AC ac;
         ::phy_engine::analyzer::DC dc;
         ::phy_engine::analyzer::OP op;
+        ::phy_engine::analyzer::TR tr;
     };
 }  // namespace phy_engine::analyzer
