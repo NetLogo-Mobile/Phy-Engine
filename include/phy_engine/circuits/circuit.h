@@ -96,28 +96,7 @@ namespace phy_engine
             return true;
         }
 
-        inline constexpr bool TR_one_step() noexcept
-        {
-            if(at != phy_engine::TR && at != phy_engine::TROP) [[unlikely]] { return false; }
-
-            double t_time{};
-            auto const t_step{analyzer_setting.tr.t_step};
-            auto const t_stop{analyzer_setting.tr.t_stop};
-
-            for(; t_time < t_stop; t_time += t_step)
-            {
-                if(!solve()) [[unlikely]] { return false; }
-
-                ::std::size_t i{};
-                for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
-                nl.ground_node.node_information.an.voltage = {};
-                ::std::size_t c{};
-                for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c++]->current = mna.X_ref(i); }
-            }
-            return true;
-        };
-
-    private:
+   private:
         void prepare() noexcept
         {
             // node

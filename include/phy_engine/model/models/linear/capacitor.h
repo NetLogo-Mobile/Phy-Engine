@@ -14,8 +14,6 @@ namespace phy_engine::model
         double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
 
-        // private:
-        double last_current{};
     };
 
     static_assert(::phy_engine::model::model<capacitor>);

@@ -28,43 +28,10 @@ int main()
     add_to_node(nl, *C1, 1, node3);
 
     double start{};
+     for(::std::size_t i{}; i < 50; i++)
     {
         ::fast_io::io::print("========================\n" "start = ", start, "s, stop = ", start + 0.00001, "s, step = 0.00001s\n" "========================\n");
         if(!c.analyze()) { ::fast_io::io::perr("analyze error\n"); }
-        else
-        {
-            auto const r1_pin_view{R1->ptr->generate_pin_view()};
-            auto const r1_V1{r1_pin_view.pins[0].nodes->node_information.an.voltage};
-            auto const r1_V2{r1_pin_view.pins[1].nodes->node_information.an.voltage};
-
-            auto const r1_R{R1->ptr->get_attribute(0).d};
-            ::fast_io::io::println("R1: U=",
-                                   ::fast_io::mnp::fixed(r1_V1 - r1_V2),
-                                   "V, R=",
-                                   ::fast_io::mnp::fixed(r1_R),
-                                   "ohm, I=",
-                                   ::fast_io::mnp::fixed((r1_V1 - r1_V2) / r1_R));
-
-            auto const c1_pin_view{C1->ptr->generate_pin_view()};
-            auto const c1_V1{c1_pin_view.pins[0].nodes->node_information.an.voltage};
-            auto const c1_V2{c1_pin_view.pins[1].nodes->node_information.an.voltage};
-
-            ::fast_io::io::print("C1: U=", ::fast_io::mnp::fixed(c1_V1 - c1_V2), "V\n");
-
-            auto const VDC_branch_view{VDC->ptr->generate_branch_view()};
-            ::fast_io::io::print("VDC: current=",
-                                 ::fast_io::mnp::fixed(-VDC_branch_view.branches[0].current),
-                                 "A, U=",
-                                 ::fast_io::mnp::fixed(VDC->ptr->get_attribute(0).d),
-                                 "V\n");
-            ::fast_io::io::print("=======================\n");
-        }
-        start += 0.00001;
-    }
-    for(::std::size_t i{}; i < 50; i++)
-    {
-        ::fast_io::io::print("========================\n" "start = ", start, "s, stop = ", start + 0.00001, "s, step = 0.00001s\n" "========================\n");
-        if(!c.TR_one_step()) { ::fast_io::io::perr("analyze error\n"); }
         else
         {
             auto const r1_pin_view{R1->ptr->generate_pin_view()};
