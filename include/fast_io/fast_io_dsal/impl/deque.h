@@ -742,18 +742,18 @@ private:
 
 public:
 #if 0
-	constexpr void clear() noexcept
-	{
-		if (controller.controller_block.start_ptr == controller.controller_block.start_ptr)
-		{
-			return;
-		}
-		this->destroy();
-		size_type n{ (controller.back_block.controller_ptr - controller.front_block.controller_ptr) };
-		n >>= 1u;
-		auto mid{ controller.front_block.controller_ptr + n };
-		*mid;
-	}
+			constexpr void clear() noexcept
+			{
+				if (controller.controller_block.start_ptr == controller.controller_block.start_ptr)
+				{
+					return;
+				}
+				this->destroy();
+				size_type n{ (controller.back_block.controller_ptr - controller.front_block.controller_ptr) };
+				n >>= 1u;
+				auto mid{ controller.front_block.controller_ptr + n };
+				*mid;
+			}
 #endif
 	template <typename... Args>
 		requires ::std::constructible_from<value_type, Args...>
@@ -764,9 +764,10 @@ public:
 			grow_back();
 		}
 		auto currptr{controller.back_block.curr_ptr};
-
-		::std::construct_at(currptr, ::std::forward<Args>(args)...);
-
+		if constexpr (!::std::is_trivially_constructible_v<value_type>)
+		{
+			::std::construct_at(currptr, ::std::forward<Args>(args)...);
+		}
 		++controller.back_block.curr_ptr;
 		return *currptr;
 	}
@@ -841,9 +842,10 @@ public:
 		{
 			grow_front();
 		}
-
-		::std::construct_at(--controller.front_block.curr_ptr, ::std::forward<Args>(args)...);
-
+		if constexpr (!::std::is_trivially_constructible_v<value_type>)
+		{
+			::std::construct_at(--controller.front_block.curr_ptr, ::std::forward<Args>(args)...);
+		}
 		return *controller.front_block.curr_ptr;
 	}
 
@@ -1026,45 +1028,6 @@ private:
 		}
 		return {backblock};
 	}
-
-#if 0
-public:
-	constexpr const_iterator erase(const_iterator it) noexcept
-	{
-		if constexpr(!::std::is_trivially_destructible_v<value_type>) 
-		{ 
-			::std::destroy_at(it.itercontent.curr_ptr);
-		}
-
-		if constexpr(::fast_io::freestanding::is_trivially_relocatable_v<value_type>)
-		{ 
-			auto src_ptr{it.itercontent.curr_ptr + 1};
-			::fast_io::freestanding::my_copy_backward(src_ptr, it.itercontent.end_ptr, it.itercontent.end_ptr - 1);
-
-			// modify original data
-		}
-		else
-		{
-			for(auto i{it.itercontent.curr_ptr}; i != it.itercontent.end_ptr - 1; ++i) 
-			{ 
-				*i = ::std::move(i[1]);
-			}
-
-			// modify original data
-		}
-		return it;
-	}
-
-	constexpr void erase_index(size_type idx) noexcept
-	{
-
-	}
-
-	constexpr void erase_index_unchecked(size_type idx) noexcept
-	{
-
-	}
-#endif
 
 public:
 	constexpr iterator end() noexcept
