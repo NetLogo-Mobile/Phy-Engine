@@ -19,7 +19,8 @@ int main()
     add_to_node(nl, *R1, 1, node1);
     add_to_node(nl, *R2, 0, node1);
     ::phy_engine::model::model_base* model{R2};
-    for(size_t i = 0; i < 100; i++)
+
+    for(::std::size_t i = 0; i < 10000; i++)
     {
         auto [R3, R3_pos]{add_model(nl, ::phy_engine::model::resistance{.r = 30.0})};
 
