@@ -112,7 +112,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<VAC>);
 
-    inline constexpr bool init_define(::phy_engine::model::model_reserve_type_t<VAC>, VAC& vac) noexcept
+    inline constexpr bool prepare_dc_define(::phy_engine::model::model_reserve_type_t<VAC>, VAC& vac) noexcept
     {
         vac.m_E.real(vac.m_Vp * ::std::cos(vac.m_phase));
         vac.m_E.imag(vac.m_Vp * ::std::sin(vac.m_phase));
@@ -120,7 +120,7 @@ namespace phy_engine::model
         return true;
     }
 
-    static_assert(::phy_engine::model::defines::can_init<VAC>);
+    static_assert(::phy_engine::model::defines::can_prepare_dc<VAC>);
 
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<VAC>, VAC const& vac, ::phy_engine::MNA::MNA& mna) noexcept
     {

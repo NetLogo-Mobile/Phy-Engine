@@ -140,7 +140,26 @@ namespace phy_engine::model
                                             ::phy_engine::MNA::MNA& mna,
                                             [[maybe_unused]] double t_time) noexcept
     {
-        // to do
+        auto const node_0{i.pins[0].nodes};
+        auto const node_1{i.pins[1].nodes};
+
+        if(node_0 && node_1) [[likely]]
+        {
+            double const current{i.branches.current.real()};
+
+            double const req{i.m_kZimag / t_time};
+
+            double const Ueq{-current * i.m_kZimag / t_time};
+
+            auto const k{i.branches.index};
+            mna.B_ref(node_0->node_index, k) = 1.0;
+            mna.B_ref(node_1->node_index, k) = -1.0;
+            mna.C_ref(k, node_0->node_index) = 1.0;
+            mna.C_ref(k, node_1->node_index) = -1.0;
+            mna.D_ref(k, k) = -req;
+            mna.E_ref(k) = Ueq;
+        }
+
         return true;
     }
 

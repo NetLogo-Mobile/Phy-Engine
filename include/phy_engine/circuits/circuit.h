@@ -96,7 +96,20 @@ namespace phy_engine
             return true;
         }
 
-   private:
+        void reset() noexcept
+        {
+            for(auto i: size_t_to_node_p) { i->node_information.an.voltage = {}; }
+            node_counter = 0;
+            size_t_to_node_p.clear();
+
+            for(auto i: size_t_to_branch_p) { i->current = {}; }
+            branch_counter = 0;
+            size_t_to_branch_p.clear();
+            mna.clear();
+            has_prepare = false;
+        }
+
+    private:
         void prepare() noexcept
         {
             // node

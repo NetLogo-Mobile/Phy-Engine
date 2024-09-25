@@ -78,14 +78,6 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<capacitor>);
 
-    inline constexpr bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor& c) noexcept
-    {
-        c.last_current = {};
-        return true;
-    }
-
-    static_assert(::phy_engine::model::defines::can_prepare_tr<capacitor>);
-
     inline constexpr bool
         iterate_ac_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor const& c, ::phy_engine::MNA::MNA& mna, double omega) noexcept
     {
