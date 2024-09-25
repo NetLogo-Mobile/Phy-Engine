@@ -11,7 +11,8 @@
 #include "type.h"
 #include "../pin/pin_view.h"
 #include "../node/node.h"
-#include "../branch/branch_view.h"
+#include "../branch/branch_view.h" 
+#include "../node/node_view.h"
 #include "variant.h"
 #include "../../circuits/MNA/mna.h"
 
@@ -143,6 +144,10 @@ namespace phy_engine::model
         template <typename mod>
         concept can_generate_branch_view = requires(mod&& t) {
             { generate_branch_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::branch_view>;
+        };
+        template <typename mod>
+        concept can_generate_internal_node_view = requires(mod&& t) {
+            { generate_internal_node_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::node_view>;
         };
 
         template <typename mod>

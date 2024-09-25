@@ -254,4 +254,14 @@ namespace phy_engine::model
         else { return {}; }
     }
 
+    template <::phy_engine::model::model mod>
+    inline constexpr ::phy_engine::model::node_view generate_internal_node_view(mod&& m) noexcept
+    {
+        if constexpr(::phy_engine::model::defines::can_generate_internal_node_view<mod>)
+        {
+            return generate_internal_node_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, ::std::forward<mod>(m));
+        }
+        else { return {}; }
+    }
+
 }  // namespace phy_engine::model

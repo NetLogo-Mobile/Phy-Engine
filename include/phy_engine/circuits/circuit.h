@@ -134,7 +134,7 @@ namespace phy_engine
 
             nl.ground_node.node_index = SIZE_MAX;
 
-            // count branch
+            // count branch and internal node
             branch_counter = 0;
             size_t_to_branch_p.clear();
 
@@ -142,6 +142,7 @@ namespace phy_engine
             {
                 for(auto c{i.begin}; c != i.curr; ++c)
                 {
+                    // branch
                     auto const branch_view{c->ptr->generate_branch_view()};
                     for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
                     {
@@ -149,6 +150,16 @@ namespace phy_engine
                         size_t_to_branch_p.push_back(branch_c);
                         branch_c->index = branch_counter++;
                     }
+
+                    // internal node
+                    auto const internal_node_view{c->ptr->generate_internal_node_view()};
+                    for(auto in_c{internal_node_view.nodes}; in_c != internal_node_view.nodes + internal_node_view.size; ++in_c)
+                    {
+
+                        size_t_to_node_p.push_back(in_c);
+                        in_c->node_index = node_counter++;
+                    }
+
                 }
             }
 

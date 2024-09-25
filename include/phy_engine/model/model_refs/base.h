@@ -50,6 +50,8 @@ namespace phy_engine::model
             virtual constexpr ::phy_engine::model::model_device_type get_device_type() noexcept = 0;
 
             virtual constexpr ::phy_engine::model::branch_view generate_branch_view() noexcept = 0;
+            virtual constexpr ::phy_engine::model::node_view generate_internal_node_view() noexcept = 0;
+
         };
 
         template <::phy_engine::model::model mod>
@@ -313,6 +315,15 @@ namespace phy_engine::model
                 if constexpr(::phy_engine::model::defines::can_generate_branch_view<mod>)
                 {
                     return generate_branch_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
+                }
+                else { return {}; }
+            }
+
+            virtual constexpr ::phy_engine::model::node_view generate_internal_node_view() noexcept override
+            {
+                if constexpr(::phy_engine::model::defines::can_generate_internal_node_view<mod>)
+                {
+                    return generate_internal_node_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
                 }
                 else { return {}; }
             }
