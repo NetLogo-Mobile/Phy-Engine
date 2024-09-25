@@ -5,6 +5,7 @@
 #ifdef PHY_ENGINE_PRINT_MARTIX
     #include <iostream>
 #endif
+#include <Eigen/Dense>
 #include <Eigen/Sparse>
 #include <Eigen/SparseLU>
 
@@ -159,7 +160,6 @@ namespace phy_engine
                         size_t_to_node_p.push_back(in_c);
                         in_c->node_index = node_counter++;
                     }
-
                 }
             }
 
@@ -401,11 +401,39 @@ namespace phy_engine
 
             // solve
             {
-                ::Eigen::SparseLU<::phy_engine::MNA::sparse_complex_matrix, ::Eigen::COLAMDOrdering<int>> solver{};
-                solver.analyzePattern(mna.A);
-                solver.factorize(mna.A);
+                using smXcd = ::Eigen::SparseMatrix<::std::complex<double>>;
+                using svXcd = ::Eigen::SparseVector<::std::complex<double>>;
+
+                auto const row_size{node_counter + branch_counter};
+
+                // mna A matrix
+                smXcd temp_A{static_cast<::Eigen::Index>(row_size), static_cast<::Eigen::Index>(row_size)};
+
+                smXcd::IndexVector wi{temp_A.outerSize()};
+
+                for(auto& i: mna.A) { wi(i.first) = i.second.size(); }
+
+                temp_A.reserve(wi);
+
+                for(auto& i: mna.A)
+                {
+                    for(auto& j: i.second) { temp_A.insertBackUncompressed(i.first, j.first) = j.second; }
+                }
+
+                temp_A.collapseDuplicates(::Eigen::internal::scalar_sum_op<smXcd::Scalar, smXcd::Scalar>());
+
+                // mna Z matrix
+                svXcd temp_Z{static_cast<::Eigen::Index>(row_size)};
+
+                temp_Z.reserve(mna.Z.size());
+                for(auto& i: mna.Z) { temp_Z.insertBackUnordered(i.first) = i.second; }
+
+                // solve
+                ::Eigen::SparseLU<smXcd, ::Eigen::COLAMDOrdering<int>> solver{};
+                solver.analyzePattern(temp_A);
+                solver.factorize(temp_A);
                 if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
-                mna.X = solver.solve(mna.Z);
+                mna.X = solver.solve(temp_Z);
             }
 
             return true;

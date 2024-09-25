@@ -1,14 +1,11 @@
 #pragma once
 #include <complex>
+#include <map>
 #include <fast_io/fast_io.h>
-#include <Eigen/Sparse>
+#include <Eigen/Dense>
 
 namespace phy_engine::MNA
 {
-    using sparse_vector = ::Eigen::SparseVector<double>;
-    using sparse_matrix = ::Eigen::SparseMatrix<double>;
-    using sparse_complex_vector = ::Eigen::SparseVector<::std::complex<double>>;
-    using sparse_complex_matrix = ::Eigen::SparseMatrix<::std::complex<double>>;
 
     struct MNA
     {
@@ -16,49 +13,38 @@ namespace phy_engine::MNA
 
         MNA(::std::size_t ns, ::std::size_t bs) noexcept : node_size{ns}, branch_size{bs}
         {
-            auto const npm_size{node_size + branch_size};
-            A.resize(npm_size, npm_size);
-            X.resize(npm_size, 1);
-            Z.resize(npm_size, 1);
+            // X.resize(node_size + branch_size);
         }
 
         void resize(::std::size_t ns, ::std::size_t bs) noexcept
         {
             node_size = ns;
             branch_size = bs;
-            auto const npm_size{node_size + branch_size};
-            A.resize(npm_size, npm_size);
-            X.resize(npm_size, 1);
-            Z.resize(npm_size, 1);
+
+            // X.resize(node_size + branch_size);
         }
 
         void clear() noexcept
         {
-            A.setZero();
-            X.setZero();
-            Z.setZero();
+            A.clear();
+            Z.clear();
         }
 
-        void clear_destroy() noexcept
-        {
-            A.~SparseMatrix();
-            X.~SparseVector();
-            Z.~SparseVector();
-        }
+        void clear_destroy() noexcept { clear(); }
 
         auto& A_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
             if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= node_size + branch_size || col >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return A.coeffRef(rox, col);
+            return A[rox][col];
         }
 
         auto& G_ref(::std::size_t rox, ::std::size_t col) noexcept
         {
             if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]] { return d_temp; }
             if(rox >= node_size || col >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return A.coeffRef(rox, col);
+            return A[rox][col];
         }
 
         auto& B_ref(::std::size_t rox, ::std::size_t col) noexcept
@@ -66,7 +52,7 @@ namespace phy_engine::MNA
             if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= node_size || col >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return A.coeffRef(rox, col + node_size);
+            return A[rox][col + node_size];
         }
 
         auto& C_ref(::std::size_t rox, ::std::size_t col) noexcept
@@ -74,7 +60,7 @@ namespace phy_engine::MNA
             if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= branch_size || col >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return A.coeffRef(rox + node_size, col);
+            return A[rox + node_size][col];
         }
 
         auto& D_ref(::std::size_t rox, ::std::size_t col) noexcept
@@ -82,7 +68,7 @@ namespace phy_engine::MNA
             if(rox == SIZE_MAX || col == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= branch_size || col >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return A.coeffRef(rox + node_size, col + node_size);
+            return A[rox + node_size][col + node_size];
         }
 
         auto& X_ref(::std::size_t rox) noexcept
@@ -114,7 +100,7 @@ namespace phy_engine::MNA
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return Z.coeffRef(rox);
+            return Z[rox];
         }
 
         auto& I_ref(::std::size_t rox) noexcept
@@ -122,7 +108,7 @@ namespace phy_engine::MNA
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return Z.coeffRef(rox);
+            return Z[rox];
         }
 
         auto& E_ref(::std::size_t rox) noexcept
@@ -130,12 +116,12 @@ namespace phy_engine::MNA
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
 
             if(rox >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-            return Z.coeffRef(rox + node_size);
+            return Z[rox + node_size];
         }
 
-        sparse_complex_matrix A{};
-        sparse_complex_vector X{};
-        sparse_complex_vector Z{};
+        ::std::map<::std::size_t, ::std::map<::std::size_t, ::std::complex<double>>> A{};
+        ::Eigen::VectorXcd X{};
+        ::std::map<::std::size_t, ::std::complex<double>> Z{};
 
         ::std::size_t node_size{};
         ::std::size_t branch_size{};
