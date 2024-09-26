@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include "concept.h"
-
+#if 0
 namespace phy_engine::model
 {
 
@@ -265,3 +265,4 @@ namespace phy_engine::model
     }
 
 }  // namespace phy_engine::model
+#endif

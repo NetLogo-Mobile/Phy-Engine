@@ -51,7 +51,6 @@ namespace phy_engine::model
 
             virtual constexpr ::phy_engine::model::branch_view generate_branch_view() noexcept = 0;
             virtual constexpr ::phy_engine::model::node_view generate_internal_node_view() noexcept = 0;
-
         };
 
         template <::phy_engine::model::model mod>
@@ -92,33 +91,65 @@ namespace phy_engine::model
 
             virtual constexpr bool prepare_ac() noexcept override
             {
+                if constexpr(::phy_engine::model::defines::can_prepare_highest_priority<mod>)
+                {
+                    return prepare_highest_priority_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+
                 if constexpr(::phy_engine::model::defines::can_prepare_ac<mod>)
                 {
                     return prepare_ac_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+                else if constexpr(::phy_engine::model::defines::can_prepare_foundation<mod>)
+                {
+                    return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
                 else { return true; }
             }
 
             virtual constexpr bool prepare_dc() noexcept override
             {
+                if constexpr(::phy_engine::model::defines::can_prepare_highest_priority<mod>)
+                {
+                    return prepare_highest_priority_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+
                 if constexpr(::phy_engine::model::defines::can_prepare_dc<mod>)
                 {
                     return prepare_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+                else if constexpr(::phy_engine::model::defines::can_prepare_foundation<mod>)
+                {
+                    return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
                 else { return true; }
             }
 
             virtual constexpr bool prepare_tr() noexcept override
             {
+                if constexpr(::phy_engine::model::defines::can_prepare_highest_priority<mod>)
+                {
+                    return prepare_highest_priority_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+
                 if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
                 {
                     return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+                else if constexpr(::phy_engine::model::defines::can_prepare_foundation<mod>)
+                {
+                    return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
                 else { return true; }
             }
 
             virtual constexpr bool prepare_op() noexcept override
             {
+                if constexpr(::phy_engine::model::defines::can_prepare_highest_priority<mod>)
+                {
+                    return prepare_highest_priority_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+
                 if constexpr(::phy_engine::model::defines::can_prepare_op<mod>)
                 {
                     return prepare_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
@@ -127,11 +158,20 @@ namespace phy_engine::model
                 {
                     return prepare_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
+                else if constexpr(::phy_engine::model::defines::can_prepare_foundation<mod>)
+                {
+                    return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
                 else { return true; }
             }
 
             virtual constexpr bool prepare_trop() noexcept override
             {
+                if constexpr(::phy_engine::model::defines::can_prepare_highest_priority<mod>)
+                {
+                    return prepare_highest_priority_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+
                 if constexpr(::phy_engine::model::defines::can_prepare_trop<mod>)
                 {
                     return prepare_trop_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
@@ -139,6 +179,10 @@ namespace phy_engine::model
                 else if constexpr(::phy_engine::model::defines::can_prepare_tr<mod>)
                 {
                     return prepare_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                }
+                else if constexpr(::phy_engine::model::defines::can_prepare_foundation<mod>)
+                {
+                    return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
                 else { return true; }
             }
@@ -327,7 +371,6 @@ namespace phy_engine::model
                 }
                 else { return {}; }
             }
-
         };
     }  // namespace details
 

@@ -11,7 +11,7 @@
 #include "type.h"
 #include "../pin/pin_view.h"
 #include "../node/node.h"
-#include "../branch/branch_view.h" 
+#include "../branch/branch_view.h"
 #include "../node/node_view.h"
 #include "variant.h"
 #include "../../circuits/MNA/mna.h"
@@ -34,6 +34,16 @@ namespace phy_engine::model
         template <typename mod>
         concept can_init = requires(mod&& t) {
             { init_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        };
+
+        template <typename mod>
+        concept can_prepare_foundation = requires(mod&& t) {
+            { prepare_foundation_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
+        };
+
+        template <typename mod>
+        concept can_prepare_highest_priority = requires(mod&& t) {
+            { prepare_highest_priority_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<bool>;
         };
 
         template <typename mod>

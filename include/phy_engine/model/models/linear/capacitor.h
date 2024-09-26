@@ -13,7 +13,6 @@ namespace phy_engine::model
 
         double m_kZimag{1e-5};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
-
     };
 
     static_assert(::phy_engine::model::model<capacitor>);
@@ -109,7 +108,7 @@ namespace phy_engine::model
 
         if(node_0 && node_1) [[likely]]
         {
-            double voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+            double const voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
 
             double const geq{c.m_kZimag / t_time};
 

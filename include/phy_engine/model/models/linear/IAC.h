@@ -111,7 +111,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<IAC>);
 
-    inline constexpr bool prepare_dc_define(::phy_engine::model::model_reserve_type_t<IAC>, IAC& iac) noexcept
+    inline constexpr bool prepare_foundation_define(::phy_engine::model::model_reserve_type_t<IAC>, IAC& iac) noexcept
     {
         iac.m_I.real(iac.m_Ip * ::std::cos(iac.m_phase));
         iac.m_I.imag(iac.m_Ip * ::std::sin(iac.m_phase));
@@ -119,7 +119,7 @@ namespace phy_engine::model
         return true;
     }
 
-    static_assert(::phy_engine::model::defines::can_prepare_dc<IAC>);
+    static_assert(::phy_engine::model::defines::can_prepare_foundation<IAC>);
 
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<IAC>, IAC const& iac, ::phy_engine::MNA::MNA& mna) noexcept
     {
