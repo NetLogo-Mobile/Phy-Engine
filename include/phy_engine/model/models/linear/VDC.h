@@ -15,7 +15,7 @@ namespace phy_engine::model
 
         double V{5.0};
 
-        ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
+        ::phy_engine::model::pin pins[2]{{{u8"+"}}, {{u8"-"}}};
         ::phy_engine::model::branch branchs{};
     };
 

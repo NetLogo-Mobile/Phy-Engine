@@ -18,5 +18,14 @@
 #include "model/models/linear/VCVS.h"
 #include "model/models/linear/VDC.h"
 
+// controller
 #include "model/models/controller/switch.h"
 
+// non-linear
+#include "model/models/non-linear/PN_junction.h"
+
+// Digital
+#include "model/models/digital/and.h"
+#include "model/models/digital/or.h"
+#include "model/models/digital/not.h"
+#include "model/models/digital/xor.h"

@@ -11,13 +11,172 @@ namespace phy_engine::model
         ::std::complex<double> voltage{};
     };
 
-    enum digital_node_statement_t : ::std::uint_fast8_t
+    enum class digital_node_statement_t : ::std::uint_fast8_t
     {
-        false_state = 0,
-        true_state = 1,
-        high_impedence_state = 2,
-        indeterminate_state = 3
+        false_state = 0,           // L
+        true_state = 1,            // H
+        indeterminate_state = 2,   // X
+        high_impedence_state = 3,  // Z
     };
+
+    inline constexpr digital_node_statement_t operator& (digital_node_statement_t a, digital_node_statement_t b) noexcept
+    {
+        switch(a)
+        {
+            case ::phy_engine::model::digital_node_statement_t::false_state:
+            {
+                return ::phy_engine::model::digital_node_statement_t::false_state;
+            }
+            case ::phy_engine::model::digital_node_statement_t::true_state:
+            {
+                switch(b)
+                {
+                    case ::phy_engine::model::digital_node_statement_t::false_state:
+                    {
+                        return ::phy_engine::model::digital_node_statement_t::false_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::true_state:
+                    {
+                        return ::phy_engine::model::digital_node_statement_t::true_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+                    {
+                        return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                    }
+                    default: ::fast_io::unreachable();
+                }
+            }
+            case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+            case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+            {
+                switch(b)
+                {
+                    case ::phy_engine::model::digital_node_statement_t::false_state:
+                    {
+                        return ::phy_engine::model::digital_node_statement_t::false_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::true_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+                    {
+                        return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                    }
+                    default: ::fast_io::unreachable();
+                }
+            }
+            default: ::fast_io::unreachable();
+        }
+        return {};
+    }
+
+    inline constexpr digital_node_statement_t operator| (digital_node_statement_t a, digital_node_statement_t b) noexcept
+    {
+        switch(a)
+        {
+            case ::phy_engine::model::digital_node_statement_t::false_state:
+            {
+                switch(b)
+                {
+                    case ::phy_engine::model::digital_node_statement_t::false_state:
+                    {
+                        return digital_node_statement_t::false_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::true_state:
+                    {
+                        return digital_node_statement_t::true_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+                    {
+                        return digital_node_statement_t::indeterminate_state;
+                    }
+                    default: ::fast_io::unreachable();
+                }
+            }
+            case ::phy_engine::model::digital_node_statement_t::true_state:
+            {
+                return digital_node_statement_t::true_state;
+            }
+            case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+            case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+            {
+                switch(b)
+                {
+                    case ::phy_engine::model::digital_node_statement_t::false_state:
+                    {
+                        return digital_node_statement_t::indeterminate_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::true_state:
+                    {
+                        return digital_node_statement_t::true_state;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+                    {
+                        return digital_node_statement_t::indeterminate_state;
+                    }
+                    default: ::fast_io::unreachable();
+                }
+            }
+            default: ::fast_io::unreachable();
+        }
+        return {};
+    }
+
+    inline constexpr digital_node_statement_t operator~(digital_node_statement_t a) noexcept
+    {
+        switch(a)
+        {
+            case ::phy_engine::model::digital_node_statement_t::false_state:
+            {
+                return ::phy_engine::model::digital_node_statement_t::true_state;
+            }
+            case ::phy_engine::model::digital_node_statement_t::true_state:
+            {
+                return ::phy_engine::model::digital_node_statement_t::true_state;
+            }
+            case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+            case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+            {
+                return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+            }
+            default: ::fast_io::unreachable();
+        }
+        return {};
+    }
+
+    inline constexpr digital_node_statement_t operator^ (digital_node_statement_t a, digital_node_statement_t b) noexcept
+    {
+        switch(a)
+        {
+            case ::phy_engine::model::digital_node_statement_t::false_state: [[fallthrough]];
+            case ::phy_engine::model::digital_node_statement_t::true_state:
+            {
+                switch(b)
+                {
+                    case ::phy_engine::model::digital_node_statement_t::false_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::true_state:
+                    {
+                        return static_cast<digital_node_statement_t>(static_cast<bool>(a) ^ static_cast<bool>(b));
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+                    case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+                    {
+                        return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                    }
+                    default: ::fast_io::unreachable();
+                }
+            }
+            case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
+            case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+            {
+                return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+            }
+            default: ::fast_io::unreachable();
+        }
+        return {};
+    }
 
     struct digital_node_t
     {

@@ -15,6 +15,7 @@
 #include "../node/node_view.h"
 #include "variant.h"
 #include "../../circuits/MNA/mna.h"
+#include "../../circuits/digital/update_table.h"
 
 namespace phy_engine::model
 {
@@ -150,6 +151,16 @@ namespace phy_engine::model
         concept can_generate_pin_view = requires(mod&& t) {
             { generate_pin_view_define(model_reserve_type<::std::remove_cvref_t<mod>>, t) } -> ::std::same_as<::phy_engine::model::pin_view>;
         };
+
+        template <typename mod>
+        concept can_update_digital_clk = requires(mod&& t, ::phy_engine::digital::digital_node_update_table& table, double tr_duration) {
+            {
+                update_digital_clk_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, table, tr_duration)
+            } -> ::std::same_as<::phy_engine::digital::need_operate_analog_node_t>;
+        };
+
+        template <typename mod>
+        concept is_valid_digital_model = mod::device_type == ::phy_engine::model::model_device_type::digital && can_update_digital_clk<mod>;
 
         template <typename mod>
         concept can_generate_branch_view = requires(mod&& t) {

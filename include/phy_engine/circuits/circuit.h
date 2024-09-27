@@ -14,6 +14,7 @@
 #include "MNA/mna.h"
 #include "analyze.h"
 #include "analyzer/impl.h"
+#include "digital/update_table.h"
 
 namespace phy_engine
 {
@@ -37,7 +38,14 @@ namespace phy_engine
         ::std::size_t branch_counter{};
 
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
+        ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_digital_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
+
+        ::phy_engine::digital::digital_node_update_table digital_update_tables{};            // digital
+        ::fast_io::vector<::phy_engine::digital::need_operate_analog_node_t> digital_out{};  // digital
+
+        double tr_duration{};  // TR
+        double last_step{};    // TR
 
         // func
         constexpr ::phy_engine::environment& get_environment() noexcept { return env; }
@@ -52,10 +60,10 @@ namespace phy_engine
         {
             switch(at)
             {
-                case phy_engine::OP: [[fallthrough]];
-                case phy_engine::DC: [[fallthrough]];
-                case phy_engine::AC: [[fallthrough]];
-                case phy_engine::ACOP:
+                case ::phy_engine::OP: [[fallthrough]];
+                case ::phy_engine::DC: [[fallthrough]];
+                case ::phy_engine::AC: [[fallthrough]];
+                case ::phy_engine::ACOP:
                 {
                     prepare();
 
@@ -69,17 +77,34 @@ namespace phy_engine
 
                     break;
                 }
-                case phy_engine::TR: [[fallthrough]];
-                case phy_engine::TROP:
+                case ::phy_engine::TR: [[fallthrough]];
+                case ::phy_engine::TROP:
                 {
                     double t_time{};
                     auto const t_step{analyzer_setting.tr.t_step};
                     auto const t_stop{analyzer_setting.tr.t_stop};
+
                     prepare();
+
+                    if(last_step != t_step) [[unlikely]]
+                    {
+                        for(auto& i: nl.models)
+                        {
+                            for(auto c{i.begin}; c != i.curr; ++c)
+                            {
+                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+                                if(!c->ptr->step_changed_tr(last_step, t_step)) [[unlikely]] { ::fast_io::fast_terminate(); };
+                            }
+                        }
+
+                        last_step = t_step;
+                    }
 
                     for(; t_time < t_stop; t_time += t_step)
                     {
                         if(!solve()) [[unlikely]] { return false; }
+
+                        tr_duration += t_step;
 
                         ::std::size_t i{};
                         for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
@@ -97,8 +122,59 @@ namespace phy_engine
             return true;
         }
 
+        constexpr void update_digital_from_analog_nodes() noexcept
+        {
+            for(auto& i: nl.nodes)
+            {
+                for(auto c{i.begin}; c != i.curr; ++c)
+                {
+                    if(c->num_of_analog_node != c->pins.size()) { digital_update_tables.tables.emplace(c); }
+                }
+            }
+        }
+
+        constexpr void digital_clk() noexcept
+        {
+            digital_out.clear();
+
+            for(auto& i: nl.models)
+            {
+                for(auto c{i.begin}; c != i.curr; ++c)
+                {
+                    if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+                    if(c->ptr->get_device_type() == ::phy_engine::model::model_device_type::digital)
+                    {
+                        auto const rt{c->ptr->update_digital_clk(digital_update_tables, tr_duration)};
+                        if(rt.need_to_operate_analog_node) { digital_out.push_back(rt); }
+                    }
+                }
+            }
+        }
+
+        constexpr void update_digital() noexcept
+        {
+            if(at != ::phy_engine::analyze_type::TR && at != ::phy_engine::analyze_type::TROP) [[unlikely]] { ::fast_io::fast_terminate(); }
+
+            update_digital_from_analog_nodes();
+            digital_clk();
+        }
+
+        constexpr void reset_digital() noexcept
+        {
+            digital_out.clear();
+
+            for(auto i: size_t_to_digital_node_p) { i->node_information.dn = {}; }
+
+            // use any prepare function to reset digital model
+        }
+
         void reset() noexcept
         {
+            tr_duration = 0.0;
+
+            reset_digital();
+            size_t_to_digital_node_p.clear();
+
             for(auto i: size_t_to_node_p) { i->node_information.an.voltage = {}; }
             node_counter = 0;
             size_t_to_node_p.clear();
@@ -113,10 +189,16 @@ namespace phy_engine
     private:
         void prepare() noexcept
         {
+            if(!has_prepare && (at == ::phy_engine::analyze_type::TR || at == ::phy_engine::analyze_type::TROP)) [[unlikely]]
+            {
+                last_step = analyzer_setting.tr.t_step;
+            }
+
             // node
             node_counter = 0;
 
             size_t_to_node_p.clear();
+            size_t_to_digital_node_p.clear();
             auto all_node_size{nl.nodes.size() * ::phy_engine::netlist::details::netlist_node_block::chunk_module_size};
             // if(nl.ground_node.num_of_analog_node != 0) { ++all_node_size; }
             size_t_to_node_p.reserve(all_node_size);
@@ -130,19 +212,22 @@ namespace phy_engine
                         size_t_to_node_p.push_back_unchecked(c);
                         c->node_index = node_counter++;
                     }
+                    else if(!c->pins.empty()) { size_t_to_digital_node_p.push_back(c); }
                 }
             }
 
             nl.ground_node.node_index = SIZE_MAX;
 
             // count branch and internal node
-            branch_counter = 0;
+            branch_counter = digital_out.size();
             size_t_to_branch_p.clear();
 
             for(auto& i: nl.models)
             {
                 for(auto c{i.begin}; c != i.curr; ++c)
                 {
+                    if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+
                     // branch
                     auto const branch_view{c->ptr->generate_branch_view()};
                     for(auto branch_c{branch_view.branches}; branch_c != branch_view.branches + branch_view.size; ++branch_c)
@@ -314,6 +399,16 @@ namespace phy_engine
                        ,
                        branch_counter);
 
+            // setup digital
+            ::std::size_t digital_branch_counter{};
+            for(auto const [v, n]: digital_out)
+            {
+                auto const k{digital_branch_counter++};
+                mna.B_ref(n->node_index, k) = 1.0;
+                mna.C_ref(k, n->node_index) = 1.0;
+                mna.E_ref(k) = v;
+            }
+
             // iterate
             switch(at)
             {
@@ -422,7 +517,7 @@ namespace phy_engine
 
                 temp_A.collapseDuplicates(::Eigen::internal::scalar_sum_op<smXcd::Scalar, smXcd::Scalar>());
 
-                // mna Z matrix
+                // mna Z vector
                 svXcd temp_Z{static_cast<::Eigen::Index>(row_size)};
 
                 temp_Z.reserve(mna.Z.size());
@@ -437,22 +532,6 @@ namespace phy_engine
             }
 
             return true;
-        }
-
-        bool gmin_optimizer_singular_giag(::std::size_t curRow, ::std::size_t nRows) noexcept
-        {
-#if 0
-            A[curRow * nRows + curRow] = m_gmin;
-            ret = 0;
-
-            if(curRow != m_lastFixRow)
-            {
-                if(curRow < m_netlist->getNumNodes()) { std::cout << "A large resistor is inserted between the node" << curRow << " and ground." << std::endl; }
-                else { std::cout << "A tiny resistor is inserted at branch" << (curRow - m_netlist->getNumNodes()) << std::endl; }
-                m_lastFixRow = curRow;
-            }
-#endif
-            return false;
         }
     };
 

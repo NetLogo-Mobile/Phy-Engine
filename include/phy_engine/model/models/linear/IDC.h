@@ -15,7 +15,7 @@ namespace phy_engine::model
 
         double I{0.2};
 
-        ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
+        ::phy_engine::model::pin pins[2]{{{u8"+"}}, {{u8"-"}}};
 
         // private:
         ::std::complex<double> m_I{};

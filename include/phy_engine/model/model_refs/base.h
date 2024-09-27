@@ -36,10 +36,15 @@ namespace phy_engine::model
             virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna) noexcept = 0;
             virtual constexpr bool save_op() noexcept = 0;
             virtual constexpr bool load_temperature(double temp) noexcept = 0;
-            virtual constexpr bool step_changed_tr(double tTemp, double nstep) noexcept = 0;
+            virtual constexpr bool step_changed_tr(double nlaststep, double nstep) noexcept = 0;
             virtual constexpr bool adapt_step(double& step) noexcept = 0;
             virtual constexpr bool check_convergence() noexcept = 0;
 
+            // digital
+            virtual constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk(::phy_engine::digital::digital_node_update_table& table,
+                                                                                                   double tr_duration) noexcept = 0;
+
+            // attribute
             virtual constexpr bool set_attribute(::std::size_t index, ::phy_engine::model::variant vi) noexcept = 0;
             virtual constexpr ::phy_engine::model::variant get_attribute(::std::size_t index) noexcept = 0;
             virtual constexpr ::fast_io::u8string_view get_attribute_name(::std::size_t index) noexcept = 0;
@@ -54,7 +59,7 @@ namespace phy_engine::model
         };
 
         template <::phy_engine::model::model mod>
-        struct model_derv_impl : model_base_impl
+        struct model_derv_impl final : model_base_impl
         {
             using rcvmod_type = ::std::remove_cvref_t<mod>;
 
@@ -280,11 +285,11 @@ namespace phy_engine::model
                 else { return true; }
             }
 
-            virtual constexpr bool step_changed_tr(double tTemp, double nstep) noexcept override
+            virtual constexpr bool step_changed_tr(double nlaststep, double nstep) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_step_changed_tr<mod>)
                 {
-                    return step_changed_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, tTemp, nstep);
+                    return step_changed_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, nlaststep, nstep);
                 }
                 else { return true; }
             }
@@ -306,6 +311,17 @@ namespace phy_engine::model
                     return check_convergence_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
                 else { return true; }
+            }
+
+            virtual constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk(::phy_engine::digital::digital_node_update_table& table,
+                                                                                                   double tr_duration) noexcept override
+            {
+                if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>)
+                {
+                    return update_digital_clk_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, table, tr_duration);
+                }
+                else { ::fast_io::fast_terminate(); }
+                return {};
             }
 
             virtual constexpr bool set_attribute(::std::size_t index, ::phy_engine::model::variant vi) noexcept override

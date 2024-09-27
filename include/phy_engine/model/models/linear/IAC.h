@@ -17,7 +17,7 @@ namespace phy_engine::model
         double m_omega{50.0};
         double m_phase{0.0};
 
-        ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
+        ::phy_engine::model::pin pins[2]{{{u8"+"}}, {{u8"-"}}};
 
         // private:
         ::std::complex<double> m_I{};
