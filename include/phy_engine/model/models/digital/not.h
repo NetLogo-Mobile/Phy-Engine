@@ -9,6 +9,8 @@ namespace phy_engine::model
     {
         inline static constexpr ::fast_io::u8string_view model_name{u8"NOT"};
 
+        inline static constexpr ::phy_engine::model::digital_update_method_t digital_update_method{::phy_engine::model::digital_update_method_t::update_table};
+
         inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::digital};
         inline static constexpr ::fast_io::u8string_view identification_name{u8"NOT"};
 
@@ -22,9 +24,12 @@ namespace phy_engine::model
 
         // private:
 
-        ::phy_engine::model::digital_node_statement_t inputA{};
+        ::phy_engine::model::digital_node_statement_t inputA{::phy_engine::model::digital_node_statement_t::X};
         ::phy_engine::model::digital_node_statement_t USRA{};
-        double duration_A{};  // calculate unsteady state
+        double duration_A{};  // calculate unsteady state      
+        
+        ::phy_engine::model::digital_node_statement_t last_outputA{::phy_engine::model::digital_node_statement_t::X};
+
     };
 
     static_assert(::phy_engine::model::model<NOT>);
@@ -136,6 +141,7 @@ namespace phy_engine::model
         clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
         clip.USRA = {};
 
+        return true;
     }
 
     static_assert(::phy_engine::model::defines::can_prepare_tr<NOT>);
@@ -143,10 +149,11 @@ namespace phy_engine::model
     inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<NOT>,
                                                                                                  NOT& clip,
                                                                                                  ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double tr_duration) noexcept
+                                                                                                 double tr_duration,
+                                                                                                 ::phy_engine::model::digital_update_method_t method) noexcept
     {
         auto const node_i{clip.pins[0].nodes};
-        auto const node_o{clip.pins[2].nodes};
+        auto const node_o{clip.pins[1].nodes};
 
         if(node_i && node_o) [[likely]]
         {
@@ -227,6 +234,12 @@ namespace phy_engine::model
             }
 
             auto const output_res{~clip.inputA};
+            bool output_change{};
+            if(clip.last_outputA != output_res)
+            {
+                output_change = true;
+                clip.last_outputA = output_res;
+            }
 
             if(node_o->num_of_analog_node != 0)  // analog
             {
@@ -249,7 +262,11 @@ namespace phy_engine::model
                     default: ::std::unreachable();
                 }
             }
-            else { node_o->node_information.dn.state = output_res; }
+            else
+            {
+                node_o->node_information.dn.state = output_res;
+                if(output_change) { table.tables.insert(node_o); }
+            }
         }
 
         return {};

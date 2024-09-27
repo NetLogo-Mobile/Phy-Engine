@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <set>
 #include <complex>
+#include <fast_io/fast_io.h>
 #include "../pin/pin.h"
 
 namespace phy_engine::model
@@ -11,13 +12,65 @@ namespace phy_engine::model
         ::std::complex<double> voltage{};
     };
 
+    enum class digital_update_method_t : ::std::uint_fast8_t
+    {
+        update_table = 0x00,
+        before_all_clk = 0x01,
+        after_all_clk = 0x02,
+    };
+
     enum class digital_node_statement_t : ::std::uint_fast8_t
     {
         false_state = 0,           // L
         true_state = 1,            // H
         indeterminate_state = 2,   // X
         high_impedence_state = 3,  // Z
+
+        L = false_state,
+        H = true_state,
+        X = indeterminate_state,
+        Z = high_impedence_state,
     };
+
+    template <::std::integral char_type>
+    inline constexpr ::std::size_t print_reserve_size(::fast_io::io_reserve_type_t<char_type, digital_node_statement_t>) noexcept
+    {
+        return 1;
+    }
+
+    template <::std::integral char_type>
+    inline constexpr char_type*
+        print_reserve_define(::fast_io::io_reserve_type_t<char_type, digital_node_statement_t>, char_type* iter, digital_node_statement_t dns) noexcept
+    {
+        switch(dns)
+        {
+            case ::phy_engine::model::digital_node_statement_t::false_state:
+            {
+                constexpr auto L{::fast_io::char_literal_v<u8'L', char_type>};
+                *(iter++) = L;
+                return iter;
+            }
+            case ::phy_engine::model::digital_node_statement_t::true_state:
+            {
+                constexpr auto H{::fast_io::char_literal_v<u8'H', char_type>};
+                *(iter++) = H;
+                return iter;
+            }
+            case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
+            {
+                constexpr auto X{::fast_io::char_literal_v<u8'X', char_type>};
+                *(iter++) = X;
+                return iter;
+            }
+            case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
+            {
+                constexpr auto Z{::fast_io::char_literal_v<u8'Z', char_type>};
+                *(iter++) = Z;
+                return iter;
+            }
+            default: ::fast_io::fast_terminate();
+        }
+    }
 
     inline constexpr digital_node_statement_t operator& (digital_node_statement_t a, digital_node_statement_t b) noexcept
     {

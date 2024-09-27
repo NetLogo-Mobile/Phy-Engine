@@ -9,10 +9,12 @@ namespace phy_engine::model
     {
         inline static constexpr ::fast_io::u8string_view model_name{u8"OUPUT"};
 
+        inline static constexpr ::phy_engine::model::digital_update_method_t digital_update_method{::phy_engine::model::digital_update_method_t::update_table};
+
         inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::digital};
         inline static constexpr ::fast_io::u8string_view identification_name{u8"OUPUT"};
 
-        ::phy_engine::model::pin pins[1]{{{u8"i"}}};
+        ::phy_engine::model::pin pins{{u8"i"}};
 
         // digital
         double Ll{0.0};    // low_level
@@ -22,7 +24,7 @@ namespace phy_engine::model
 
         // private:
 
-        ::phy_engine::model::digital_node_statement_t inputA{};
+        ::phy_engine::model::digital_node_statement_t inputA{::phy_engine::model::digital_node_statement_t::X};
         ::phy_engine::model::digital_node_statement_t USRA{};
         double duration_A{};  // calculate unsteady state
     };
@@ -75,12 +77,13 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<OUPUT>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<OUPUT>,
+    inline ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<OUPUT>,
                                                                                                  OUPUT& clip,
                                                                                                  ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double tr_duration) noexcept
+                                                                                       double tr_duration,
+                                                                                       ::phy_engine::model::digital_update_method_t method) noexcept
     {
-        auto const node_i{clip.pins[0].nodes};
+        auto const node_i{clip.pins.nodes};
 
         if(table.tables.contains(node_i))  // update
         {
@@ -159,7 +162,7 @@ namespace phy_engine::model
 
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<OUPUT>, OUPUT& clip) noexcept
     {
-        return {clip.pins, 2};
+        return {__builtin_addressof(clip.pins), 1};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<OUPUT>);

@@ -38,11 +38,12 @@ namespace phy_engine
         ::std::size_t branch_counter{};
 
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
-        ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_digital_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
 
         ::phy_engine::digital::digital_node_update_table digital_update_tables{};            // digital
         ::fast_io::vector<::phy_engine::digital::need_operate_analog_node_t> digital_out{};  // digital
+        ::fast_io::vector<::phy_engine::model::model_base*> before_all_clk_digital_model{};  // digital
+        ::fast_io::vector<::phy_engine::model::model_base*> after_all_clk_digital_model{};   // digital
 
         double tr_duration{};  // TR
         double last_step{};    // TR
@@ -122,58 +123,48 @@ namespace phy_engine
             return true;
         }
 
-        constexpr void update_digital_from_analog_nodes() noexcept
-        {
-            for(auto& i: nl.nodes)
-            {
-                for(auto c{i.begin}; c != i.curr; ++c)
-                {
-                    if(c->num_of_analog_node != c->pins.size()) { digital_update_tables.tables.emplace(c); }
-                }
-            }
-        }
-
-        constexpr void digital_clk() noexcept
+        void digital_clk() noexcept
         {
             digital_out.clear();
-
-            for(auto& i: nl.models)
+            for(auto i: before_all_clk_digital_model)
             {
-                for(auto c{i.begin}; c != i.curr; ++c)
+                auto const rt{i->ptr->update_digital_clk(digital_update_tables, tr_duration, ::phy_engine::model::digital_update_method_t::before_all_clk)};
+                if(rt.need_to_operate_analog_node) { digital_out.push_back(rt); }
+            }
+
+            for(auto i: digital_update_tables.tables)
+            {
+                for(auto p: i->pins)
                 {
-                    if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                    if(c->ptr->get_device_type() == ::phy_engine::model::model_device_type::digital)
+                    auto model{p->model};
+                    if(model->ptr->get_device_type() == ::phy_engine::model::model_device_type::digital) [[likely]]
                     {
-                        auto const rt{c->ptr->update_digital_clk(digital_update_tables, tr_duration)};
+                        auto const rt{
+                            model->ptr->update_digital_clk(digital_update_tables, tr_duration, ::phy_engine::model::digital_update_method_t::update_table)};
                         if(rt.need_to_operate_analog_node) { digital_out.push_back(rt); }
                     }
                 }
             }
+
+            for(auto i: after_all_clk_digital_model)
+            {
+                auto const rt{i->ptr->update_digital_clk(digital_update_tables, tr_duration, ::phy_engine::model::digital_update_method_t::after_all_clk)};
+                if(rt.need_to_operate_analog_node) { digital_out.push_back(rt); }
+            }
         }
 
-        constexpr void update_digital() noexcept
+        void update_digital() noexcept
         {
             if(at != ::phy_engine::analyze_type::TR && at != ::phy_engine::analyze_type::TROP) [[unlikely]] { ::fast_io::fast_terminate(); }
 
-            update_digital_from_analog_nodes();
             digital_clk();
-        }
-
-        constexpr void reset_digital() noexcept
-        {
-            digital_out.clear();
-
-            for(auto i: size_t_to_digital_node_p) { i->node_information.dn = {}; }
-
-            // use any prepare function to reset digital model
         }
 
         void reset() noexcept
         {
             tr_duration = 0.0;
 
-            reset_digital();
-            size_t_to_digital_node_p.clear();
+            digital_out.clear();
 
             for(auto i: size_t_to_node_p) { i->node_information.an.voltage = {}; }
             node_counter = 0;
@@ -198,7 +189,6 @@ namespace phy_engine
             node_counter = 0;
 
             size_t_to_node_p.clear();
-            size_t_to_digital_node_p.clear();
             auto all_node_size{nl.nodes.size() * ::phy_engine::netlist::details::netlist_node_block::chunk_module_size};
             // if(nl.ground_node.num_of_analog_node != 0) { ++all_node_size; }
             size_t_to_node_p.reserve(all_node_size);
@@ -207,12 +197,25 @@ namespace phy_engine
             {
                 for(auto c{i.begin}; c != i.curr; ++c)
                 {
-                    if(c->num_of_analog_node != 0) [[likely]]
+                    if(c->num_of_analog_node == 0)
                     {
-                        size_t_to_node_p.push_back_unchecked(c);
-                        c->node_index = node_counter++;
+                        if(!c->pins.empty())  // digital
+                        {
+                            if(!has_prepare) [[unlikely]] { c->node_information.dn.state = ::phy_engine::model::digital_node_statement_t::X; }
+                        }
                     }
-                    else if(!c->pins.empty()) { size_t_to_digital_node_p.push_back(c); }
+                    else
+                    {
+                        if(c->num_of_analog_node != c->pins.size())  // hybrid
+                        {
+                            digital_update_tables.tables.emplace(c);
+                        }
+                        else  // analog
+                        {
+                            size_t_to_node_p.push_back_unchecked(c);
+                            c->node_index = node_counter++;
+                        }
+                    }
                 }
             }
 
@@ -222,11 +225,17 @@ namespace phy_engine
             branch_counter = digital_out.size();
             size_t_to_branch_p.clear();
 
+            before_all_clk_digital_model.clear();
+            after_all_clk_digital_model.clear();
+
             for(auto& i: nl.models)
             {
                 for(auto c{i.begin}; c != i.curr; ++c)
                 {
                     if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+                    // pin
+                    auto const pin_view{c->ptr->generate_pin_view()};
+                    for(auto pin_c{pin_view.pins}; pin_c != pin_view.pins + pin_view.size; ++pin_c) { pin_c->model = c; }
 
                     // branch
                     auto const branch_view{c->ptr->generate_branch_view()};
@@ -244,6 +253,25 @@ namespace phy_engine
 
                         size_t_to_node_p.push_back(in_c);
                         in_c->node_index = node_counter++;
+                    }
+
+                    if(c->ptr->get_device_type() == ::phy_engine::model::model_device_type::digital)
+                    {
+                        auto const method{c->ptr->get_digital_update_method()};
+                        if(static_cast<::phy_engine::model::digital_update_method_t>(
+                               static_cast<::std::uint_fast8_t>(method) &
+                               static_cast<::std::uint_fast8_t>(::phy_engine::model::digital_update_method_t::before_all_clk)) ==
+                           ::phy_engine::model::digital_update_method_t::before_all_clk)
+                        {
+                            before_all_clk_digital_model.push_back(c);
+                        }
+                        else if(static_cast<::phy_engine::model::digital_update_method_t>(
+                                    static_cast<::std::uint_fast8_t>(method) &
+                                    static_cast<::std::uint_fast8_t>(::phy_engine::model::digital_update_method_t::after_all_clk)) ==
+                                ::phy_engine::model::digital_update_method_t::after_all_clk)
+                        {
+                            after_all_clk_digital_model.push_back(c);
+                        }
                     }
                 }
             }

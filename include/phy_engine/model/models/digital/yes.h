@@ -5,16 +5,16 @@
 
 namespace phy_engine::model
 {
-    struct AND
+    struct YES
     {
-        inline static constexpr ::fast_io::u8string_view model_name{u8"AND"};
+        inline static constexpr ::fast_io::u8string_view model_name{u8"YES"};
 
         inline static constexpr ::phy_engine::model::digital_update_method_t digital_update_method{::phy_engine::model::digital_update_method_t::update_table};
-        
-        inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::digital};
-        inline static constexpr ::fast_io::u8string_view identification_name{u8"AND"};
 
-        ::phy_engine::model::pin pins[3]{{{u8"ia"}}, {{u8"ib"}}, {{u8"o"}}};
+        inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::digital};
+        inline static constexpr ::fast_io::u8string_view identification_name{u8"YES"};
+
+        ::phy_engine::model::pin pins[2]{{{u8"i"}}, {{u8"o"}}};
 
         // digital
         double Ll{0.0};    // low_level
@@ -28,18 +28,13 @@ namespace phy_engine::model
         ::phy_engine::model::digital_node_statement_t USRA{};
         double duration_A{};  // calculate unsteady state
 
-        ::phy_engine::model::digital_node_statement_t inputB{::phy_engine::model::digital_node_statement_t::X};
-        ::phy_engine::model::digital_node_statement_t USRB{};
-        double duration_B{};  // calculate unsteady state
-
         ::phy_engine::model::digital_node_statement_t last_outputA{::phy_engine::model::digital_node_statement_t::X};
-
     };
 
-    static_assert(::phy_engine::model::model<AND>);
+    static_assert(::phy_engine::model::model<YES>);
 
     inline constexpr bool
-        set_attribute_define(::phy_engine::model::model_reserve_type_t<AND>, AND& clip, ::std::size_t n, ::phy_engine::model::variant vi) noexcept
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<YES>, YES& clip, ::std::size_t n, ::phy_engine::model::variant vi) noexcept
     {
         switch(n)
         {
@@ -75,10 +70,10 @@ namespace phy_engine::model
         return false;
     }
 
-    static_assert(::phy_engine::model::defines::has_set_attribute<AND>);
+    static_assert(::phy_engine::model::defines::has_set_attribute<YES>);
 
     inline constexpr ::phy_engine::model::variant
-        get_attribute_define(::phy_engine::model::model_reserve_type_t<AND>, AND const& clip, ::std::size_t n) noexcept
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<YES>, YES const& clip, ::std::size_t n) noexcept
     {
         switch(n)
         {
@@ -106,10 +101,10 @@ namespace phy_engine::model
         return {};
     }
 
-    static_assert(::phy_engine::model::defines::has_get_attribute<AND>);
+    static_assert(::phy_engine::model::defines::has_get_attribute<YES>);
 
     inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<AND>, AND const& vac, ::std::size_t n) noexcept
+        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<YES>, YES const& vac, ::std::size_t n) noexcept
     {
         switch(n)
         {
@@ -137,40 +132,35 @@ namespace phy_engine::model
         return {};
     }
 
-    static_assert(::phy_engine::model::defines::has_get_attribute_name<AND>);
+    static_assert(::phy_engine::model::defines::has_get_attribute_name<YES>);
 
-    inline bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<AND>, AND& clip) noexcept
+    inline bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<YES>, YES& clip) noexcept
     {
         clip.duration_A = 0.0;
         clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
         clip.USRA = {};
 
-        clip.duration_B = 0.0;
-        clip.inputB = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
-        clip.USRB = {};
-
         return true;
     }
 
-    static_assert(::phy_engine::model::defines::can_prepare_tr<AND>);
+    static_assert(::phy_engine::model::defines::can_prepare_tr<YES>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<AND>,
-                                                                                                 AND& clip,
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<YES>,
+                                                                                                 YES& clip,
                                                                                                  ::phy_engine::digital::digital_node_update_table& table,
                                                                                                  double tr_duration,
                                                                                                  ::phy_engine::model::digital_update_method_t method) noexcept
     {
-        auto const node_ia{clip.pins[0].nodes};
-        auto const node_ib{clip.pins[1].nodes};
-        auto const node_o{clip.pins[2].nodes};
+        auto const node_i{clip.pins[0].nodes};
+        auto const node_o{clip.pins[1].nodes};
 
-        if(node_ia && node_ib && node_o) [[likely]]
+        if(node_i && node_o) [[likely]]
         {
-            if(table.tables.contains(node_ia))  // update
+            if(table.tables.contains(node_i))  // update
             {
-                if(node_ia->num_of_analog_node != 0)  // analog
+                if(node_i->num_of_analog_node != 0)  // analog
                 {
-                    double const voltage{node_ia->node_information.an.voltage.real()};
+                    double const voltage{node_i->node_information.an.voltage.real()};
 
                     switch(clip.inputA)
                     {
@@ -239,89 +229,13 @@ namespace phy_engine::model
                         default: ::std::unreachable();
                     }
                 }
-                else { clip.inputA = node_ia->node_information.dn.state; }
+                else { clip.inputA = node_i->node_information.dn.state; }
             }
 
-            if(table.tables.contains(node_ib))  // update
-            {
-                if(node_ib->num_of_analog_node != 0)  // analog
-                {
-                    double const voltage{node_ib->node_information.an.voltage.real()};
-
-                    switch(clip.inputB)
-                    {
-                        case ::phy_engine::model::digital_node_statement_t::false_state:
-                        {
-                            if(voltage >= clip.Hl)
-                            {
-                                if(clip.Tsu > 0.0)
-                                {
-                                    clip.inputB = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
-                                    clip.USRB = ::phy_engine::model::digital_node_statement_t::true_state;
-                                    clip.duration_B = tr_duration;
-                                }
-                                else { clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state; }
-                            }
-                            break;
-                        }
-                        case ::phy_engine::model::digital_node_statement_t::true_state:
-                        {
-                            if(voltage <= clip.Ll)
-                            {
-                                if(clip.Th > 0.0)
-                                {
-                                    clip.inputB = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
-                                    clip.USRB = ::phy_engine::model::digital_node_statement_t::false_state;
-                                    clip.duration_B = tr_duration;
-                                }
-                                else { clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state; }
-                            }
-                            break;
-                        }
-                        case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
-                        {
-                            switch(clip.USRB)
-                            {
-                                case ::phy_engine::model::digital_node_statement_t::false_state:
-                                {
-                                    if(voltage <= clip.Ll)
-                                    {
-                                        if(tr_duration - clip.duration_B >= clip.Tsu)
-                                        {
-                                            clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state;
-                                        }
-                                    }
-                                    else { clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state; }
-                                    break;
-                                }
-                                case ::phy_engine::model::digital_node_statement_t::true_state:
-                                {
-                                    if(voltage >= clip.Hl)
-                                    {
-                                        if(tr_duration - clip.duration_B >= clip.Th)
-                                        {
-                                            clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state;
-                                        }
-                                    }
-                                    else { clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state; }
-                                    break;
-                                }
-                                default: ::fast_io::unreachable();
-                            }
-
-                            break;
-                        }
-                        case ::phy_engine::model::digital_node_statement_t::high_impedence_state: break;
-                        default: ::std::unreachable();
-                    }
-                }
-                else { clip.inputB = node_ib->node_information.dn.state; }
-            }
-
-            auto const output_res{clip.inputA & clip.inputB};
+            auto const output_res{clip.inputA};
             bool output_change{};
-            if(clip.last_outputA != output_res) 
-            { 
+            if(clip.last_outputA != output_res)
+            {
                 output_change = true;
                 clip.last_outputA = output_res;
             }
@@ -357,12 +271,13 @@ namespace phy_engine::model
         return {};
     }
 
-    static_assert(::phy_engine::model::defines::can_update_digital_clk<AND>);
+    static_assert(::phy_engine::model::defines::can_update_digital_clk<YES>);
 
-    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<AND>, AND& clip) noexcept
+    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<YES>, YES& clip) noexcept
     {
-        return {clip.pins, 3};
+        return {clip.pins, 2};
     }
 
-    static_assert(::phy_engine::model::defines::can_generate_pin_view<AND>);
+    static_assert(::phy_engine::model::defines::can_generate_pin_view<YES>);
+
 }  // namespace phy_engine::model

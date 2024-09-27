@@ -29,3 +29,5 @@
 #include "model/models/digital/or.h"
 #include "model/models/digital/not.h"
 #include "model/models/digital/xor.h"
+#include "model/models/digital/input.h"
+#include "model/models/digital/output.h"

@@ -153,14 +153,21 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept can_update_digital_clk = requires(mod&& t, ::phy_engine::digital::digital_node_update_table& table, double tr_duration) {
+        concept can_update_digital_clk = requires(mod&& t,
+                                                  ::phy_engine::digital::digital_node_update_table& table,
+                                                  double tr_duration,
+                                                  ::phy_engine::model::digital_update_method_t method) {
             {
-                update_digital_clk_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, table, tr_duration)
+                update_digital_clk_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, table, tr_duration, method)
             } -> ::std::same_as<::phy_engine::digital::need_operate_analog_node_t>;
         };
+        template <typename mod>
+        concept has_digital_update_method =
+            ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::digital_update_method)>, ::phy_engine::model::digital_update_method_t>;
 
         template <typename mod>
-        concept is_valid_digital_model = mod::device_type == ::phy_engine::model::model_device_type::digital && can_update_digital_clk<mod>;
+        concept is_valid_digital_model =
+            mod::device_type == ::phy_engine::model::model_device_type::digital && can_update_digital_clk<mod> && has_digital_update_method<mod>;
 
         template <typename mod>
         concept can_generate_branch_view = requires(mod&& t) {

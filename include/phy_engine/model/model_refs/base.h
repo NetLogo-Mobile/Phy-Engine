@@ -41,8 +41,11 @@ namespace phy_engine::model
             virtual constexpr bool check_convergence() noexcept = 0;
 
             // digital
-            virtual constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk(::phy_engine::digital::digital_node_update_table& table,
-                                                                                                   double tr_duration) noexcept = 0;
+            virtual constexpr ::phy_engine::digital::need_operate_analog_node_t
+                update_digital_clk(::phy_engine::digital::digital_node_update_table& table,
+                                   double tr_duration,
+                                   ::phy_engine::model::digital_update_method_t method) noexcept = 0;
+            virtual constexpr ::phy_engine::model::digital_update_method_t get_digital_update_method() noexcept = 0;
 
             // attribute
             virtual constexpr bool set_attribute(::std::size_t index, ::phy_engine::model::variant vi) noexcept = 0;
@@ -313,13 +316,22 @@ namespace phy_engine::model
                 else { return true; }
             }
 
-            virtual constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk(::phy_engine::digital::digital_node_update_table& table,
-                                                                                                   double tr_duration) noexcept override
+            virtual constexpr ::phy_engine::digital::need_operate_analog_node_t
+                update_digital_clk(::phy_engine::digital::digital_node_update_table& table,
+                                   double tr_duration,
+                                   ::phy_engine::model::digital_update_method_t method) noexcept override
             {
                 if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>)
                 {
-                    return update_digital_clk_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, table, tr_duration);
+                    return update_digital_clk_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, table, tr_duration, method);
                 }
+                else { ::fast_io::fast_terminate(); }
+                return {};
+            }
+
+            virtual constexpr ::phy_engine::model::digital_update_method_t get_digital_update_method() noexcept override
+            {
+                if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return mod::digital_update_method; }
                 else { ::fast_io::fast_terminate(); }
                 return {};
             }
