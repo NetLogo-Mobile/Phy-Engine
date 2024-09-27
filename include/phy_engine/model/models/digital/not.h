@@ -133,7 +133,7 @@ namespace phy_engine::model
     inline bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<NOT>, NOT& clip) noexcept
     {
         clip.duration_A = 0.0;
-        clip.inputA = {};
+        clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
         clip.USRA = {};
 
     }

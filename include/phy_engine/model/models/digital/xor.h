@@ -137,11 +137,11 @@ namespace phy_engine::model
     inline bool prepare_tr_define(::phy_engine::model::model_reserve_type_t<XOR>, XOR& clip) noexcept
     {
         clip.duration_A = 0.0;
-        clip.inputA = {};
+        clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
         clip.USRA = {};
 
         clip.duration_B = 0.0;
-        clip.inputB = {};
+        clip.inputB = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
         clip.USRB = {};
     }
 
