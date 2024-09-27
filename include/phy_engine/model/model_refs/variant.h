@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <cstdint>
 #include <cstddef>
+#include "../node/node.h"
 
 namespace phy_engine::model
 {
@@ -21,7 +22,9 @@ namespace phy_engine::model
 
         boolean,
         f,
-        d
+        d,
+
+        digital
     };
 
     struct variant
@@ -41,6 +44,8 @@ namespace phy_engine::model
             bool boolean;
             float f;
             double d;
+
+            ::phy_engine::model::digital_node_statement_t digital;
         };
 
         variant_type type{};
