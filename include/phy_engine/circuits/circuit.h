@@ -2,9 +2,7 @@
 #include <cstdint>
 #include <utility>
 #include <fast_io/fast_io_dsal/vector.h>
-#ifdef PHY_ENGINE_PRINT_MARTIX
-    #include <iostream>
-#endif
+
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 #include <Eigen/SparseLU>
@@ -44,6 +42,11 @@ namespace phy_engine
         ::fast_io::vector<::phy_engine::digital::need_operate_analog_node_t> digital_out{};  // digital
         ::fast_io::vector<::phy_engine::model::model_base*> before_all_clk_digital_model{};  // digital
         ::fast_io::vector<::phy_engine::model::model_base*> after_all_clk_digital_model{};   // digital
+
+        // solver
+        using smXcd = ::Eigen::SparseMatrix<::std::complex<double>>;
+        using svXcd = ::Eigen::SparseVector<::std::complex<double>>;
+        ::Eigen::SparseLU<smXcd, ::Eigen::COLAMDOrdering<int>> solver{};
 
         double tr_duration{};  // TR
         double last_step{};    // TR
@@ -123,15 +126,17 @@ namespace phy_engine
             return true;
         }
 
-        void digital_clk() noexcept
+        void before_digital_clk() noexcept
         {
-            digital_out.clear();
             for(auto i: before_all_clk_digital_model)
             {
                 auto const rt{i->ptr->update_digital_clk(digital_update_tables, tr_duration, ::phy_engine::model::digital_update_method_t::before_all_clk)};
                 if(rt.need_to_operate_analog_node) { digital_out.push_back(rt); }
             }
+        }
 
+        void update_table_digital_clk() noexcept
+        {
             for(auto i: digital_update_tables.tables)
             {
                 for(auto p: i->pins)
@@ -145,12 +150,23 @@ namespace phy_engine
                     }
                 }
             }
+        }
 
+        void after_table_digital_clk() noexcept
+        {
             for(auto i: after_all_clk_digital_model)
             {
                 auto const rt{i->ptr->update_digital_clk(digital_update_tables, tr_duration, ::phy_engine::model::digital_update_method_t::after_all_clk)};
                 if(rt.need_to_operate_analog_node) { digital_out.push_back(rt); }
             }
+        }
+
+        void digital_clk() noexcept
+        {
+            digital_out.clear();
+            before_digital_clk();
+            update_table_digital_clk();
+            after_table_digital_clk();
         }
 
         void update_digital() noexcept
@@ -517,16 +533,8 @@ namespace phy_engine
                 }
             }
 
-#ifdef PHY_ENGINE_PRINT_MARTIX
-            ::std::cout << mna.A << "\n";
-            ::std::cout << mna.Z << "\n";
-#endif  // _DEBUG
-
             // solve
             {
-                using smXcd = ::Eigen::SparseMatrix<::std::complex<double>>;
-                using svXcd = ::Eigen::SparseVector<::std::complex<double>>;
-
                 auto const row_size{node_counter + branch_counter};
 
                 // mna A matrix
@@ -552,9 +560,7 @@ namespace phy_engine
                 for(auto& i: mna.Z) { temp_Z.insertBackUnordered(i.first) = i.second; }
 
                 // solve
-                ::Eigen::SparseLU<smXcd, ::Eigen::COLAMDOrdering<int>> solver{};
-                solver.analyzePattern(temp_A);
-                solver.factorize(temp_A);
+                solver.compute(temp_A);
                 if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
                 mna.X = solver.solve(temp_Z);
             }

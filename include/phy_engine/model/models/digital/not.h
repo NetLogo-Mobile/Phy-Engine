@@ -26,10 +26,9 @@ namespace phy_engine::model
 
         ::phy_engine::model::digital_node_statement_t inputA{::phy_engine::model::digital_node_statement_t::X};
         ::phy_engine::model::digital_node_statement_t USRA{};
-        double duration_A{};  // calculate unsteady state      
-        
-        ::phy_engine::model::digital_node_statement_t last_outputA{::phy_engine::model::digital_node_statement_t::X};
+        double duration_A{};  // calculate unsteady state
 
+        ::phy_engine::model::digital_node_statement_t last_outputA{::phy_engine::model::digital_node_statement_t::X};
     };
 
     static_assert(::phy_engine::model::model<NOT>);
@@ -157,81 +156,72 @@ namespace phy_engine::model
 
         if(node_i && node_o) [[likely]]
         {
-            if(table.tables.contains(node_i))  // update
+            if(node_i->num_of_analog_node != 0)  // analog
             {
-                if(node_i->num_of_analog_node != 0)  // analog
-                {
-                    double const voltage{node_i->node_information.an.voltage.real()};
+                double const voltage{node_i->node_information.an.voltage.real()};
 
-                    switch(clip.inputA)
+                switch(clip.inputA)
+                {
+                    case ::phy_engine::model::digital_node_statement_t::false_state:
                     {
-                        case ::phy_engine::model::digital_node_statement_t::false_state:
+                        if(voltage >= clip.Hl)
                         {
-                            if(voltage >= clip.Hl)
+                            if(clip.Tsu > 0.0)
                             {
-                                if(clip.Tsu > 0.0)
+                                clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                                clip.USRA = ::phy_engine::model::digital_node_statement_t::true_state;
+                                clip.duration_A = tr_duration;
+                            }
+                            else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
+                        }
+                        break;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::true_state:
+                    {
+                        if(voltage <= clip.Ll)
+                        {
+                            if(clip.Th > 0.0)
+                            {
+                                clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                                clip.USRA = ::phy_engine::model::digital_node_statement_t::false_state;
+                                clip.duration_A = tr_duration;
+                            }
+                            else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
+                        }
+                        break;
+                    }
+                    case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
+                    {
+                        switch(clip.USRA)
+                        {
+                            case ::phy_engine::model::digital_node_statement_t::false_state:
+                            {
+                                if(voltage <= clip.Ll)
                                 {
-                                    clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
-                                    clip.USRA = ::phy_engine::model::digital_node_statement_t::true_state;
-                                    clip.duration_A = tr_duration;
+                                    if(tr_duration - clip.duration_A >= clip.Tsu) { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
                                 }
                                 else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
+                                break;
                             }
-                            break;
-                        }
-                        case ::phy_engine::model::digital_node_statement_t::true_state:
-                        {
-                            if(voltage <= clip.Ll)
+                            case ::phy_engine::model::digital_node_statement_t::true_state:
                             {
-                                if(clip.Th > 0.0)
+                                if(voltage >= clip.Hl)
                                 {
-                                    clip.inputA = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
-                                    clip.USRA = ::phy_engine::model::digital_node_statement_t::false_state;
-                                    clip.duration_A = tr_duration;
+                                    if(tr_duration - clip.duration_A >= clip.Th) { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
                                 }
                                 else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
+                                break;
                             }
-                            break;
+                            default: ::fast_io::unreachable();
                         }
-                        case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
-                        {
-                            switch(clip.USRA)
-                            {
-                                case ::phy_engine::model::digital_node_statement_t::false_state:
-                                {
-                                    if(voltage <= clip.Ll)
-                                    {
-                                        if(tr_duration - clip.duration_A >= clip.Tsu)
-                                        {
-                                            clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state;
-                                        }
-                                    }
-                                    else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
-                                    break;
-                                }
-                                case ::phy_engine::model::digital_node_statement_t::true_state:
-                                {
-                                    if(voltage >= clip.Hl)
-                                    {
-                                        if(tr_duration - clip.duration_A >= clip.Th)
-                                        {
-                                            clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state;
-                                        }
-                                    }
-                                    else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
-                                    break;
-                                }
-                                default: ::fast_io::unreachable();
-                            }
 
-                            break;
-                        }
-                        case ::phy_engine::model::digital_node_statement_t::high_impedence_state: break;
-                        default: ::std::unreachable();
+                        break;
                     }
+                    case ::phy_engine::model::digital_node_statement_t::high_impedence_state: break;
+                    default: ::std::unreachable();
                 }
-                else { clip.inputA = node_i->node_information.dn.state; }
             }
+            else { clip.inputA = node_i->node_information.dn.state; }
 
             auto const output_res{~clip.inputA};
             bool output_change{};
