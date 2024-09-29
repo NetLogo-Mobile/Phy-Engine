@@ -222,6 +222,8 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_A >= clip.Tsu) { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
                                 }
+                                else { clip.duration_A = tr_duration; }
+
                                 break;
                             }
                             default: ::fast_io::unreachable();
