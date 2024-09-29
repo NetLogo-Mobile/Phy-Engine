@@ -283,12 +283,17 @@ namespace phy_engine::model
             return *this;
         }
 
-        void clear_node() noexcept
+        void destroy() noexcept 
         {
-            for(auto i: pins) { i->nodes = nullptr; }
             pins.clear();
             num_of_analog_node = 0;
             node_index = SIZE_MAX;
+        }
+
+        void clear_node() noexcept
+        {
+            for(auto i: pins) { i->nodes = nullptr; }
+            destroy();
         }
 
         void clear() noexcept

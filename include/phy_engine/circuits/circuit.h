@@ -226,11 +226,10 @@ namespace phy_engine
                         {
                             digital_update_tables.tables.emplace(c);
                         }
-                        else  // analog
-                        {
-                            size_t_to_node_p.push_back_unchecked(c);
-                            c->node_index = node_counter++;
-                        }
+
+                        // analog
+                        size_t_to_node_p.push_back_unchecked(c);
+                        c->node_index = node_counter++;
                     }
                 }
             }

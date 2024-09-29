@@ -206,6 +206,7 @@ namespace phy_engine::model
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
+                else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
                 else { return false; }
             }
 
@@ -216,6 +217,7 @@ namespace phy_engine::model
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
+                else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
                 else { return false; }
             }
 
@@ -230,6 +232,7 @@ namespace phy_engine::model
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
+                else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
                 else { return false; }
             }
 
@@ -244,6 +247,7 @@ namespace phy_engine::model
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
+                else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
                 else { return false; }
             }
 
@@ -262,6 +266,7 @@ namespace phy_engine::model
                     return iterate_dc_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, mna);
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
+                else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
                 else { return false; }
             }
 

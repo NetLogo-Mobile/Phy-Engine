@@ -250,7 +250,7 @@ namespace phy_engine::netlist
             node.pins.insert(i);
             i->nodes = __builtin_addressof(node);
         }
-        other_node.clear_node();
+        other_node.destroy();
     }
 
     inline void add_netlist(netlist& nl, netlist const& other_nl) noexcept
