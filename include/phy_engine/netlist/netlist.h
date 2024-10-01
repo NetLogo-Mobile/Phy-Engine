@@ -1,8 +1,9 @@
 ﻿#pragma once
 #include <cstddef>
 #include <type_traits>
-#include <map>
-#include <deque>
+//#include <map>
+//#include <deque>
+#include <absl/container/btree_map.h>
 
 #include <fast_io/fast_io_core.h>
 #include <fast_io/fast_io_dsal/vector.h>
@@ -359,7 +360,7 @@ namespace phy_engine::netlist
 
         netlist(netlist const& other) noexcept 
         {
-            ::std::map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
+            ::absl::btree_map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
 
             node_map[__builtin_addressof(other.ground_node)] = __builtin_addressof(ground_node);
 
@@ -445,7 +446,7 @@ namespace phy_engine::netlist
             nodes.clear();
 
             // deep copy
-            ::std::map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
+            ::absl::btree_map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
             node_map[__builtin_addressof(other.ground_node)] = __builtin_addressof(ground_node);
 
             for(auto& i: other.nodes)

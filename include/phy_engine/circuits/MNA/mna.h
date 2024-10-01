@@ -1,8 +1,10 @@
 #pragma once
 #include <complex>
-#include <map>
+// #include <map>
+#include <absl/container/btree_map.h>
 #include <fast_io/fast_io.h>
-#include <Eigen/Dense>
+
+// #include <Eigen/Dense>
 
 namespace phy_engine::MNA
 {
@@ -30,7 +32,9 @@ namespace phy_engine::MNA
         void clear() noexcept
         {
             A.clear();
+#if 0
             X.setZero();
+#endif
             Z.clear();
         }
 
@@ -80,34 +84,34 @@ namespace phy_engine::MNA
 #endif
             return A[rox + node_size][col + node_size];
         }
-
+#if 0
         auto& X_ref(::std::size_t rox) noexcept
         {
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
-#ifdef _DEBUG
+    #ifdef _DEBUG
             if(rox >= node_size + branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-#endif
+    #endif
             return X.coeffRef(rox);
         }
 
         auto& V_ref(::std::size_t rox) noexcept
         {
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
-#ifdef _DEBUG
+    #ifdef _DEBUG
             if(rox >= node_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-#endif
+    #endif
             return X.coeffRef(rox);
         }
 
         auto& J_ref(::std::size_t rox) noexcept
         {
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
-#ifdef _DEBUG
+    #ifdef _DEBUG
             if(rox >= branch_size) [[unlikely]] { ::fast_io::fast_terminate(); }
-#endif
+    #endif
             return X.coeffRef(rox + node_size);
         }
-
+#endif
         auto& Z_ref(::std::size_t rox) noexcept
         {
             if(rox == SIZE_MAX) [[unlikely]] { return d_temp; }
@@ -135,9 +139,8 @@ namespace phy_engine::MNA
             return Z[rox + node_size];
         }
 
-        ::std::map<::std::size_t, ::std::map<::std::size_t, ::std::complex<double>>> A{};
-        ::Eigen::VectorXcd X{};
-        ::std::map<::std::size_t, ::std::complex<double>> Z{};
+        ::absl::btree_map<::std::size_t, ::absl::btree_map<::std::size_t, ::std::complex<double>>> A{};
+        ::absl::btree_map<::std::size_t, ::std::complex<double>> Z{};
 
         ::std::size_t node_size{};
         ::std::size_t branch_size{};

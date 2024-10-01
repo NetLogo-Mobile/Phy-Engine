@@ -73,12 +73,6 @@ namespace phy_engine
 
                     if(!solve()) [[unlikely]] { return false; }
 
-                    ::std::size_t i{};
-                    for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
-                    nl.ground_node.node_information.an.voltage = {};
-                    ::std::size_t c{};
-                    for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c++]->current = mna.X_ref(i); }
-
                     break;
                 }
                 case ::phy_engine::TR: [[fallthrough]];
@@ -109,12 +103,6 @@ namespace phy_engine
                         if(!solve()) [[unlikely]] { return false; }
 
                         tr_duration += t_step;
-
-                        ::std::size_t i{};
-                        for(; i < mna.node_size; ++i) { size_t_to_node_p[i]->node_information.an.voltage = mna.X_ref(i); }
-                        nl.ground_node.node_information.an.voltage = {};
-                        ::std::size_t c{};
-                        for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p[c++]->current = mna.X_ref(i); }
                     }
                     break;
                 }
@@ -312,13 +300,13 @@ namespace phy_engine
                         for(auto c{i.begin}; c != i.curr; ++c)
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                            if(!c->has_init)
+                            if(!c->has_init) [[unlikely]]
                             {
                                 if(!c->ptr->init_model()) [[unlikely]] { ::fast_io::fast_terminate(); }
 
                                 c->has_init = true;
                             }
-                            if(!has_prepare)
+                            if(!has_prepare) [[unlikely]]
                             {
                                 if(!c->ptr->prepare_op()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
@@ -335,13 +323,13 @@ namespace phy_engine
                         for(auto c{i.begin}; c != i.curr; ++c)
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                            if(!c->has_init)
+                            if(!c->has_init) [[unlikely]]
                             {
                                 if(!c->ptr->init_model()) [[unlikely]] { ::fast_io::fast_terminate(); }
 
                                 c->has_init = true;
                             }
-                            if(!has_prepare)
+                            if(!has_prepare) [[unlikely]]
                             {
                                 if(!c->ptr->prepare_dc()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
@@ -358,13 +346,13 @@ namespace phy_engine
                         for(auto c{i.begin}; c != i.curr; ++c)
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                            if(!c->has_init)
+                            if(!c->has_init) [[unlikely]]
                             {
                                 if(!c->ptr->init_model()) [[unlikely]] { ::fast_io::fast_terminate(); }
 
                                 c->has_init = true;
                             }
-                            if(!has_prepare)
+                            if(!has_prepare) [[unlikely]]
                             {
                                 if(!c->ptr->prepare_ac()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
@@ -381,13 +369,13 @@ namespace phy_engine
                         for(auto c{i.begin}; c != i.curr; ++c)
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                            if(!c->has_init)
+                            if(!c->has_init) [[unlikely]]
                             {
                                 if(!c->ptr->init_model()) [[unlikely]] { ::fast_io::fast_terminate(); }
 
                                 c->has_init = true;
                             }
-                            if(!has_prepare)
+                            if(!has_prepare) [[unlikely]]
                             {
                                 if(!c->ptr->prepare_tr()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
@@ -404,13 +392,13 @@ namespace phy_engine
                         for(auto c{i.begin}; c != i.curr; ++c)
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                            if(!c->has_init)
+                            if(!c->has_init) [[unlikely]]
                             {
                                 if(!c->ptr->init_model()) [[unlikely]] { ::fast_io::fast_terminate(); }
 
                                 c->has_init = true;
                             }
-                            if(!has_prepare)
+                            if(!has_prepare) [[unlikely]]
                             {
                                 if(!c->ptr->prepare_trop()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
@@ -541,7 +529,7 @@ namespace phy_engine
 
                 smXcd::IndexVector wi{temp_A.outerSize()};
 
-                for(auto& i: mna.A) { wi(i.first) = i.second.size(); }
+                for(auto& i: mna.A) { wi(i.first) = static_cast<::std::remove_cvref_t<decltype(wi(i.first))>>(i.second.size()); }
 
                 temp_A.reserve(wi);
 
@@ -561,7 +549,13 @@ namespace phy_engine
                 // solve
                 solver.compute(temp_A);
                 if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
-                mna.X = solver.solve(temp_Z);
+                ::Eigen::VectorXcd X{solver.solve(temp_Z)};
+
+                ::std::size_t i{};
+                for(; i < mna.node_size; ++i) { size_t_to_node_p.index_unchecked(i)->node_information.an.voltage = X[i]; }
+                nl.ground_node.node_information.an.voltage = {};
+                ::std::size_t c{};
+                for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p.index_unchecked(c++)->current = X[i]; }
             }
 
             return true;

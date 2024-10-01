@@ -1,7 +1,10 @@
 #pragma once
 #include <cstdint>
-#include <set>
+//#include <set>
 #include <complex>
+
+#include <absl/container/btree_set.h>
+
 #include <fast_io/fast_io.h>
 #include "../pin/pin.h"
 
@@ -252,7 +255,7 @@ namespace phy_engine::model
     struct node_t
     {
         node_information_union node_information{};
-        ::std::set<::phy_engine::model::pin*> pins{};
+        ::absl::btree_set<::phy_engine::model::pin*> pins{};
         ::std::size_t num_of_analog_node{};
 
         // storage

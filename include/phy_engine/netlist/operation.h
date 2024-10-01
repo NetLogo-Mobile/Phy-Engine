@@ -1,4 +1,6 @@
 ﻿#pragma once
+//#include <map>
+#include <absl/container/btree_map.h>
 #include "netlist.h"
 #include "concept.h"
 
@@ -255,7 +257,7 @@ namespace phy_engine::netlist
 
     inline void add_netlist(netlist& nl, netlist const& other_nl) noexcept
     {
-        ::std::map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
+        ::absl::btree_map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> node_map{};
 
         for(auto& i: other_nl.nodes)
         {
