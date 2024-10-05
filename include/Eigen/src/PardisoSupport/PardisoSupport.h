@@ -136,6 +136,8 @@ class PardisoImpl : public SparseSolverBase<Derived>
       pardisoRelease();
     }
 
+    bool factorizationIsOk() const { return m_factorizationIsOk; };
+
     inline Index cols() const { return m_size; }
     inline Index rows() const { return m_size; }
   
@@ -195,7 +197,11 @@ class PardisoImpl : public SparseSolverBase<Derived>
       m_type = type;
       bool symmetric = std::abs(m_type) < 10;
       m_iparm[0] = 1;   // No solver default
+#ifndef PHY_ENGINE_USE_EIGEN_DEFAULT_SETTING
+      m_iparm[1] = 3;   // The parallel (OpenMP) version of the nested dissection algorithm. 
+#else
       m_iparm[1] = 2;   // use Metis for the ordering
+#endif
       m_iparm[2] = 0;   // Reserved. Set to zero. (??Numbers of processors, value of OMP_NUM_THREADS??)
       m_iparm[3] = 0;   // No iterative-direct algorithm
       m_iparm[4] = 0;   // No user fill-in reducing permutation
@@ -205,7 +211,11 @@ class PardisoImpl : public SparseSolverBase<Derived>
       m_iparm[8] = 0;   // Not in use
       m_iparm[9] = 13;  // Perturb the pivot elements with 1E-13
       m_iparm[10] = symmetric ? 0 : 1; // Use nonsymmetric permutation and scaling MPS
+#ifndef PHY_ENGINE_USE_EIGEN_DEFAULT_SETTING
+      m_iparm[11] = 1;  // Solve a conjugate transposed system A^H*X = B based on the factorization of the matrix A
+#else
       m_iparm[11] = 0;  // Not in use
+#endif
       m_iparm[12] = symmetric ? 0 : 1;  // Maximum weighted matching algorithm is switched-off (default for symmetric).
                                         // Try m_iparm[12] = 1 in case of inappropriate accuracy
       m_iparm[13] = 0;  // Output: Number of perturbed pivots
@@ -217,6 +227,9 @@ class PardisoImpl : public SparseSolverBase<Derived>
       m_iparm[19] = 0;  // Output: Numbers of CG Iterations
       
       m_iparm[20] = 0;  // 1x1 pivoting
+#ifndef PHY_ENGINE_USE_EIGEN_DEFAULT_SETTING
+      m_iparm[23] = 10; // Intel® oneAPI Math Kernel Library (oneMKL) PARDISO uses an improved two-level factorization algorithm for nonsymmetric matrices.
+#endif
       m_iparm[26] = 0;  // No matrix checker
       m_iparm[27] = (sizeof(RealScalar) == 4) ? 1 : 0;
       m_iparm[34] = 1;  // C indexing

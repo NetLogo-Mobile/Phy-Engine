@@ -3,7 +3,7 @@
 
 namespace phy_engine::verilog
 {
-    struct verilog_module
+    struct Verilog_module
     {
 
     };

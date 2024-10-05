@@ -3,9 +3,14 @@
 #include <utility>
 #include <fast_io/fast_io_dsal/vector.h>
 
+#ifdef PHY_ENGINE_USE_MKL
+    #define EIGEN_USE_MKL_ALL
+#endif
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
-#include <Eigen/SparseLU>
+#ifdef PHY_ENGINE_USE_MKL
+    #include <Eigen/PardisoSupport>
+#endif
 
 #include "environment/environment.h"
 #include "../netlist/netlist.h"
@@ -46,8 +51,11 @@ namespace phy_engine
         // solver
         using smXcd = ::Eigen::SparseMatrix<::std::complex<double>>;
         using svXcd = ::Eigen::SparseVector<::std::complex<double>>;
-        ::Eigen::SparseLU<smXcd, ::Eigen::COLAMDOrdering<int>> solver{};
-
+#ifdef PHY_ENGINE_USE_MKL
+        ::Eigen::PardisoLU<smXcd> solver{}; //  large-scale hybrid circuit
+#else
+        ::Eigen::SparseLU<smXcd> solver{};
+#endif
         double tr_duration{};  // TR
         double last_step{};    // TR
 
@@ -83,7 +91,6 @@ namespace phy_engine
                     auto const t_stop{analyzer_setting.tr.t_stop};
 
                     prepare();
-
                     if(last_step != t_step) [[unlikely]]
                     {
                         for(auto& i: nl.models)
@@ -181,7 +188,7 @@ namespace phy_engine
             has_prepare = false;
         }
 
-    private:
+        // private:
         void prepare() noexcept
         {
             if(!has_prepare && (at == ::phy_engine::analyze_type::TR || at == ::phy_engine::analyze_type::TROP)) [[unlikely]]
@@ -551,6 +558,7 @@ namespace phy_engine
                 if(!solver.factorizationIsOk()) [[unlikely]] { return false; }
                 ::Eigen::VectorXcd X{solver.solve(temp_Z)};
 
+                // storage
                 ::std::size_t i{};
                 for(; i < mna.node_size; ++i) { size_t_to_node_p.index_unchecked(i)->node_information.an.voltage = X[i]; }
                 nl.ground_node.node_information.an.voltage = {};

@@ -17,24 +17,15 @@ namespace phy_engine::verilog
     inline constexpr ::std::size_t
         shortest_way(char_type const* x, ::std::size_t lena, char_type const* y, ::std::size_t lenb) noexcept
     {
-        using Alloc = ::fast_io::native_typed_thread_local_allocator<::std::size_t>;
-
-        ::std::size_t* d{};
-        [[maybe_unused]] ::fast_io::array<::std::size_t, Len> storage;
-
-        if constexpr(Len) { d = storage.data(); }
-        else
-        {
-#if __cpp_if_consteval >= 202106L
-            if consteval
+        ::std::size_t* d{
+#if __has_builtin(__builtin_alloca)
+            __builtin_alloca(lenb + 1)
+#elif defined(_WIN32) && !defined(__WINE__) && !defined(__BIONIC__) && !defined(__CYGWIN__)
+            _alloca(lenb + 1)
 #else
-            if(__builtin_is_constant_evaluated())
+            alloca(lenb + 1)
 #endif
-            {
-                d = new ::std::size_t[lenb + 1];
-            }
-            else { d = Alloc::allocate(lenb + 1); }
-        }
+        };
 
         for(::std::size_t j{}; j <= lenb; j++) { d[j] = j; }
 
@@ -58,23 +49,6 @@ namespace phy_engine::verilog
         }
 
         ::std::size_t const ret{d[lenb]};
-
-        if constexpr(!Len)
-        {
-#if __cpp_if_consteval >= 202106L
-            if consteval
-#else
-            if(__builtin_is_constant_evaluated())
-#endif
-            {
-                delete[] d;
-            }
-            else
-            {
-                if constexpr(::fast_io::details::has_deallocate_n_impl<Alloc>) { Alloc::deallocate_n(d, lenb + 1); }
-                else { Alloc::deallocate(d); }
-            }
-        }
 
         return ret;
     }
