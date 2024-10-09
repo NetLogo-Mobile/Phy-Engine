@@ -39,7 +39,7 @@ namespace phy_engine::verilog
                 if(x[i - 1] == y[j - 1]) { d[j] = old; }
                 else
                 {
-                    ::std::size_t min = d[j] + 1;
+                    ::std::size_t min{d[j] + 1};
                     if(d[j - 1] + 1 < min) { min = d[j - 1] + 1; }
                     if(old + 1 < min) { min = old + 1; }
                     d[j] = min;
