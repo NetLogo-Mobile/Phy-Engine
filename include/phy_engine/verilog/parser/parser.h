@@ -36,16 +36,14 @@ namespace phy_engine::verilog
     }  // namespace details
 
     template <bool check_bound = false>  // only need to check when loading file using normal allocator not mmap
-    inline constexpr ::phy_engine::verilog::Verilog_module parser_file(char8_t const* begin, char8_t const* end) noexcept
+    inline constexpr void parser_file(::phy_engine::verilog::Verilog_module& vmod, char8_t const* begin, char8_t const* end) noexcept
     {
-        ::phy_engine::verilog::Verilog_module vmod{};
-
         char8_t const* curr{begin};
         bool is_new_line{true};
 
         if constexpr(check_bound)
         {
-            if(end <= begin) [[unlikely]] { return {}; }
+            if(end <= begin) [[unlikely]] { return; }
         }
 
         constexpr auto vec_size{::fast_io::intrinsics::optimal_simd_vector_run_with_cpu_instruction_size_with_mask_countr};
@@ -86,10 +84,10 @@ namespace phy_engine::verilog
 #endif
                 str_vec.load(curr);
                 auto const is_cspace{((str_vec >= t_vec) & (str_vec <= r_vec)) | (str_vec == space_vec)};
-                auto const rone{::fast_io::intrinsics::vector_mask_countr_one(is_cspace)}; // space len
-                auto const rzero{::fast_io::intrinsics::vector_mask_countr_zero(is_cspace)}; // next word
+                auto const rone{::fast_io::intrinsics::vector_mask_countr_one(is_cspace)};    // space len
+                auto const rzero{::fast_io::intrinsics::vector_mask_countr_zero(is_cspace)};  // next word
 
-                curr += rone; // skip the space
+                curr += rone;  // skip the space
 
                 if(rone != char8_t_vec_size)
                 {
@@ -99,49 +97,64 @@ namespace phy_engine::verilog
                     if(*curr == u8'`') [[unlikely]]
                     {
                         bool is_valid_pretreatment_line{};
-                        if(last_space_length != 0)
-                        {
-                            auto const space_begin{curr - last_space_length};
 
-                            if(space_begin == begin)  // valid pretreatment line
+                        // If there is no c_space before '`', it is impossible to hit, because the hit is the identifier check
+#if __has_cpp_attribute(assume)
+                        [[assume(last_space_length != 0)]];
+#endif
+
+                        auto const space_begin{curr - last_space_length};
+
+                        if(space_begin == begin)  // valid pretreatment line
+                        {
+                            is_valid_pretreatment_line = true;
+                        }
+                        else
+                        {
+                            // find ln or cr in c_space vec
+
+                            ::std::size_t last_ln_length{};
+
+                            for(auto space_curr{space_begin}; space_curr < curr;)
+                            {
+                                str_vec.load(space_curr);
+                                auto const is_ln{(str_vec == n_vec) | (str_vec == r_vec)};
+                                auto const rone{::fast_io::intrinsics::vector_mask_countr_zero(is_ln)};  // next ln
+                                last_ln_length += rone;
+                                space_curr += char8_t_vec_size;
+                                if(rone != char8_t_vec_size) { break; }
+                            }
+
+                            if(last_ln_length < last_space_length)  // Is ln in the c_space vec
                             {
                                 is_valid_pretreatment_line = true;
                             }
-                            else
-                            {
-                                // find \n or \r in c_space vec
-                                char8_t_vec_t space_vec{};
-
-                                ::std::size_t last_ln_length{};
-
-                                for(auto space_curr{space_begin}; space_curr < curr;)
-                                {
-                                    space_vec.load(space_curr);
-                                    auto const is_ln{(space_vec == n_vec) | (space_vec == r_vec)};
-                                    auto const rone{::fast_io::intrinsics::vector_mask_countr_zero(is_ln)};  // next ln
-                                    last_ln_length += rone;
-                                    space_curr += char8_t_vec_size;
-                                    if(rone != char8_t_vec_size) { break; }
-                                }
-                                if(last_ln_length < last_space_length) // Is ln in the cspace
-                                { 
-                                    is_valid_pretreatment_line = true; 
-                                }
-                            }
                         }
 
-                        if(is_valid_pretreatment_line) 
-                        { 
+                        if(is_valid_pretreatment_line)
+                        {
                             // to do
                             ::fast_io::io::perr("[debug] valid!\n");
+                            
                         }
-                        else 
+                        else
                         {
-                            // unvalid
+                            // invalid 
+                            vmod.errors.emplace_back(curr, ::phy_engine::verilog::error_type::invaild_pretreatment);
+                        }
+
+                        // jmp to next line
+                        for(; curr < end;)
+                        {
+                            str_vec.load(curr);
+                            auto const is_ln{(str_vec == n_vec) | (str_vec == r_vec)};
+                            auto const rone{::fast_io::intrinsics::vector_mask_countr_zero(is_ln)};  // next ln
+                            curr += rone;
+                            if(rone != char8_t_vec_size) { break; }
                         }
                     }
-                    else 
-                    { 
+                    else
+                    {
                         // to do
                         ::std::size_t sz{1};
                         curr += sz;  // skip the word
@@ -152,8 +165,9 @@ namespace phy_engine::verilog
                 else { last_space_length += char8_t_vec_size; }
             }
         }
-        else {}
-
-        return {};
+        else
+        {
+            // no simd
+        }
     }
 }  // namespace phy_engine::verilog
