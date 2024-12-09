@@ -48,7 +48,6 @@ namespace phy_engine::netlist
                   (::phy_engine::model::defines::can_iterate_mna<mod> || ::phy_engine::model::defines::is_valid_digital_model<mod>))
     inline constexpr add_model_retstr add_model(netlist& nl, mod&& m) noexcept
     {
-        using rcvmod_type = ::std::remove_cvref_t<mod>;
         if(nl.models.empty()) [[unlikely]]
         {
             auto& nlb{nl.models.emplace_back()};
