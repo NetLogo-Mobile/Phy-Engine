@@ -602,7 +602,7 @@ namespace phy_engine::model
             other.has_init = false;
         }
 
-        constexpr model_base operator= (model_base&& other) noexcept
+        constexpr model_base& operator=(model_base&& other) noexcept
         {
             if(__builtin_addressof(other) == this) { return *this; }
             type = other.type;
@@ -633,6 +633,7 @@ namespace phy_engine::model
             describe = ::std::move(other.describe);
             has_init = other.has_init;
             other.has_init = false;
+            return *this;
         }
 
         constexpr ~model_base() { clear(); }

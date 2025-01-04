@@ -241,7 +241,7 @@ namespace phy_engine::model
                         break;
                     }
                     case ::phy_engine::model::digital_node_statement_t::high_impedence_state: break;
-                    default: ::std::unreachable();
+                    default: ::fast_io::unreachable();
                 }
             }
             else { clip.inputA = node_ia->node_information.dn.state; }
@@ -322,7 +322,7 @@ namespace phy_engine::model
                         break;
                     }
                     case ::phy_engine::model::digital_node_statement_t::high_impedence_state: break;
-                    default: ::std::unreachable();
+                    default: ::fast_io::unreachable();
                 }
             }
             else { clip.inputB = node_ib->node_information.dn.state; }
@@ -353,7 +353,7 @@ namespace phy_engine::model
                         return {clip.Ll, node_o};
                     }
                     case ::phy_engine::model::digital_node_statement_t::high_impedence_state: break;
-                    default: ::std::unreachable();
+                    default: ::fast_io::unreachable();
                 }
             }
             else
