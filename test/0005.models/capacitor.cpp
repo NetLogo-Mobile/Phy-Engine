@@ -5,7 +5,6 @@
 int main()
 {
     {
-
         {
             ::phy_engine::circult c{};
             c.set_analyze_type(::phy_engine::analyze_type::DC);
@@ -71,8 +70,8 @@ int main()
             auto [C1, C1_pos]{add_model(nl, ::phy_engine::model::capacitor{.m_kZimag{1e-5}})};
             auto [VAC, VAC_pos]{add_model(nl, ::phy_engine::model::VAC{.m_Vp = 3.0})};
 
-            VAC->ptr->set_attribute(1, {.d{50}, .type{::phy_engine::model::variant_type::d}});
-            VAC->ptr->set_attribute(2, {.d{15}, .type{::phy_engine::model::variant_type::d}});
+            VAC->ptr->set_attribute(1, {.d=50, .type=::phy_engine::model::variant_type::d});
+            VAC->ptr->set_attribute(2, {.d=15, .type=::phy_engine::model::variant_type::d});
 
             auto& node1{create_node(nl)};
             add_to_node(nl, *R1, 1, node1);
