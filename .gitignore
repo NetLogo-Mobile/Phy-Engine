@@ -13,3 +13,4 @@ build
 test/**/*.exe
 !.github/*
 *.lnk
+.DS_Store
