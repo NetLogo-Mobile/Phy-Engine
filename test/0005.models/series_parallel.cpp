@@ -86,26 +86,6 @@ inline void x100() noexcept {
             }
         }
     }
-    {
-        for(::std::size_t i = 0; i < 10000 - 1000; i++)
-        {
-            auto n1 = c.size_t_to_node_p.index_unchecked(us(eng));
-            auto n2 = c.size_t_to_node_p.index_unchecked(us(eng));
-
-            if(n1->num_of_analog_node && n2->num_of_analog_node) [[likely]] { merge_node(nl, *n1, *n2); }
-        }
-
-        ::fast_io::io::perr("start analyzing...\n");
-
-        {
-            ::fast_io::timer t{u8"100'000xR + 10000n, time"};
-            if(!c.analyze())
-            {
-                ::fast_io::io::perr("analyze error\n");
-                return;
-            }
-        }
-    }
 }
 
 int main() { x100(); }

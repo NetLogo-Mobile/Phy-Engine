@@ -40,17 +40,18 @@ namespace test
     inline constexpr auto hash_table_size{::phy_engine::verilog::constexpr_hash::calculate_hash_table_size(pretreatments)};
     inline constexpr auto hash_table{
         ::phy_engine::verilog::constexpr_hash::generate_hash_table<hash_table_size.hash_table_size, hash_table_size.extra_size>(pretreatments)};
-    inline constexpr [[maybe_unused]] auto sizeof_hash_table{sizeof(hash_table)};
+    [[maybe_unused]] constexpr auto sizeof_hash_table{sizeof(hash_table)};
     inline constexpr auto hash_table_view{::phy_engine::verilog::constexpr_hash::generate_hash_table_view(hash_table)};
 
 }  // namespace test
 
-int main() 
+int main()
 {
+#if 0
     ::fast_io::io::perrln(test::hash_table_size.hash_table_size, " ", test::hash_table_size.extra_size);
-    while(true) 
-    { 
-        // fast io cannot scan 
+    while(true)
+    {
+        // fast io cannot scan
 
         ::std::string a{};
         ::std::cin >> a;
@@ -59,4 +60,6 @@ int main()
             ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(::std::to_address(a.cbegin())), a.size()})};
         ::fast_io::io::perrln(::fast_io::mnp::boolalpha(f != nullptr));
     }
+#endif
+    return 0;
 }

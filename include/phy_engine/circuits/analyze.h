@@ -4,9 +4,9 @@
 namespace phy_engine
 {
 
-    enum analyze_type : ::std::uint_fast8_t
+    enum class analyze_type : ::std::uint_fast32_t
     {
-        OP,
+        OP = 0,
         DC,
         AC,
         ACOP,

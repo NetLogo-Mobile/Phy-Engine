@@ -1,0 +1,31 @@
+cmake_minimum_required(VERSION 3.15)
+
+project(test_phy_engine LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_BUILD_TYPE Debug)
+enable_testing()
+
+include_directories(${CMAKE_SOURCE_DIR}/../include)
+
+if (MSVC)
+    add_compile_options(/nologo /Zc:preprocessor /utf-8 /DNOMINMAX /bigobj /GR-)
+else()
+    add_compile_options(-Wall -Wextra -Wno-braced-scalar-init -fno-unwind-tables)
+    if (WIN32)
+        add_compile_options(-finput-charset=utf-8 -fexec-charset=utf-8)
+    endif()
+endif()
+
+file(GLOB_RECURSE test_srcs "${CMAKE_SOURCE_DIR}/**.cpp")
+
+foreach(a_test IN LISTS test_srcs)
+    get_filename_component(filename ${a_test} NAME_WE)
+    get_filename_component(absdir ${a_test} DIRECTORY)
+    get_filename_component(dir_name ${absdir} NAME)
+    set(output_dir "${CMAKE_BINARY_DIR}/${dir_name}")
+    file(MAKE_DIRECTORY "${output_dir}")
+    add_executable(${filename} ${a_test})
+    set_target_properties(${filename} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${output_dir}")
+    add_test(NAME ${filename} COMMAND "${output_dir}/${filename}")
+endforeach()

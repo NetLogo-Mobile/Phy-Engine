@@ -72,10 +72,10 @@ namespace phy_engine
         {
             switch(at)
             {
-                case ::phy_engine::OP: [[fallthrough]];
-                case ::phy_engine::DC: [[fallthrough]];
-                case ::phy_engine::AC: [[fallthrough]];
-                case ::phy_engine::ACOP:
+                case ::phy_engine::analyze_type::OP: [[fallthrough]];
+                case ::phy_engine::analyze_type::DC: [[fallthrough]];
+                case ::phy_engine::analyze_type::AC: [[fallthrough]];
+                case ::phy_engine::analyze_type::ACOP:
                 {
                     prepare();
 
@@ -83,8 +83,8 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::TR: [[fallthrough]];
-                case ::phy_engine::TROP:
+                case ::phy_engine::analyze_type::TR: [[fallthrough]];
+                case ::phy_engine::analyze_type::TROP:
                 {
                     double t_time{};
                     auto const t_step{analyzer_setting.tr.t_step};
@@ -299,8 +299,8 @@ namespace phy_engine
             // prepare MNA
             switch(at)
             {
-                case ::phy_engine::ACOP: [[fallthrough]];
-                case ::phy_engine::OP:
+                case ::phy_engine::analyze_type::ACOP: [[fallthrough]];
+                case ::phy_engine::analyze_type::OP:
                 {
                     for(auto& i: nl.models)
                     {
@@ -323,7 +323,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::DC:
+                case ::phy_engine::analyze_type::DC:
                 {
                     for(auto& i: nl.models)
                     {
@@ -346,7 +346,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::AC:
+                case ::phy_engine::analyze_type::AC:
                 {
                     for(auto& i: nl.models)
                     {
@@ -369,7 +369,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::TR:
+                case ::phy_engine::analyze_type::TR:
                 {
                     for(auto& i: nl.models)
                     {
@@ -392,7 +392,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::TROP:
+                case ::phy_engine::analyze_type::TROP:
                 {
                     for(auto& i: nl.models)
                     {
@@ -450,7 +450,7 @@ namespace phy_engine
             // iterate
             switch(at)
             {
-                case ::phy_engine::OP:
+                case ::phy_engine::analyze_type::OP:
                 {
                     for(auto& i: nl.models)
                     {
@@ -464,7 +464,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::DC:
+                case ::phy_engine::analyze_type::DC:
                 {
                     for(auto& i: nl.models)
                     {
@@ -478,8 +478,8 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::ACOP: [[fallthrough]];
-                case ::phy_engine::AC:
+                case ::phy_engine::analyze_type::ACOP: [[fallthrough]];
+                case ::phy_engine::analyze_type::AC:
                 {
                     for(auto& i: nl.models)
                     {
@@ -493,7 +493,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::TR:
+                case ::phy_engine::analyze_type::TR:
                 {
                     for(auto& i: nl.models)
                     {
@@ -507,7 +507,7 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::TROP:
+                case ::phy_engine::analyze_type::TROP:
                 {
                     for(auto& i: nl.models)
                     {

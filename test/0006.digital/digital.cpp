@@ -7,7 +7,7 @@ int main()
 
     auto& nl{c.get_netlist()};
 
-    auto [o1, o1_pos]{add_model(nl, ::phy_engine::model::OUPUT{})};
+    auto [o1, o1_pos]{add_model(nl, ::phy_engine::model::OUTPUT{})};
 
     auto [or1, or1_pos]{add_model(nl, ::phy_engine::model::OR{})};
 

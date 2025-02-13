@@ -48,14 +48,17 @@ namespace phy_engine::netlist
                   (::phy_engine::model::defines::can_iterate_mna<mod> || ::phy_engine::model::defines::is_valid_digital_model<mod>))
     inline constexpr add_model_retstr add_model(netlist& nl, mod&& m) noexcept
     {
-        using rcvmod_type = ::std::remove_cvref_t<mod>;
         if(nl.models.empty()) [[unlikely]]
         {
             auto& nlb{nl.models.emplace_back()};
-            new(nlb.curr)::phy_engine::model::model_base{::std::forward<mod>(m)};
+            if constexpr (::std::is_lvalue_reference_v<decltype(m)>) {
+                new(nlb.curr)::phy_engine::model::model_base{static_cast<::std::remove_cvref_t<mod>>(m)};
+            } else {
+                new(nlb.curr)::phy_engine::model::model_base{::std::move(m)};
+            }
             return {
-                nlb.curr++,
-                {0, 0}
+                .mod=nlb.curr++,
+                .mod_pos{0, 0}
             };
         }
         else
