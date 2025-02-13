@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "util.h"
+#include "vaild_filename_check.h"
 #if defined(_WIN32) || defined(__CYGWIN__)
 #include "win32/impl.h"
 namespace fast_io
@@ -12,11 +13,13 @@ inline constexpr ::std::uint_least32_t win32_stderr_number(static_cast<::std::ui
 
 } // namespace fast_io
 #include "win32_code.h"
+#include "win32_io_redirection.h"
 #include "nt/impl.h"
 #include "win32_error.h"
 
 #include "nt.h"
 // #include"win32_iocp_overlapped.h"
+
 #include "win32.h"
 #include "win32_network/win32.h"
 #endif
@@ -34,17 +37,30 @@ namespace fast_io
 {
 
 #if defined(_WIN32) && !defined(__CYGWIN__) && !defined(__WINE__) && !defined(__BIONIC__)
+#if defined(_WIN32_WINDOWS)
+using native_at_entry = win32_9xa_at_entry;
+using native_fs_dirent = win32_9xa_fs_dirent;
+#else
 using native_at_entry = nt_at_entry;
 using native_fs_dirent = nt_fs_dirent;
+#endif
 
+#if defined(_WIN32_WINDOWS)
 template <::std::integral ch_type>
 using basic_native_io_observer = basic_win32_io_observer<ch_type>;
 template <::std::integral ch_type>
 using basic_native_file = basic_win32_file<ch_type>;
-using native_process_io = win32_process_io;
-
 template <::std::integral ch_type>
 using basic_native_pipe = basic_win32_pipe<ch_type>;
+#else
+template <::std::integral ch_type>
+using basic_native_io_observer = basic_nt_io_observer<ch_type>;
+template <::std::integral ch_type>
+using basic_native_file = basic_nt_file<ch_type>;
+template <::std::integral ch_type>
+using basic_native_pipe = basic_nt_pipe<ch_type>;
+#endif
+using native_process_io = win32_process_io;
 
 #else
 

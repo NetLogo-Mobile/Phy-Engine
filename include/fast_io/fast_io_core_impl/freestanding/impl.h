@@ -31,14 +31,20 @@ no ::std::array, ::std::copy and others
 #include <__memory/allocator.h>
 #include "std_allocator.h"
 #elif defined(__GLIBCXX__) && __has_include(<bits/allocator.h>) && __has_include(<bits/new_allocator.h>)
+#if _GLIBCXX_HOSTED == 1
 #include <bits/allocator.h>
 #include "std_allocator.h"
+#else
+#include "allocator.h"
+#endif
 #elif defined(_MSVC_STL_UPDATE) && __has_include(<xmemory>)
 #include <xmemory>
 #include "std_allocator.h"
 #else
 #include "allocator.h"
 #endif
+
+#include <algorithm>
 
 #include "noexcept_call.h"
 #include "array.h"
@@ -47,5 +53,3 @@ no ::std::array, ::std::copy and others
 #include "algorithm.h"
 #include "relocatable.h"
 #include "ranges.h"
-
-#include <algorithm>

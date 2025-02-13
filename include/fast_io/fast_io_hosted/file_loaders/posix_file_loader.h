@@ -166,15 +166,19 @@ public:
 		address_end = ret.address_end;
 	}
 
-	posix_file_loader(posix_file_loader const &) = delete;
-	posix_file_loader &operator=(posix_file_loader const &) = delete;
-	constexpr posix_file_loader(posix_file_loader &&__restrict other) noexcept
+	inline posix_file_loader(posix_file_loader const &) = delete;
+	inline posix_file_loader &operator=(posix_file_loader const &) = delete;
+	inline constexpr posix_file_loader(posix_file_loader &&__restrict other) noexcept
 		: address_begin(other.address_begin), address_end(other.address_end)
 	{
 		other.address_end = other.address_begin = ::std::bit_cast<char *>(static_cast<::std::ptrdiff_t>(-1));
 	}
-	posix_file_loader &operator=(posix_file_loader &&__restrict other) noexcept
+	inline posix_file_loader &operator=(posix_file_loader &&__restrict other) noexcept
 	{
+		if (__builtin_addressof(other) == this) [[unlikely]]
+		{
+			return *this;
+		}
 		::fast_io::details::posix_unload_address(address_begin,
 												 static_cast<::std::size_t>(address_end - address_begin));
 		address_begin = other.address_begin;
@@ -183,71 +187,71 @@ public:
 		return *this;
 	}
 
-	constexpr pointer data() const noexcept
+	inline constexpr pointer data() const noexcept
 	{
 		return address_begin;
 	}
-	constexpr bool empty() const noexcept
+	inline constexpr bool empty() const noexcept
 	{
 		return address_begin == address_end;
 	}
-	constexpr bool is_empty() const noexcept
+	inline constexpr bool is_empty() const noexcept
 	{
 		return address_begin == address_end;
 	}
-	constexpr ::std::size_t size() const noexcept
+	inline constexpr ::std::size_t size() const noexcept
 	{
 		return static_cast<::std::size_t>(address_end - address_begin);
 	}
-	constexpr const_iterator cbegin() const noexcept
+	inline constexpr const_iterator cbegin() const noexcept
 	{
 		return address_begin;
 	}
-	constexpr const_iterator begin() const noexcept
+	inline constexpr const_iterator begin() const noexcept
 	{
 		return address_begin;
 	}
-	constexpr iterator begin() noexcept
+	inline constexpr iterator begin() noexcept
 	{
 		return address_begin;
 	}
-	constexpr const_iterator cend() const noexcept
+	inline constexpr const_iterator cend() const noexcept
 	{
 		return address_end;
 	}
-	constexpr const_iterator end() const noexcept
+	inline constexpr const_iterator end() const noexcept
 	{
 		return address_end;
 	}
-	constexpr iterator end() noexcept
+	inline constexpr iterator end() noexcept
 	{
 		return address_end;
 	}
-	constexpr ::std::size_t max_size() const noexcept
+	inline constexpr ::std::size_t max_size() const noexcept
 	{
 		return SIZE_MAX;
 	}
-	constexpr const_reverse_iterator crbegin() const noexcept
+	inline constexpr const_reverse_iterator crbegin() const noexcept
 	{
 		return const_reverse_iterator{address_end};
 	}
-	constexpr reverse_iterator rbegin() noexcept
+	inline constexpr reverse_iterator rbegin() noexcept
 	{
 		return reverse_iterator{address_end};
 	}
-	constexpr const_reverse_iterator rbegin() const noexcept
+	inline constexpr const_reverse_iterator rbegin() const noexcept
 	{
 		return const_reverse_iterator{address_end};
 	}
-	constexpr const_reverse_iterator crend() const noexcept
+	inline constexpr const_reverse_iterator crend() const noexcept
 	{
 		return const_reverse_iterator{address_begin};
 	}
-	constexpr reverse_iterator rend() noexcept
+	inline constexpr reverse_iterator rend() noexcept
 	{
 		return reverse_iterator{address_begin};
 	}
-	constexpr const_reverse_iterator rend() const noexcept
+	inline constexpr const_reverse_iterator rend() const noexcept
 	{
 		return const_reverse_iterator{address_begin};
 	}
@@ -257,7 +261,7 @@ public:
 	[[msvc::forceinline]]
 #endif
 	[[nodiscard]]
-	constexpr const_reference front() const noexcept
+	inline constexpr const_reference front() const noexcept
 	{
 		if (address_begin == address_end) [[unlikely]]
 		{
@@ -271,7 +275,7 @@ public:
 	[[msvc::forceinline]]
 #endif
 	[[nodiscard]]
-	constexpr reference front() noexcept
+	inline constexpr reference front() noexcept
 	{
 		if (address_begin == address_end) [[unlikely]]
 		{
@@ -285,7 +289,7 @@ public:
 	[[msvc::forceinline]]
 #endif
 	[[nodiscard]]
-	constexpr const_reference back() const noexcept
+	inline constexpr const_reference back() const noexcept
 	{
 		if (address_begin == address_end) [[unlikely]]
 		{
@@ -299,7 +303,7 @@ public:
 	[[msvc::forceinline]]
 #endif
 	[[nodiscard]]
-	constexpr reference back() noexcept
+	inline constexpr reference back() noexcept
 	{
 		if (address_begin == address_end) [[unlikely]]
 		{
@@ -308,19 +312,19 @@ public:
 		return address_end[-1];
 	}
 
-	constexpr const_reference front_unchecked() const noexcept
+	inline constexpr const_reference front_unchecked() const noexcept
 	{
 		return *address_begin;
 	}
-	constexpr reference front_unchecked() noexcept
+	inline constexpr reference front_unchecked() noexcept
 	{
 		return *address_begin;
 	}
-	constexpr const_reference back_unchecked() const noexcept
+	inline constexpr const_reference back_unchecked() const noexcept
 	{
 		return address_end[-1];
 	}
-	constexpr reference back_unchecked() noexcept
+	inline constexpr reference back_unchecked() noexcept
 	{
 		return address_end[-1];
 	}
@@ -376,7 +380,7 @@ public:
 		address_end = address_begin = ::std::bit_cast<char *>(static_cast<::std::ptrdiff_t>(-1));
 		return temp;
 	}
-	~posix_file_loader()
+	inline ~posix_file_loader()
 	{
 		::fast_io::details::posix_unload_address(address_begin,
 												 static_cast<::std::size_t>(address_end - address_begin));
