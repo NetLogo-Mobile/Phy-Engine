@@ -364,9 +364,13 @@ namespace phy_engine::model
             virtual constexpr ::fast_io::u8string_view get_attribute_name(::std::size_t index) noexcept override
             {
                 // no model-specific checks for convergence
-                if constexpr(::phy_engine::model::defines::has_get_attribute_name<mod>)
+                if constexpr(::phy_engine::model::defines::has_full_get_attribute_name<mod>)
                 {
                     return get_attribute_name_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index);
+                }
+                else if constexpr (::phy_engine::model::defines::has_reduced_get_attribute_name<mod>)
+                {
+                    return get_attribute_name_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, index);
                 }
                 else { return {}; }
             }

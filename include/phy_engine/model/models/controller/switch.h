@@ -51,7 +51,7 @@ namespace phy_engine::model
             case 0:
             {
                 // Get single_pole_switch value
-                return {.boolean{sps.cut_through}, .type{::phy_engine::model::variant_type::boolean}};
+                return {.boolean=sps.cut_through, .type=::phy_engine::model::variant_type::boolean};
             }
             default:
             {
@@ -64,7 +64,7 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::has_get_attribute<single_pole_switch>);
 
     inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<single_pole_switch>, single_pole_switch const& sps, ::std::size_t n) noexcept
+        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<single_pole_switch>, ::std::size_t n) noexcept
     {
         switch(n)
         {
