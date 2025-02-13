@@ -3,9 +3,50 @@
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC system_header
 #endif
-#if defined(_MSC_VER) && !defined(__clang__)
-#pragma warning(push)
-#pragma warning(disable : 4365)
+
+#if __cpp_impl_three_way_comparison >= 201907L
+#if __cpp_lib_three_way_comparison >= 201907L
+namespace fast_io::freestanding
+{
+using ::std::lexicographical_compare_three_way;
+using ::std::compare_three_way;
+} // namespace fast_io::freestanding
+#else
+namespace fast_io::freestanding
+{
+template <typename I1, typename I2, typename Cmp>
+constexpr auto lexicographical_compare_three_way(I1 f1, I1 l1, I2 f2, I2 l2, Cmp comp)
+	-> decltype(comp(*f1, *f2))
+{
+	using ret_t = decltype(comp(*f1, *f2));
+	static_assert(::std::disjunction_v<
+					  ::std::is_same<ret_t, ::std::strong_ordering>,
+					  ::std::is_same<ret_t, ::std::weak_ordering>,
+					  ::std::is_same<ret_t, ::std::partial_ordering>>,
+				  "The return type must be a comparison category type.");
+
+	bool exhaust1{f1 == l1};
+	bool exhaust2{f2 == l2};
+	for (; !exhaust1 && !exhaust2; exhaust1 = (++f1 == l1), exhaust2 = (++f2 == l2))
+	{
+		if (auto c = comp(*f1, *f2); c != 0)
+		{
+			return c;
+		}
+	}
+
+	return !exhaust1 ? ::std::strong_ordering::greater : !exhaust2 ? ::std::strong_ordering::less
+																   : ::std::strong_ordering::equal;
+}
+
+template <typename I1, typename I2>
+constexpr auto lexicographical_compare_three_way(I1 f1, I1 l1, I2 f2, I2 l2)
+{
+	return lexicographical_compare_three_way(f1, l1, f2, l2, ::std::compare_three_way{});
+}
+
+} // namespace fast_io::freestanding
+#endif
 #endif
 
 #if 0
@@ -108,7 +149,7 @@ inline constexpr void fill_n(fwd_iter first, ::std::size_t n, T value)
 }
 
 template <::std::bidirectional_iterator BidirIt1, ::std::bidirectional_iterator BidirIt2>
-constexpr BidirIt2 copy_backward(BidirIt1 first, BidirIt1 last, BidirIt2 d_last)
+inline constexpr BidirIt2 copy_backward(BidirIt1 first, BidirIt1 last, BidirIt2 d_last)
 {
 	for (; first != last; *(--d_last) = *(--last))
 		;
@@ -116,7 +157,7 @@ constexpr BidirIt2 copy_backward(BidirIt1 first, BidirIt1 last, BidirIt2 d_last)
 }
 
 template <::std::bidirectional_iterator BidirIt1, ::std::bidirectional_iterator BidirIt2>
-constexpr BidirIt2 move_backward(BidirIt1 first, BidirIt1 last, BidirIt2 d_last)
+inline constexpr BidirIt2 move_backward(BidirIt1 first, BidirIt1 last, BidirIt2 d_last)
 {
 	for (; first != last; *(--d_last) = ::std::move(*(--last)))
 		;
@@ -567,7 +608,7 @@ inline constexpr NoThrowForwardIt uninitialized_copy(InputIt first, InputIt last
 	{
 		NoThrowForwardIt d_first;
 		NoThrowForwardIt current;
-		constexpr ~destroyer()
+		inline constexpr ~destroyer()
 		{
 			for (; d_first != current; ++d_first)
 			{
@@ -623,7 +664,7 @@ uninitialized_copy_n(InputIt first, ::std::size_t n, NoThrowForwardIt d_first) n
 	{
 		NoThrowForwardIt d_first;
 		NoThrowForwardIt current;
-		constexpr ~destroyer() noexcept
+		inline constexpr ~destroyer() noexcept
 		{
 			for (; d_first != current; ++d_first)
 			{
@@ -709,6 +750,74 @@ uninitialized_move_n(InputIt first, ::std::size_t n, NoThrowForwardIt d_first) n
 		++first;
 	}
 	return d_first;
+}
+
+template <::std::input_iterator ForwardIt>
+inline constexpr void uninitialized_default_construct(ForwardIt first, ForwardIt last) noexcept(
+	::std::is_nothrow_default_constructible_v<typename ::std::iterator_traits<ForwardIt>::value_type>)
+{
+	using T = typename ::std::iterator_traits<ForwardIt>::value_type;
+	if constexpr (::fast_io::freestanding::is_zero_default_constructible_v<T> &&
+				  ::std::contiguous_iterator<ForwardIt> && !::std::is_volatile_v<T>)
+	{
+#if __cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L
+#if __cpp_if_consteval >= 202106L
+		if !consteval
+#else
+		if (!__builtin_is_constant_evaluated())
+#endif
+		{
+			::fast_io::freestanding::my_memset(::std::to_address(first), 0, sizeof(T) * static_cast<::std::size_t>(last - first));
+			return;
+		}
+#endif
+	}
+	for (; first != last; ++first)
+	{
+		::std::construct_at(::std::to_address(first));
+	}
+}
+
+template <::std::input_iterator ForwardIt>
+inline constexpr void uninitialized_default_construct_n(ForwardIt first, ::std::size_t n) noexcept(
+	::std::is_nothrow_default_constructible_v<typename ::std::iterator_traits<ForwardIt>::value_type>)
+{
+	::fast_io::freestanding::uninitialized_default_construct(first, first + n);
+}
+
+template <::std::input_iterator ForwardIt, typename T>
+inline constexpr void uninitialized_fill(ForwardIt first, ForwardIt last, T const &x) noexcept(
+	::std::is_nothrow_copy_constructible_v<typename ::std::iterator_traits<ForwardIt>::value_type>)
+{
+	using valuetype = typename ::std::iterator_traits<ForwardIt>::value_type;
+
+	if constexpr (::std::integral<valuetype> && ::std::integral<T> &&
+				  sizeof(T) == 1 && sizeof(valuetype) == 1 && ::std::contiguous_iterator<ForwardIt>)
+	{
+#if __cpp_if_consteval >= 202106L || __cpp_lib_is_constant_evaluated >= 201811L
+#if __cpp_if_consteval >= 202106L
+		if !consteval
+#else
+		if (!__builtin_is_constant_evaluated())
+#endif
+		{
+			::fast_io::freestanding::my_memset(::std::to_address(first), static_cast<int>(static_cast<::std::uint_least8_t>(x)), sizeof(T) * static_cast<::std::size_t>(last - first));
+			return;
+		}
+#endif
+	}
+
+	for (; first != last; ++first)
+	{
+		::std::construct_at(::std::to_address(first), x);
+	}
+}
+
+template <::std::input_iterator ForwardIt, typename T>
+inline constexpr void uninitialized_fill_n(ForwardIt first, ::std::size_t n, T const &x) noexcept(
+	::std::is_nothrow_copy_constructible_v<typename ::std::iterator_traits<ForwardIt>::value_type>)
+{
+	::fast_io::freestanding::uninitialized_fill(first, first + n, x);
 }
 
 template <::std::forward_iterator ForwardIt>
@@ -843,7 +952,3 @@ using ::fast_io::freestanding::non_overlapped_copy;
 using ::fast_io::freestanding::non_overlapped_copy_n;
 
 } // namespace fast_io::details
-
-#if defined(_MSC_VER) && !defined(__clang__)
-#pragma warning(pop)
-#endif
