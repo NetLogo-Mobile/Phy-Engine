@@ -21,10 +21,9 @@ int main()
         add_to_node(nl, model_pos, 1, node2);
         add_to_node(nl, *model_p2, 1, node2);
 
-        // c.t_step = 0.001;
-        // c.at = ::phy_engine::analyze_type::DC;
+        c.at = ::phy_engine::analyze_type::DC;
 
-        // c.prepare();
-        // c.solve();
+        c.prepare();
+        c.solve();
     }
 }
