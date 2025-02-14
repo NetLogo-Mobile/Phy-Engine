@@ -61,7 +61,7 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::has_get_attribute<VDC>);
 
     inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<VDC>, VDC const& vdc, ::std::size_t n) noexcept
+        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<VDC>, ::std::size_t n) noexcept
     {
         switch(n)
         {

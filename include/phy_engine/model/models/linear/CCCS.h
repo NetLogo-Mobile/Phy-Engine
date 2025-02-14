@@ -59,7 +59,7 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::has_get_attribute<CCCS>);
 
     inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<CCCS>, CCCS const& cccs, ::std::size_t n) noexcept
+        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<CCCS>, ::std::size_t n) noexcept
     {
         switch(n)
         {

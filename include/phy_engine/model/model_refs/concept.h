@@ -140,9 +140,19 @@ namespace phy_engine::model
         };
 
         template <typename mod>
-        concept has_get_attribute_name = requires(mod&& t) {
+        concept has_full_get_attribute_name = requires(mod&& t) {
             { get_attribute_name_define(model_reserve_type<::std::remove_cvref_t<mod>>, t, ::std::size_t{}) } -> ::std::same_as<::fast_io::u8string_view>;
         };
+
+        /* In some case, no need to pass param `t` to `get_attribute_name_define`
+         */
+        template <typename mod>
+        concept has_reduced_get_attribute_name = requires () {
+            { get_attribute_name_define(model_reserve_type<::std::remove_cvref_t<mod>>, ::std::size_t{}) } -> ::std::same_as<::fast_io::u8string_view>;
+        };
+
+        template <typename mod>
+        concept has_get_attribute_name = has_full_get_attribute_name<mod> || has_reduced_get_attribute_name<mod>;
 
         template <typename mod>
         concept has_attribute = has_set_attribute<mod> && has_get_attribute_name<mod> && has_get_attribute_name<mod>;

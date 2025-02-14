@@ -48,7 +48,7 @@ namespace phy_engine::model
             case 0:
             {
                 // Get resistance value
-                return {.d{r.r}, .type{::phy_engine::model::variant_type::d}};
+                return {.d=r.r, .type=::phy_engine::model::variant_type::d};
             }
             default:
             {
@@ -61,7 +61,7 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::has_get_attribute<resistance>);
 
     inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<resistance>, resistance const& r, ::std::size_t n) noexcept
+        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<resistance>, ::std::size_t n) noexcept
     {
         switch(n)
         {

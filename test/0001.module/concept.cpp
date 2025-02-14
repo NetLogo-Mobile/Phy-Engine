@@ -4,9 +4,9 @@
 
 int main()
 {
-    ::phy_engine::model::resistance r{};
+    [[maybe_unused]] ::phy_engine::model::resistance r{};
 
-    constexpr auto is_model = ::phy_engine::model::model<::phy_engine::model::resistance>;
-    constexpr auto can_iterate_dc = ::phy_engine::model::defines::can_iterate_dc<phy_engine::model::resistance>;
-    constexpr auto has_attribute = ::phy_engine::model::defines::has_attribute<::phy_engine::model::resistance>;
+    static_assert(::phy_engine::model::model<::phy_engine::model::resistance> == true);
+    static_assert(::phy_engine::model::defines::can_iterate_dc<phy_engine::model::resistance> == true);
+    static_assert(::phy_engine::model::defines::has_attribute<::phy_engine::model::resistance> == true);
 }

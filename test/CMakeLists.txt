@@ -6,8 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_BUILD_TYPE Debug)
 enable_testing()
 
-include_directories(${CMAKE_SOURCE_DIR}/../include)
-
 if (MSVC)
     add_compile_options(/nologo /Zc:preprocessor /utf-8 /DNOMINMAX /bigobj /GR-)
 else()
@@ -18,6 +16,9 @@ else()
 endif()
 
 file(GLOB_RECURSE test_srcs "${CMAKE_SOURCE_DIR}/**.cpp")
+
+include_directories(${CMAKE_SOURCE_DIR}/../include)
+link_libraries(ntdll)
 
 foreach(a_test IN LISTS test_srcs)
     get_filename_component(filename ${a_test} NAME_WE)
