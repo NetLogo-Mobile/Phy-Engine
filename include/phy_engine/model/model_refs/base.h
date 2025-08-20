@@ -94,7 +94,10 @@ namespace phy_engine::model
             virtual constexpr bool init_model() noexcept override
             {
                 if constexpr(::phy_engine::model::defines::can_init<mod>) { return init_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m); }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool prepare_ac() noexcept override
@@ -112,7 +115,10 @@ namespace phy_engine::model
                 {
                     return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool prepare_dc() noexcept override
@@ -130,7 +136,10 @@ namespace phy_engine::model
                 {
                     return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool prepare_tr() noexcept override
@@ -148,7 +157,10 @@ namespace phy_engine::model
                 {
                     return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool prepare_op() noexcept override
@@ -170,7 +182,10 @@ namespace phy_engine::model
                 {
                     return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool prepare_trop() noexcept override
@@ -192,7 +207,10 @@ namespace phy_engine::model
                 {
                     return prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool iterate_ac(::phy_engine::MNA::MNA& mna, double omega) noexcept override
@@ -207,7 +225,10 @@ namespace phy_engine::model
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
-                else { return false; }
+                else
+                {
+                    return false;
+                }
             }
 
             virtual constexpr bool iterate_dc(::phy_engine::MNA::MNA& mna) noexcept override
@@ -218,7 +239,10 @@ namespace phy_engine::model
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
-                else { return false; }
+                else
+                {
+                    return false;
+                }
             }
 
             virtual constexpr bool iterate_tr(::phy_engine::MNA::MNA& mna, double tTime) noexcept override
@@ -233,7 +257,10 @@ namespace phy_engine::model
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
-                else { return false; }
+                else
+                {
+                    return false;
+                }
             }
 
             virtual constexpr bool iterate_op(::phy_engine::MNA::MNA& mna) noexcept override
@@ -248,7 +275,10 @@ namespace phy_engine::model
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
-                else { return false; }
+                else
+                {
+                    return false;
+                }
             }
 
             virtual constexpr bool iterate_trop(::phy_engine::MNA::MNA& mna) noexcept override
@@ -267,7 +297,10 @@ namespace phy_engine::model
                 }
                 else if constexpr(::phy_engine::model::defines::can_iterate_mna<mod>) { return true; }
                 else if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return true; }
-                else { return false; }
+                else
+                {
+                    return false;
+                }
             }
 
             virtual constexpr bool save_op() noexcept override
@@ -279,9 +312,15 @@ namespace phy_engine::model
                     {
                         return save_op_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                     }
-                    else { return true; }
+                    else
+                    {
+                        return true;
+                    }
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool load_temperature(double temp) noexcept override
@@ -290,7 +329,10 @@ namespace phy_engine::model
                 {
                     return load_temperature_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, temp);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool step_changed_tr(double nlaststep, double nstep) noexcept override
@@ -299,7 +341,10 @@ namespace phy_engine::model
                 {
                     return step_changed_tr_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, nlaststep, nstep);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool adapt_step(double& step) noexcept override
@@ -308,7 +353,10 @@ namespace phy_engine::model
                 {
                     return adapt_step_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, step);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr bool check_convergence() noexcept override
@@ -318,7 +366,10 @@ namespace phy_engine::model
                 {
                     return check_convergence_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
                 }
-                else { return true; }
+                else
+                {
+                    return true;
+                }
             }
 
             virtual constexpr ::phy_engine::digital::need_operate_analog_node_t
@@ -330,14 +381,20 @@ namespace phy_engine::model
                 {
                     return update_digital_clk_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m, table, tr_duration, method);
                 }
-                else { ::fast_io::fast_terminate(); }
+                else
+                {
+                    ::fast_io::fast_terminate();
+                }
                 return {};
             }
 
             virtual constexpr ::phy_engine::model::digital_update_method_t get_digital_update_method() noexcept override
             {
                 if constexpr(::phy_engine::model::defines::is_valid_digital_model<mod>) { return mod::digital_update_method; }
-                else { ::fast_io::fast_terminate(); }
+                else
+                {
+                    ::fast_io::fast_terminate();
+                }
                 return {};
             }
 
@@ -348,7 +405,10 @@ namespace phy_engine::model
                 {
                     return set_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index, vi);
                 }
-                else { return false; }
+                else
+                {
+                    return false;
+                }
             }
 
             virtual constexpr ::phy_engine::model::variant get_attribute(::std::size_t index) noexcept override
@@ -358,7 +418,10 @@ namespace phy_engine::model
                 {
                     return get_attribute_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index);
                 }
-                else { return {}; }
+                else
+                {
+                    return {};
+                }
             }
 
             virtual constexpr ::fast_io::u8string_view get_attribute_name(::std::size_t index) noexcept override
@@ -368,11 +431,14 @@ namespace phy_engine::model
                 {
                     return get_attribute_name_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m, index);
                 }
-                else if constexpr (::phy_engine::model::defines::has_reduced_get_attribute_name<mod>)
+                else if constexpr(::phy_engine::model::defines::has_reduced_get_attribute_name<mod>)
                 {
                     return get_attribute_name_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, index);
                 }
-                else { return {}; }
+                else
+                {
+                    return {};
+                }
             }
 
             virtual constexpr ::phy_engine::model::pin_view generate_pin_view() noexcept override
@@ -382,7 +448,10 @@ namespace phy_engine::model
                 {
                     return generate_pin_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
                 }
-                else { return {}; }
+                else
+                {
+                    return {};
+                }
             }
 
             virtual constexpr ::fast_io::u8string_view get_model_name() noexcept override { return rcvmod_type::model_name; }
@@ -397,7 +466,10 @@ namespace phy_engine::model
                 {
                     return generate_branch_view_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
                 }
-                else { return {}; }
+                else
+                {
+                    return {};
+                }
             }
 
             virtual constexpr ::phy_engine::model::node_view generate_internal_node_view() noexcept override
@@ -406,7 +478,10 @@ namespace phy_engine::model
                 {
                     return generate_internal_node_define(::phy_engine::model::model_reserve_type<::std::remove_cvref_t<mod>>, m);
                 }
-                else { return {}; }
+                else
+                {
+                    return {};
+                }
             }
         };
     }  // namespace details
@@ -486,7 +561,10 @@ namespace phy_engine::model
                 }
             }
             if(other.ptr) [[likely]] { ptr = other.ptr->clone(); }
-            else { ptr = nullptr; }
+            else
+            {
+                ptr = nullptr;
+            }
             identification = other.identification;
             name = other.name;
             describe = other.describe;
@@ -526,7 +604,10 @@ namespace phy_engine::model
                 }
             }
             if(other.ptr) [[likely]] { ptr = other.ptr->clone(); }
-            else { ptr = nullptr; }
+            else
+            {
+                ptr = nullptr;
+            }
             identification = other.identification;
             name = other.name;
             describe = other.describe;
@@ -559,7 +640,10 @@ namespace phy_engine::model
                 }
             }
             if(other.ptr) [[likely]] { ptr = other.ptr->clone(); }
-            else { ptr = nullptr; }
+            else
+            {
+                ptr = nullptr;
+            }
             identification = other.identification;
             name = other.name;
             describe = other.describe;
@@ -606,7 +690,7 @@ namespace phy_engine::model
             other.has_init = false;
         }
 
-        constexpr model_base& operator=(model_base&& other) noexcept
+        constexpr model_base& operator= (model_base&& other) noexcept
         {
             if(__builtin_addressof(other) == this) { return *this; }
             type = other.type;
@@ -645,20 +729,23 @@ namespace phy_engine::model
         // member function
         constexpr void remove_from_node() noexcept
         {
-            auto const this_device_type{ptr->get_device_type()};
-            auto const this_device_type_is_analog{this_device_type != ::phy_engine::model::model_device_type::digital};
-
-            if(type == ::phy_engine::model::model_type::normal) [[likely]]
+            if(ptr)
             {
-                auto pin_view{ptr->generate_pin_view()};
-                for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
+                auto const this_device_type{ptr->get_device_type()};
+                auto const this_device_type_is_analog{this_device_type != ::phy_engine::model::model_device_type::digital};
+
+                if(type == ::phy_engine::model::model_type::normal) [[likely]]
                 {
-                    auto& node{curr->nodes};
-                    if(node) [[likely]]
+                    auto pin_view{ptr->generate_pin_view()};
+                    for(auto curr{pin_view.pins}; curr != pin_view.pins + pin_view.size; ++curr)
                     {
-                        node->pins.erase(curr);
-                        if(this_device_type_is_analog) { --node->num_of_analog_node; }
-                        node = nullptr;
+                        auto& node{curr->nodes};
+                        if(node) [[likely]]
+                        {
+                            node->pins.erase(curr);
+                            if(this_device_type_is_analog) { --node->num_of_analog_node; }
+                            node = nullptr;
+                        }
                     }
                 }
             }
