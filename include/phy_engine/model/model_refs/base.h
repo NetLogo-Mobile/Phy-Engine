@@ -86,7 +86,7 @@ namespace phy_engine::model
 #endif
                 {
                     model_base_impl* ptr{reinterpret_cast<model_base_impl*>(Alloc::allocate(sizeof(model_derv_impl<mod>)))};
-                    new(ptr) model_derv_impl<mod>{*this};
+                    ::new(ptr) model_derv_impl<mod>{*this};
                     return ptr;
                 }
             };
@@ -517,7 +517,7 @@ namespace phy_engine::model
 #endif
             {
                 ptr = reinterpret_cast<details::model_derv_impl<mod>*>(Alloc::allocate(sizeof(details::model_derv_impl<mod>)));
-                new(ptr) details::model_derv_impl<mod>{::std::forward<mod>(m)};
+                ::new(ptr) details::model_derv_impl<mod>{::std::forward<mod>(m)};
             }
         };
 
