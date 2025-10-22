@@ -3,7 +3,7 @@
 int main()
 {
     ::phy_engine::circult c{};
-    c.set_analyze_type(::phy_engine::analyze_type::TR);
+    c.set_analyze_type(::phy_engine::analyze_type::ACOP);
 
     auto& nl{c.get_netlist()};
 

@@ -87,7 +87,13 @@ namespace phy_engine
                 case ::phy_engine::analyze_type::TROP:
                 {
                     double t_time{};
+                    
                     auto const t_step{analyzer_setting.tr.t_step};
+                    if (t_step == 0.0) [[unlikely]]
+                    {
+                        return false;
+                    }
+
                     auto const t_stop{analyzer_setting.tr.t_stop};
 
                     prepare();
@@ -530,6 +536,12 @@ namespace phy_engine
             // solve
             {
                 auto const row_size{node_counter + branch_counter};
+
+                if(row_size == 0)
+                {
+                    // no solution
+                    return true;
+                }
 
                 // mna A matrix
                 smXcd temp_A{static_cast<::Eigen::Index>(row_size), static_cast<::Eigen::Index>(row_size)};
