@@ -37,7 +37,13 @@ namespace phy_engine::model
         if(node_a && node_b && node_s && node_c) [[likely]]
         {
             auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
-                if(n->num_of_analog_node == 0) { return n->node_information.dn.state; }
+                if(n->num_of_analog_node == 0)
+                {
+                    auto const s{n->node_information.dn.state};
+                    return s == ::phy_engine::model::digital_node_statement_t::high_impedence_state
+                               ? ::phy_engine::model::digital_node_statement_t::indeterminate_state
+                               : s;
+                }
                 double const v{n->node_information.an.voltage.real()};
                 if(v >= clip.Hl) { return ::phy_engine::model::digital_node_statement_t::true_state; }
                 if(v <= clip.Ll) { return ::phy_engine::model::digital_node_statement_t::false_state; }
@@ -47,8 +53,13 @@ namespace phy_engine::model
             auto const A{read_dn(node_a)};
             auto const B{read_dn(node_b)};
 
-            auto const S{A ^ B};
-            auto const C{A & B};
+            bool const any_unknown{
+                A == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                B == ::phy_engine::model::digital_node_statement_t::indeterminate_state
+            };
+
+            auto const S{ any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A ^ B) };
+            auto const C{ any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A & B) };
 
             bool changed{};
             if(node_s->num_of_analog_node == 0)

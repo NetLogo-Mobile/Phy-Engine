@@ -23,11 +23,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<JKFF>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<JKFF>,
-                                                                                                 JKFF& clip,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<JKFF>,
+                                  JKFF& clip,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const nj{clip.pins[0].nodes};
         auto const nk{clip.pins[1].nodes};
@@ -36,8 +37,15 @@ namespace phy_engine::model
 
         if(nj && nk && nclk && nq)
         {
-            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
-                if(n->num_of_analog_node == 0) { return n->node_information.dn.state; }
+            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept
+            {
+                if(n->num_of_analog_node == 0)
+                {
+                    auto const s{n->node_information.dn.state};
+                    return s == ::phy_engine::model::digital_node_statement_t::high_impedence_state
+                               ? ::phy_engine::model::digital_node_statement_t::indeterminate_state
+                               : s;
+                }
                 double const v{n->node_information.an.voltage.real()};
                 if(v >= clip.Hl) { return ::phy_engine::model::digital_node_statement_t::true_state; }
                 if(v <= clip.Ll) { return ::phy_engine::model::digital_node_statement_t::false_state; }
@@ -63,13 +71,25 @@ namespace phy_engine::model
                 {
                     clip.q = static_cast<::phy_engine::model::digital_node_statement_t>(!static_cast<bool>(clip.q));
                 }
+                else if(J == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                        K == ::phy_engine::model::digital_node_statement_t::indeterminate_state)
+                {
+                    clip.q = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                }
                 // J=0,K=0 retains state
             }
-            clip.last_clk = CLK;
+            if(CLK == ::phy_engine::model::digital_node_statement_t::false_state || CLK == ::phy_engine::model::digital_node_statement_t::true_state)
+            {
+                clip.last_clk = CLK;
+            }
 
             if(nq->num_of_analog_node == 0)
             {
-                if(nq->node_information.dn.state != clip.q) { nq->node_information.dn.state = clip.q; table.tables.insert(nq); }
+                if(nq->node_information.dn.state != clip.q)
+                {
+                    nq->node_information.dn.state = clip.q;
+                    table.tables.insert(nq);
+                }
             }
             else
             {
@@ -93,6 +113,4 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<JKFF>);
 }  // namespace phy_engine::model
-
-
 

@@ -25,11 +25,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<DFF>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<DFF>,
-                                                                                                 DFF& clip,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<DFF>,
+                                  DFF& clip,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const nd{clip.pins[0].nodes};
         auto const nclk{clip.pins[1].nodes};
@@ -37,7 +38,8 @@ namespace phy_engine::model
 
         if(nd && nclk && nq)
         {
-            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
+            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept
+            {
                 if(n->num_of_analog_node == 0)
                 {
                     auto const s{n->node_information.dn.state};
@@ -55,20 +57,22 @@ namespace phy_engine::model
             auto const CLK{read_dn(nclk)};
 
             // rising edge (ignore unknown clock levels when updating history)
-            if(clip.last_clk == ::phy_engine::model::digital_node_statement_t::false_state &&
-               CLK == ::phy_engine::model::digital_node_statement_t::true_state)
+            if(clip.last_clk == ::phy_engine::model::digital_node_statement_t::false_state && CLK == ::phy_engine::model::digital_node_statement_t::true_state)
             {
                 clip.q = D;
             }
-            if(CLK == ::phy_engine::model::digital_node_statement_t::false_state ||
-               CLK == ::phy_engine::model::digital_node_statement_t::true_state)
+            if(CLK == ::phy_engine::model::digital_node_statement_t::false_state || CLK == ::phy_engine::model::digital_node_statement_t::true_state)
             {
                 clip.last_clk = CLK;
             }
 
             if(nq->num_of_analog_node == 0)
             {
-                if(nq->node_information.dn.state != clip.q) { nq->node_information.dn.state = clip.q; table.tables.insert(nq); }
+                if(nq->node_information.dn.state != clip.q)
+                {
+                    nq->node_information.dn.state = clip.q;
+                    table.tables.insert(nq);
+                }
             }
             else
             {
@@ -92,6 +96,4 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<DFF>);
 }  // namespace phy_engine::model
-
-
 

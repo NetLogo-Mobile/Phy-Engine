@@ -44,7 +44,13 @@ namespace phy_engine::model
         if(a0 && a1 && b0 && b1 && p0 && p1 && p2 && p3) [[likely]]
         {
             auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
-                if(n->num_of_analog_node == 0) { return n->node_information.dn.state; }
+                if(n->num_of_analog_node == 0)
+                {
+                    auto const s{n->node_information.dn.state};
+                    return s == ::phy_engine::model::digital_node_statement_t::high_impedence_state
+                               ? ::phy_engine::model::digital_node_statement_t::indeterminate_state
+                               : s;
+                }
                 double const v{n->node_information.an.voltage.real()};
                 if(v >= clip.Hl) { return ::phy_engine::model::digital_node_statement_t::true_state; }
                 if(v <= clip.Ll) { return ::phy_engine::model::digital_node_statement_t::false_state; }
@@ -56,15 +62,35 @@ namespace phy_engine::model
             auto const B0{read_dn(b0)};
             auto const B1{read_dn(b1)};
 
-            // Partial products
-            auto const p0v{A0 & B0};
-            auto const p1_t1{A0 & B1};
-            auto const p1_t2{A1 & B0};
-            auto const p1v{p1_t1 ^ p1_t2};
-            auto const c1{p1_t1 & p1_t2};
-            auto const p2_t1{A1 & B1};
-            auto const p2v{p2_t1 ^ c1};
-            auto const p3v{p2_t1 & c1};
+            bool const any_unknown{
+                A0 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                A1 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                B0 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                B1 == ::phy_engine::model::digital_node_statement_t::indeterminate_state
+            };
+
+            ::phy_engine::model::digital_node_statement_t p0v{};
+            ::phy_engine::model::digital_node_statement_t p1v{};
+            ::phy_engine::model::digital_node_statement_t p2v{};
+            ::phy_engine::model::digital_node_statement_t p3v{};
+
+            if(any_unknown)
+            {
+                p0v = p1v = p2v = p3v = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+            }
+            else
+            {
+                // Partial products
+                auto const p0vv{A0 & B0};
+                auto const p1_t1{A0 & B1};
+                auto const p1_t2{A1 & B0};
+                auto const p1vv{p1_t1 ^ p1_t2};
+                auto const c1{p1_t1 & p1_t2};
+                auto const p2_t1{A1 & B1};
+                auto const p2vv{p2_t1 ^ c1};
+                auto const p3vv{p2_t1 & c1};
+                p0v = p0vv; p1v = p1vv; p2v = p2vv; p3v = p3vv;
+            }
 
             ::phy_engine::model::digital_node_statement_t vals[4]{p0v, p1v, p2v, p3v};
             ::phy_engine::model::node_t* outs[4]{p0, p1, p2, p3};
