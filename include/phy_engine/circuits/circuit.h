@@ -87,9 +87,9 @@ namespace phy_engine
                 case ::phy_engine::analyze_type::TROP:
                 {
                     double t_time{};
-                    
+
                     auto const t_step{analyzer_setting.tr.t_step};
-                    if (t_step == 0.0) [[unlikely]]
+                    if (t_step <= 0.0) [[unlikely]]
                     {
                         return false;
                     }
