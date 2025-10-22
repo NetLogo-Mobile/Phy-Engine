@@ -1,7 +1,7 @@
 #pragma once
 #include <fast_io/fast_io_dsal/string_view.h>
-#include "../../../circuits/digital/update_table.h"
-#include "../../model_refs/base.h"
+#include "../../../../circuits/digital/update_table.h"
+#include "../../../model_refs/base.h"
 
 namespace phy_engine::model
 {
