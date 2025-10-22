@@ -371,8 +371,8 @@ namespace phy_engine::model
             mna.G_ref(node_0->node_index, node_1->node_index) -= pn.geq;
             mna.G_ref(node_1->node_index, node_0->node_index) -= pn.geq;
             mna.G_ref(node_1->node_index, node_1->node_index) += pn.geq;
-            mna.I_ref(node_0->node_index) -= pn.Ieq;
-            mna.I_ref(node_1->node_index) += pn.Ieq;
+            // In small-signal AC analysis, only the incremental conductance is stamped.
+            // The equivalent current source from DC linearization (Ieq) must NOT be injected.
         }
 
         return true;
