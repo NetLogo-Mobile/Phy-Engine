@@ -145,11 +145,25 @@ namespace phy_engine::model
 
         if(node_0 && node_1) [[likely]]
         {
-            double const current{i.branches.current.real()};
+            // previous step values
+            double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+            double const i_prev{i.branches.current.real()};
 
-            double const req{i.m_kZimag / t_time};
+            if(t_time <= 0.0)
+            {
+                // No dynamic contribution at TROP: treat as short (DC)
+                auto const k{i.branches.index};
+                mna.B_ref(node_0->node_index, k) = 1.0;
+                mna.B_ref(node_1->node_index, k) = -1.0;
+                mna.C_ref(k, node_0->node_index) = 1.0;
+                mna.C_ref(k, node_1->node_index) = -1.0;
+                return true;
+            }
 
-            double const Ueq{-current * i.m_kZimag / t_time};
+            // Trapezoidal integrator companion model (Thevenin):
+            // req = 2*L/dt, Ueq = -v_prev - req*i_prev
+            double const req{2.0 * i.m_kZimag / t_time};
+            double const Ueq{-v_prev - req * i_prev};
 
             auto const k{i.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;
@@ -178,5 +192,23 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<inductor>);
+
+    inline constexpr bool iterate_trop_define(::phy_engine::model::model_reserve_type_t<inductor>, inductor const& i, ::phy_engine::MNA::MNA& mna) noexcept
+    {
+        // For transient operating point, treat inductor as a short (DC behavior)
+        auto const node_0{i.pins[0].nodes};
+        auto const node_1{i.pins[1].nodes};
+        if(node_0 && node_1)
+        {
+            auto const k{i.branches.index};
+            mna.B_ref(node_0->node_index, k) = 1.0;
+            mna.B_ref(node_1->node_index, k) = -1.0;
+            mna.C_ref(k, node_0->node_index) = 1.0;
+            mna.C_ref(k, node_1->node_index) = -1.0;
+        }
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_iterate_trop<inductor>);
 
 }  // namespace phy_engine::model

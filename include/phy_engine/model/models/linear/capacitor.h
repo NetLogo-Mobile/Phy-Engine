@@ -12,6 +12,11 @@ namespace phy_engine::model
         inline static constexpr ::fast_io::u8string_view identification_name{u8"C"};
 
         double m_kZimag{1e-5};
+        
+        // Trapezoidal integration state
+        double m_tr_hist_current{};   // history current (Norton equivalent) used by TR: i = g*v + m_tr_hist_current
+        double m_tr_prev_g{};         // g used in the previous step (2*C/dt)
+
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
     };
 
@@ -108,21 +113,48 @@ namespace phy_engine::model
 
         if(node_0 && node_1) [[likely]]
         {
-            double const voltage{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+            // previous step voltage across capacitor (node_0 - node_1)
+            double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
 
-            double const geq{c.m_kZimag / t_time};
+            if(t_time <= 0.0)
+            {
+                // No contribution at TROP (capacitor open circuit)
+                return true;
+            }
 
-            double const Ieq{-voltage * c.m_kZimag / t_time};
-            // c.last_current = Ieq;
+            // Trapezoidal integrator companion model (Norton):
+            // geq = 2*C/dt, Ieq = history current h^n
+            double const g_new{2.0 * c.m_kZimag / t_time};
 
-            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
-            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
-            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
-            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
-            mna.I_ref(node_0->node_index) -= Ieq;
-            mna.I_ref(node_1->node_index) += Ieq;
+            // Update history current to the value for this step using last and new conductances:
+            // h^n = -(g_new + g_prev)*v_prev - h^{n-1}; if no previous step, assume i^0 ≈ 0 => h^0 = -g_new*v_prev
+            if(c.m_tr_prev_g > 0.0)
+            {
+                c.m_tr_hist_current = -(g_new + c.m_tr_prev_g) * v_prev - c.m_tr_hist_current;
+            }
+            else
+            {
+                c.m_tr_hist_current = -g_new * v_prev;
+            }
+            c.m_tr_prev_g = g_new;
+
+            // Stamp Norton equivalent
+            mna.G_ref(node_0->node_index, node_0->node_index) += g_new;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= g_new;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= g_new;
+            mna.G_ref(node_1->node_index, node_1->node_index) += g_new;
+            mna.I_ref(node_0->node_index) -= c.m_tr_hist_current;
+            mna.I_ref(node_1->node_index) += c.m_tr_hist_current;
         }
 
+        return true;
+    }
+
+    inline constexpr bool iterate_trop_define(::phy_engine::model::model_reserve_type_t<capacitor>,
+                                              capacitor& /*c*/,
+                                              ::phy_engine::MNA::MNA& /*mna*/) noexcept
+    {
+        // Capacitor is open-circuit for transient operating point; no stamp needed
         return true;
     }
 
@@ -134,5 +166,7 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<capacitor>);
+
+    static_assert(::phy_engine::model::defines::can_iterate_trop<capacitor>);
 
 }  // namespace phy_engine::model
