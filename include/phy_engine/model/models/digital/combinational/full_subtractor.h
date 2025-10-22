@@ -23,11 +23,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<FULL_SUB>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<FULL_SUB>,
-                                                                                                 FULL_SUB& clip,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<FULL_SUB>,
+                                  FULL_SUB& clip,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const node_a{clip.pins[0].nodes};
         auto const node_b{clip.pins[1].nodes};
@@ -37,7 +38,8 @@ namespace phy_engine::model
 
         if(node_a && node_b && node_bi && node_d && node_bo) [[likely]]
         {
-            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
+            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept
+            {
                 if(n->num_of_analog_node == 0)
                 {
                     auto const s{n->node_information.dn.state};
@@ -55,7 +57,8 @@ namespace phy_engine::model
             auto const B{read_dn(node_b)};
             auto const BI{read_dn(node_bi)};
 
-            auto inv = [](auto v) constexpr noexcept {
+            auto inv = [](auto v) constexpr noexcept
+            {
                 using dns = ::phy_engine::model::digital_node_statement_t;
                 switch(v)
                 {
@@ -65,22 +68,30 @@ namespace phy_engine::model
                 }
             };
 
-            bool const any_unknown{
-                A == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
-                B == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
-                BI == ::phy_engine::model::digital_node_statement_t::indeterminate_state
-            };
+            bool const any_unknown{A == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                                   B == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                                   BI == ::phy_engine::model::digital_node_statement_t::indeterminate_state};
 
-            auto const D{ any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A ^ B ^ BI) };
-            auto const BO{ any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : ((inv(A) & B) | (inv(A) & BI) | (B & BI)) };
+            auto const D{any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A ^ B ^ BI)};
+            auto const BO{any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : ((inv(A) & B) | (inv(A) & BI) | (B & BI))};
 
             if(node_d->num_of_analog_node == 0)
             {
-                if(clip.last_d != D) { clip.last_d = D; node_d->node_information.dn.state = D; table.tables.insert(node_d); }
+                if(clip.last_d != D)
+                {
+                    clip.last_d = D;
+                    node_d->node_information.dn.state = D;
+                    table.tables.insert(node_d);
+                }
             }
             if(node_bo->num_of_analog_node == 0)
             {
-                if(clip.last_b != BO) { clip.last_b = BO; node_bo->node_information.dn.state = BO; table.tables.insert(node_bo); }
+                if(clip.last_b != BO)
+                {
+                    clip.last_b = BO;
+                    node_bo->node_information.dn.state = BO;
+                    table.tables.insert(node_bo);
+                }
             }
 
             if(node_d->num_of_analog_node != 0)
@@ -114,6 +125,4 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<FULL_SUB>);
 }  // namespace phy_engine::model
-
-
 

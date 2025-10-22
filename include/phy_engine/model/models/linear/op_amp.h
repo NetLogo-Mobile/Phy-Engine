@@ -18,7 +18,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<op_amp>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<op_amp>, op_amp& oa, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<op_amp>, op_amp& oa, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
@@ -35,7 +36,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<op_amp>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<op_amp>, op_amp const& oa, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<op_amp>, op_amp const& oa, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -95,6 +97,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<op_amp>);
-}
-
+}  // namespace phy_engine::model
 

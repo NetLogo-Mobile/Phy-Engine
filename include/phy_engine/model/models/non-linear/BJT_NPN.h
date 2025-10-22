@@ -22,25 +22,41 @@ namespace phy_engine::model
         ::phy_engine::model::pin pins[3]{{{u8"B"}}, {{u8"C"}}, {{u8"E"}}};
 
         // Private state
-        double Ut{};     // thermal voltage
+        double Ut{};  // thermal voltage
         double Vbe_last{};
-        double geq_be{}; // diode conductance between B and E
-        double Ieq_be{}; // diode current source equivalent
-        double gm{};     // transconductance Ic ≈ gm * Vbe
-        double Ieq_c{};  // collector current source equivalent
+        double geq_be{};  // diode conductance between B and E
+        double Ieq_be{};  // diode current source equivalent
+        double gm{};      // transconductance Ic ≈ gm * Vbe
+        double Ieq_c{};   // collector current source equivalent
     };
 
     static_assert(::phy_engine::model::model<BJT_NPN>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN& q, ::std::size_t n, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN& q, ::std::size_t n, ::phy_engine::model::variant vi) noexcept
     {
         switch(n)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; q.Is = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; q.N = vi.d; return true;
-            case 2: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; q.BetaF = vi.d; return true;
-            case 3: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; q.Temp = vi.d; return true;
-            case 4: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; q.Area = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                q.Is = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                q.N = vi.d;
+                return true;
+            case 2:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                q.BetaF = vi.d;
+                return true;
+            case 3:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                q.Temp = vi.d;
+                return true;
+            case 4:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                q.Area = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -48,7 +64,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<BJT_NPN>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN const& q, ::std::size_t n) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN const& q, ::std::size_t n) noexcept
     {
         switch(n)
         {
@@ -91,10 +108,7 @@ namespace phy_engine::model
         auto const node_B{q.pins[0].nodes};
         auto const node_C{q.pins[1].nodes};
         auto const node_E{q.pins[2].nodes};
-        if(node_B && node_C && node_E) [[likely]]
-        {
-            q.Vbe_last = node_B->node_information.an.voltage.real() - node_E->node_information.an.voltage.real();
-        }
+        if(node_B && node_C && node_E) [[likely]] { q.Vbe_last = node_B->node_information.an.voltage.real() - node_E->node_information.an.voltage.real(); }
         return true;
     }
 
@@ -146,7 +160,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_dc<BJT_NPN>);
 
-    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN& q, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double omega) noexcept
+    inline constexpr bool
+        iterate_ac_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN& q, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double omega) noexcept
     {
         auto const node_B{q.pins[0].nodes};
         auto const node_C{q.pins[1].nodes};
@@ -169,7 +184,10 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_ac<BJT_NPN>);
 
-    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN& q, [[maybe_unused]] double nlaststep, [[maybe_unused]] double nstep) noexcept
+    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>,
+                                                 BJT_NPN& q,
+                                                 [[maybe_unused]] double nlaststep,
+                                                 [[maybe_unused]] double nstep) noexcept
     {
         auto const node_B{q.pins[0].nodes};
         auto const node_E{q.pins[2].nodes};
@@ -183,6 +201,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<BJT_NPN>);
-}
-
+}  // namespace phy_engine::model
 

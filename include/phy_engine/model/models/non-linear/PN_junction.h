@@ -59,9 +59,15 @@ namespace phy_engine::model
             {
                 double arg{(Ud_0 - Ud_1) / Ute};
                 if(arg > 0.0) { Ud_f = Ud_1 + Ute * (2.0 + ::std::log(arg - 2.0)); }
-                else { Ud_f = Ud_1 - Ute * (2.0 + ::std::log(2.0 - arg)); }
+                else
+                {
+                    Ud_f = Ud_1 - Ute * (2.0 + ::std::log(2.0 - arg));
+                }
             }
-            else { Ud_f = Ute * ::std::log(Ud_0 / Ute); }
+            else
+            {
+                Ud_f = Ute * ::std::log(Ud_0 / Ute);
+            }
         }
         else
         {
@@ -74,7 +80,10 @@ namespace phy_engine::model
         }
 
         if(flag) { return -(Ud_f + pn.Bv); }
-        else { return Ud_f; }
+        else
+        {
+            return Ud_f;
+        }
     }
 
     inline constexpr bool
@@ -197,8 +206,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<PN_junction>);
 
-    inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<PN_junction>, ::std::size_t n) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<PN_junction>, ::std::size_t n) noexcept
     {
         switch(n)
         {

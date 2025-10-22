@@ -58,8 +58,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<OUTPUT>);
 
-    inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<OUTPUT>, ::std::size_t n) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<OUTPUT>, ::std::size_t n) noexcept
     {
         switch(n)
         {
@@ -101,7 +100,10 @@ namespace phy_engine::model
                             clip.USRA = ::phy_engine::model::digital_node_statement_t::true_state;
                             clip.duration_A = tr_duration;
                         }
-                        else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
+                        else
+                        {
+                            clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state;
+                        }
                     }
                     break;
                 }
@@ -115,7 +117,10 @@ namespace phy_engine::model
                             clip.USRA = ::phy_engine::model::digital_node_statement_t::false_state;
                             clip.duration_A = tr_duration;
                         }
-                        else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
+                        else
+                        {
+                            clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state;
+                        }
                     }
                     break;
                 }
@@ -129,7 +134,10 @@ namespace phy_engine::model
                             {
                                 if(tr_duration - clip.duration_A >= clip.Tsu) { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
                             }
-                            else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
+                            else
+                            {
+                                clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state;
+                            }
                             break;
                         }
                         case ::phy_engine::model::digital_node_statement_t::true_state:
@@ -138,7 +146,10 @@ namespace phy_engine::model
                             {
                                 if(tr_duration - clip.duration_A >= clip.Th) { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
                             }
-                            else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
+                            else
+                            {
+                                clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state;
+                            }
                             break;
                         }
                         case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
@@ -151,7 +162,10 @@ namespace phy_engine::model
                             {
                                 if(tr_duration - clip.duration_A >= clip.Tsu) { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
                             }
-                            else { clip.duration_A = tr_duration; }
+                            else
+                            {
+                                clip.duration_A = tr_duration;
+                            }
 
                             break;
                         }
@@ -164,7 +178,10 @@ namespace phy_engine::model
                 default: ::fast_io::unreachable();
             }
         }
-        else { clip.inputA = node_i->node_information.dn.state; }
+        else
+        {
+            clip.inputA = node_i->node_information.dn.state;
+        }
 
         return {};
     }

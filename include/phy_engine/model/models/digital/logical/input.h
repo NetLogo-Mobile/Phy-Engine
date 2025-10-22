@@ -9,7 +9,8 @@ namespace phy_engine::model
     {
         inline static constexpr ::fast_io::u8string_view model_name{u8"INPUT"};
 
-        inline static constexpr ::phy_engine::model::digital_update_method_t digital_update_method{::phy_engine::model::digital_update_method_t::before_all_clk};
+        inline static constexpr ::phy_engine::model::digital_update_method_t digital_update_method{
+            ::phy_engine::model::digital_update_method_t::before_all_clk};
 
         inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::digital};
         inline static constexpr ::fast_io::u8string_view identification_name{u8"INPUT"};
@@ -68,8 +69,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<INPUT>);
 
-    inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<INPUT>, ::std::size_t n) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<INPUT>, ::std::size_t n) noexcept
     {
         switch(n)
         {

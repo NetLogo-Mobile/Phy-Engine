@@ -23,11 +23,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<HALF_ADDER>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<HALF_ADDER>,
-                                                                                                 HALF_ADDER& clip,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<HALF_ADDER>,
+                                  HALF_ADDER& clip,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const node_a{clip.pins[0].nodes};
         auto const node_b{clip.pins[1].nodes};
@@ -36,7 +37,8 @@ namespace phy_engine::model
 
         if(node_a && node_b && node_s && node_c) [[likely]]
         {
-            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
+            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept
+            {
                 if(n->num_of_analog_node == 0)
                 {
                     auto const s{n->node_information.dn.state};
@@ -53,22 +55,32 @@ namespace phy_engine::model
             auto const A{read_dn(node_a)};
             auto const B{read_dn(node_b)};
 
-            bool const any_unknown{
-                A == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
-                B == ::phy_engine::model::digital_node_statement_t::indeterminate_state
-            };
+            bool const any_unknown{A == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                                   B == ::phy_engine::model::digital_node_statement_t::indeterminate_state};
 
-            auto const S{ any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A ^ B) };
-            auto const C{ any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A & B) };
+            auto const S{any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A ^ B)};
+            auto const C{any_unknown ? ::phy_engine::model::digital_node_statement_t::indeterminate_state : (A & B)};
 
             bool changed{};
             if(node_s->num_of_analog_node == 0)
             {
-                if(clip.last_s != S) { changed = true; clip.last_s = S; node_s->node_information.dn.state = S; table.tables.insert(node_s); }
+                if(clip.last_s != S)
+                {
+                    changed = true;
+                    clip.last_s = S;
+                    node_s->node_information.dn.state = S;
+                    table.tables.insert(node_s);
+                }
             }
             if(node_c->num_of_analog_node == 0)
             {
-                if(clip.last_c != C) { changed = true; clip.last_c = C; node_c->node_information.dn.state = C; table.tables.insert(node_c); }
+                if(clip.last_c != C)
+                {
+                    changed = true;
+                    clip.last_c = C;
+                    node_c->node_information.dn.state = C;
+                    table.tables.insert(node_c);
+                }
             }
 
             if(node_s->num_of_analog_node != 0)
@@ -102,6 +114,4 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<HALF_ADDER>);
 }  // namespace phy_engine::model
-
-
 

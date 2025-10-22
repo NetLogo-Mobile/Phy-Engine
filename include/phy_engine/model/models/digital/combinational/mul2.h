@@ -26,11 +26,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<MUL2>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<MUL2>,
-                                                                                                 MUL2& clip,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<MUL2>,
+                                  MUL2& clip,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const a0{clip.pins[0].nodes};
         auto const a1{clip.pins[1].nodes};
@@ -43,7 +44,8 @@ namespace phy_engine::model
 
         if(a0 && a1 && b0 && b1 && p0 && p1 && p2 && p3) [[likely]]
         {
-            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept {
+            auto read_dn = [&](::phy_engine::model::node_t* n) constexpr noexcept
+            {
                 if(n->num_of_analog_node == 0)
                 {
                     auto const s{n->node_information.dn.state};
@@ -62,22 +64,17 @@ namespace phy_engine::model
             auto const B0{read_dn(b0)};
             auto const B1{read_dn(b1)};
 
-            bool const any_unknown{
-                A0 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
-                A1 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
-                B0 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
-                B1 == ::phy_engine::model::digital_node_statement_t::indeterminate_state
-            };
+            bool const any_unknown{A0 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                                   A1 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                                   B0 == ::phy_engine::model::digital_node_statement_t::indeterminate_state ||
+                                   B1 == ::phy_engine::model::digital_node_statement_t::indeterminate_state};
 
             ::phy_engine::model::digital_node_statement_t p0v{};
             ::phy_engine::model::digital_node_statement_t p1v{};
             ::phy_engine::model::digital_node_statement_t p2v{};
             ::phy_engine::model::digital_node_statement_t p3v{};
 
-            if(any_unknown)
-            {
-                p0v = p1v = p2v = p3v = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
-            }
+            if(any_unknown) { p0v = p1v = p2v = p3v = ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
             else
             {
                 // Partial products
@@ -89,7 +86,10 @@ namespace phy_engine::model
                 auto const p2_t1{A1 & B1};
                 auto const p2vv{p2_t1 ^ c1};
                 auto const p3vv{p2_t1 & c1};
-                p0v = p0vv; p1v = p1vv; p2v = p2vv; p3v = p3vv;
+                p0v = p0vv;
+                p1v = p1vv;
+                p2v = p2vv;
+                p3v = p3vv;
             }
 
             ::phy_engine::model::digital_node_statement_t vals[4]{p0v, p1v, p2v, p3v};
@@ -101,7 +101,12 @@ namespace phy_engine::model
                 auto* const n{outs[i]};
                 if(n->num_of_analog_node == 0)
                 {
-                    if(clip.last_p[i] != v) { clip.last_p[i] = v; n->node_information.dn.state = v; table.tables.insert(n); }
+                    if(clip.last_p[i] != v)
+                    {
+                        clip.last_p[i] = v;
+                        n->node_information.dn.state = v;
+                        table.tables.insert(n);
+                    }
                 }
                 else
                 {
@@ -126,6 +131,4 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<MUL2>);
 }  // namespace phy_engine::model
-
-
 

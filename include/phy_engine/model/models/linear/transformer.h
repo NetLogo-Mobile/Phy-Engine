@@ -13,13 +13,16 @@ namespace phy_engine::model
 
         // Voltage ratio n = Vp / Vs
         double n{1.0};
-        ::phy_engine::model::pin pins[4]{{{u8"P"}}, {{u8"Q"}}, {{u8"S"}}, {{u8"T"}}}; // Primary P-Q, Secondary S-T
-        ::phy_engine::model::branch branches[2]{}; // kP for primary, kS for secondary
+        ::phy_engine::model::pin pins[4]{{{u8"P"}}, {{u8"Q"}}, {{u8"S"}}, {{u8"T"}}};  // Primary P-Q, Secondary S-T
+        ::phy_engine::model::branch branches[2]{};                                     // kP for primary, kS for secondary
     };
 
     static_assert(::phy_engine::model::model<transformer>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<transformer>, transformer& tx, ::std::size_t nidx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<transformer>,
+                                               transformer& tx,
+                                               ::std::size_t nidx,
+                                               ::phy_engine::model::variant vi) noexcept
     {
         switch(nidx)
         {
@@ -36,7 +39,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<transformer>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<transformer>, transformer const& tx, ::std::size_t nidx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<transformer>, transformer const& tx, ::std::size_t nidx) noexcept
     {
         switch(nidx)
         {
@@ -52,7 +56,7 @@ namespace phy_engine::model
     {
         switch(nidx)
         {
-            case 0: return u8"n"; // Vp/Vs
+            case 0: return u8"n";  // Vp/Vs
             default: return {};
         }
         return {};
@@ -106,12 +110,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<transformer>);
 
-    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<transformer>, transformer& tx) noexcept
+    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<transformer>,
+                                                                                  transformer& tx) noexcept
     {
         return {tx.branches, 2};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<transformer>);
-}
-
+}  // namespace phy_engine::model
 

@@ -107,8 +107,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<NAND>);
 
-    inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<NAND>, ::std::size_t n) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<NAND>, ::std::size_t n) noexcept
     {
         switch(n)
         {
@@ -181,7 +180,10 @@ namespace phy_engine::model
                                 clip.USRA = ::phy_engine::model::digital_node_statement_t::true_state;
                                 clip.duration_A = tr_duration;
                             }
-                            else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
+                            else
+                            {
+                                clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state;
+                            }
                         }
                         break;
                     }
@@ -195,7 +197,10 @@ namespace phy_engine::model
                                 clip.USRA = ::phy_engine::model::digital_node_statement_t::false_state;
                                 clip.duration_A = tr_duration;
                             }
-                            else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
+                            else
+                            {
+                                clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state;
+                            }
                         }
                         break;
                     }
@@ -209,7 +214,10 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_A >= clip.Tsu) { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
                                 }
-                                else { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
+                                else
+                                {
+                                    clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state;
+                                }
                                 break;
                             }
                             case ::phy_engine::model::digital_node_statement_t::true_state:
@@ -218,7 +226,10 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_A >= clip.Th) { clip.inputA = ::phy_engine::model::digital_node_statement_t::true_state; }
                                 }
-                                else { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
+                                else
+                                {
+                                    clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state;
+                                }
                                 break;
                             }
                             case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
@@ -231,7 +242,10 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_A >= clip.Tsu) { clip.inputA = ::phy_engine::model::digital_node_statement_t::false_state; }
                                 }
-                                else { clip.duration_A = tr_duration; }
+                                else
+                                {
+                                    clip.duration_A = tr_duration;
+                                }
 
                                 break;
                             }
@@ -244,7 +258,10 @@ namespace phy_engine::model
                     default: ::fast_io::unreachable();
                 }
             }
-            else { clip.inputA = node_ia->node_information.dn.state; }
+            else
+            {
+                clip.inputA = node_ia->node_information.dn.state;
+            }
 
             if(node_ib->num_of_analog_node != 0)  // analog
             {
@@ -262,7 +279,10 @@ namespace phy_engine::model
                                 clip.USRB = ::phy_engine::model::digital_node_statement_t::true_state;
                                 clip.duration_B = tr_duration;
                             }
-                            else { clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state; }
+                            else
+                            {
+                                clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state;
+                            }
                         }
                         break;
                     }
@@ -276,7 +296,10 @@ namespace phy_engine::model
                                 clip.USRB = ::phy_engine::model::digital_node_statement_t::false_state;
                                 clip.duration_B = tr_duration;
                             }
-                            else { clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state; }
+                            else
+                            {
+                                clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state;
+                            }
                         }
                         break;
                     }
@@ -290,7 +313,10 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_B >= clip.Tsu) { clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state; }
                                 }
-                                else { clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state; }
+                                else
+                                {
+                                    clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state;
+                                }
                                 break;
                             }
                             case ::phy_engine::model::digital_node_statement_t::true_state:
@@ -299,7 +325,10 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_B >= clip.Th) { clip.inputB = ::phy_engine::model::digital_node_statement_t::true_state; }
                                 }
-                                else { clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state; }
+                                else
+                                {
+                                    clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state;
+                                }
                                 break;
                             }
                             case ::phy_engine::model::digital_node_statement_t::indeterminate_state:
@@ -312,7 +341,10 @@ namespace phy_engine::model
                                 {
                                     if(tr_duration - clip.duration_B >= clip.Tsu) { clip.inputB = ::phy_engine::model::digital_node_statement_t::false_state; }
                                 }
-                                else { clip.duration_B = tr_duration; }
+                                else
+                                {
+                                    clip.duration_B = tr_duration;
+                                }
 
                                 break;
                             }
@@ -325,9 +357,13 @@ namespace phy_engine::model
                     default: ::fast_io::unreachable();
                 }
             }
-            else { clip.inputB = node_ib->node_information.dn.state; }
+            else
+            {
+                clip.inputB = node_ib->node_information.dn.state;
+            }
 
-            auto inv = [](auto v) constexpr noexcept {
+            auto inv = [](auto v) constexpr noexcept
+            {
                 using dns = ::phy_engine::model::digital_node_statement_t;
                 switch(v)
                 {
@@ -386,5 +422,4 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<NAND>);
 }  // namespace phy_engine::model
-
 

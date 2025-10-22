@@ -22,12 +22,19 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<TRI>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<TRI>, TRI& t, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<TRI>, TRI& t, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; t.Ll = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; t.Hl = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                t.Ll = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                t.Hl = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -61,11 +68,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<TRI>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<TRI>,
-                                                                                                 TRI& t,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<TRI>,
+                                  TRI& t,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const node_i{t.pins[0].nodes};
         auto const node_en{t.pins[1].nodes};
@@ -74,11 +82,11 @@ namespace phy_engine::model
         if(node_i && node_en && node_o) [[likely]]
         {
             bool enabled{};
-            if(node_en->num_of_analog_node != 0)
+            if(node_en->num_of_analog_node != 0) { enabled = node_en->node_information.an.voltage.real() >= t.Hl; }
+            else
             {
-                enabled = node_en->node_information.an.voltage.real() >= t.Hl;
+                enabled = node_en->node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state;
             }
-            else { enabled = node_en->node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state; }
 
             if(!enabled)
             {
@@ -94,11 +102,17 @@ namespace phy_engine::model
             if(node_i->num_of_analog_node != 0)
             {
                 double const v{node_i->node_information.an.voltage.real()};
-                if(v >= t.Hl) inputState = ::phy_engine::model::digital_node_statement_t::true_state;
-                else if(v <= t.Ll) inputState = ::phy_engine::model::digital_node_statement_t::false_state;
-                else inputState = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                if(v >= t.Hl) { inputState = ::phy_engine::model::digital_node_statement_t::true_state; }
+                else if(v <= t.Ll) { inputState = ::phy_engine::model::digital_node_statement_t::false_state; }
+                else
+                {
+                    inputState = ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                }
             }
-            else { inputState = node_i->node_information.dn.state; }
+            else
+            {
+                inputState = node_i->node_information.dn.state;
+            }
 
             if(node_o->num_of_analog_node != 0)
             {
@@ -126,6 +140,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<TRI>);
-}
-
+}  // namespace phy_engine::model
 

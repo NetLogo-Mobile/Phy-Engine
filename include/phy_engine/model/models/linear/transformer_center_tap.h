@@ -13,16 +13,19 @@ namespace phy_engine::model
 
         // Voltage ratio across total secondary: n_total = Vp / Vst (S1-S2)
         double n_total{1.0};
-        double n_half{}; // computed as 2*n_total
+        double n_half{};  // computed as 2*n_total
 
         // Primary P-Q; Secondary split S1-CT and CT-S2
         ::phy_engine::model::pin pins[5]{{{u8"P"}}, {{u8"Q"}}, {{u8"S1"}}, {{u8"CT"}}, {{u8"S2"}}};
-        ::phy_engine::model::branch branches[3]{}; // kP, kH1, kH2
+        ::phy_engine::model::branch branches[3]{};  // kP, kH1, kH2
     };
 
     static_assert(::phy_engine::model::model<transformer_center_tap>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, transformer_center_tap& tx, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>,
+                                               transformer_center_tap& tx,
+                                               ::std::size_t idx,
+                                               ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
@@ -39,7 +42,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<transformer_center_tap>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, transformer_center_tap const& tx, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, transformer_center_tap const& tx, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -51,7 +55,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<transformer_center_tap>);
 
-    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, ::std::size_t idx) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>,
+                                                                        ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -71,7 +76,9 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_prepare_foundation<transformer_center_tap>);
 
-    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, transformer_center_tap const& tx, ::phy_engine::MNA::MNA& mna) noexcept
+    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>,
+                                            transformer_center_tap const& tx,
+                                            ::phy_engine::MNA::MNA& mna) noexcept
     {
         auto const node_P{tx.pins[0].nodes};
         auto const node_Q{tx.pins[1].nodes};
@@ -127,19 +134,20 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_dc<transformer_center_tap>);
 
-    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, transformer_center_tap& tx) noexcept
+    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>,
+                                                                            transformer_center_tap& tx) noexcept
     {
         return {tx.pins, 5};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<transformer_center_tap>);
 
-    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>, transformer_center_tap& tx) noexcept
+    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<transformer_center_tap>,
+                                                                                  transformer_center_tap& tx) noexcept
     {
         return {tx.branches, 3};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<transformer_center_tap>);
-}
-
+}  // namespace phy_engine::model
 

@@ -21,20 +21,30 @@ namespace phy_engine::model
         double Vth{1.0};     // V
 
         // Linearization state
-        double gm{};         // ∂Id/∂Vgs
-        double gds{};        // ∂Id/∂Vds
-        double Ieq{};        // Id - gm*Vgs - gds*Vds (drain->source)
+        double gm{};   // ∂Id/∂Vgs
+        double gds{};  // ∂Id/∂Vds
+        double Ieq{};  // Id - gm*Vgs - gds*Vds (drain->source)
     };
 
     static_assert(::phy_engine::model::model<nmosfet>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<nmosfet>, nmosfet& m, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<nmosfet>, nmosfet& m, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; m.Kp = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; m.lambda = vi.d; return true;
-            case 2: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; m.Vth = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                m.Kp = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                m.lambda = vi.d;
+                return true;
+            case 2:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                m.Vth = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -42,7 +52,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<nmosfet>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<nmosfet>, nmosfet const& m, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<nmosfet>, nmosfet const& m, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -83,7 +94,9 @@ namespace phy_engine::model
             double const Vgs{Vg - Vs};
             double const Vds{Vd - Vs};
 
-            double Id{}; m.gm = 0.0; m.gds = 0.0;
+            double Id{};
+            m.gm = 0.0;
+            m.gds = 0.0;
             double const Vov{Vgs - m.Vth};
             if(Vov <= 0.0)
             {
@@ -129,7 +142,10 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_dc<nmosfet>);
 
-    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<nmosfet>, nmosfet const& m, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double omega) noexcept
+    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<nmosfet>,
+                                            nmosfet const& m,
+                                            ::phy_engine::MNA::MNA& mna,
+                                            [[maybe_unused]] double omega) noexcept
     {
         auto const node_D{m.pins[0].nodes};
         auto const node_G{m.pins[1].nodes};
@@ -160,7 +176,5 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<nmosfet>);
 
-    
-}
-
+}  // namespace phy_engine::model
 

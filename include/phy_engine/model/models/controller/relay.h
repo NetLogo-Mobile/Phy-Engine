@@ -22,12 +22,19 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<relay>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<relay>, relay& r, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<relay>, relay& r, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; r.Von = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; r.Voff = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                r.Von = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                r.Voff = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -35,7 +42,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<relay>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<relay>, relay const& r, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<relay>, relay const& r, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -110,6 +118,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<relay>);
-}
-
+}  // namespace phy_engine::model
 

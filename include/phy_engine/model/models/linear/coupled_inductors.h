@@ -18,19 +18,31 @@ namespace phy_engine::model
         double L2{1e-3};
         double k{0.99};
 
-        ::phy_engine::model::pin pins[4]{{{u8"P1"}}, {{u8"P2"}}, {{u8"S1"}}, {{u8"S2"}}}; // winding1 P1-P2, winding2 S1-S2
-        ::phy_engine::model::branch branches[2]{}; // k1 for primary, k2 for secondary
+        ::phy_engine::model::pin pins[4]{{{u8"P1"}}, {{u8"P2"}}, {{u8"S1"}}, {{u8"S2"}}};  // winding1 P1-P2, winding2 S1-S2
+        ::phy_engine::model::branch branches[2]{};                                         // k1 for primary, k2 for secondary
     };
 
     static_assert(::phy_engine::model::model<coupled_inductors>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors& kL, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                               coupled_inductors& kL,
+                                               ::std::size_t idx,
+                                               ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; kL.L1 = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; kL.L2 = vi.d; return true;
-            case 2: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; kL.k = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                kL.L1 = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                kL.L2 = vi.d;
+                return true;
+            case 2:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                kL.k = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -38,7 +50,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<coupled_inductors>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors const& kL, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors const& kL, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -52,7 +65,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<coupled_inductors>);
 
-    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, ::std::size_t idx) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                                                        ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -66,7 +80,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<coupled_inductors>);
 
-    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors const& kL, ::phy_engine::MNA::MNA& mna) noexcept
+    inline constexpr bool
+        iterate_dc_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors const& kL, ::phy_engine::MNA::MNA& mna) noexcept
     {
         // In DC, inductors behave as short circuits
         auto const p1{kL.pins[0].nodes};
@@ -93,7 +108,10 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_dc<coupled_inductors>);
 
-    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors const& kL, ::phy_engine::MNA::MNA& mna, double omega) noexcept
+    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                            coupled_inductors const& kL,
+                                            ::phy_engine::MNA::MNA& mna,
+                                            double omega) noexcept
     {
         // Z-matrix: [V1 V2]^T = j*omega * [[L1 M],[M L2]] * [I1 I2]^T
         auto const p1{kL.pins[0].nodes};
@@ -131,19 +149,20 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_ac<coupled_inductors>);
 
-    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors& kL) noexcept
+    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                                                            coupled_inductors& kL) noexcept
     {
         return {kL.pins, 4};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<coupled_inductors>);
 
-    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>, coupled_inductors& kL) noexcept
+    inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                                                                  coupled_inductors& kL) noexcept
     {
         return {kL.branches, 2};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<coupled_inductors>);
-}
-
+}  // namespace phy_engine::model
 

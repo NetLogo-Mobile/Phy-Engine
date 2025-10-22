@@ -51,7 +51,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_prepare_foundation<full_bridge_rectifier>);
 
-    inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>, full_bridge_rectifier& r, ::phy_engine::MNA::MNA& mna) noexcept
+    inline constexpr bool
+        iterate_dc_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>, full_bridge_rectifier& r, ::phy_engine::MNA::MNA& mna) noexcept
     {
         iterate_dc_define(::phy_engine::model::model_reserve_type<PN_junction>, r.D1, mna);
         iterate_dc_define(::phy_engine::model::model_reserve_type<PN_junction>, r.D2, mna);
@@ -62,7 +63,10 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_dc<full_bridge_rectifier>);
 
-    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>, full_bridge_rectifier& r, ::phy_engine::MNA::MNA& mna, double omega) noexcept
+    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>,
+                                            full_bridge_rectifier& r,
+                                            ::phy_engine::MNA::MNA& mna,
+                                            double omega) noexcept
     {
         iterate_ac_define(::phy_engine::model::model_reserve_type<PN_junction>, r.D1, mna, omega);
         iterate_ac_define(::phy_engine::model::model_reserve_type<PN_junction>, r.D2, mna, omega);
@@ -73,7 +77,10 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_ac<full_bridge_rectifier>);
 
-    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>, full_bridge_rectifier& r, [[maybe_unused]] double nlaststep, [[maybe_unused]] double nstep) noexcept
+    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>,
+                                                 full_bridge_rectifier& r,
+                                                 [[maybe_unused]] double nlaststep,
+                                                 [[maybe_unused]] double nstep) noexcept
     {
         step_changed_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, r.D1, nlaststep, nstep);
         step_changed_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, r.D2, nlaststep, nstep);
@@ -82,12 +89,12 @@ namespace phy_engine::model
         return true;
     }
 
-    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>, full_bridge_rectifier& r) noexcept
+    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<full_bridge_rectifier>,
+                                                                            full_bridge_rectifier& r) noexcept
     {
         return {r.pins, 4};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<full_bridge_rectifier>);
-}
-
+}  // namespace phy_engine::model
 

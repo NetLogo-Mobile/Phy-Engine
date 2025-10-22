@@ -16,9 +16,9 @@ namespace phy_engine::model
         double Vl{0.0};
         double freq{1e3};
         double duty{0.5};
-        double phase{0.0}; // radians
-        double tr{0.0};    // rise time
-        double tf{0.0};    // fall time
+        double phase{0.0};  // radians
+        double tr{0.0};     // rise time
+        double tf{0.0};     // fall time
 
         ::phy_engine::model::pin pins[2]{{{u8"+"}}, {{u8"-"}}};
         ::phy_engine::model::branch branches{};
@@ -26,17 +26,39 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<pulse_gen>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<pulse_gen>, pulse_gen& g, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<pulse_gen>, pulse_gen& g, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.Vh = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.Vl = vi.d; return true;
-            case 2: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.freq = vi.d; return true;
-            case 3: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.duty = vi.d; return true;
-            case 4: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.phase = vi.d; return true;
-            case 5: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.tr = vi.d; return true;
-            case 6: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; g.tf = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.Vh = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.Vl = vi.d;
+                return true;
+            case 2:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.freq = vi.d;
+                return true;
+            case 3:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.duty = vi.d;
+                return true;
+            case 4:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.phase = vi.d;
+                return true;
+            case 5:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.tr = vi.d;
+                return true;
+            case 6:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                g.tf = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -44,7 +66,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<pulse_gen>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<pulse_gen>, pulse_gen const& g, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<pulse_gen>, pulse_gen const& g, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -80,14 +103,15 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<pulse_gen>);
 
-    inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<pulse_gen>, pulse_gen const& g, ::phy_engine::MNA::MNA& mna, double tTime) noexcept
+    inline constexpr bool
+        iterate_tr_define(::phy_engine::model::model_reserve_type_t<pulse_gen>, pulse_gen const& g, ::phy_engine::MNA::MNA& mna, double tTime) noexcept
     {
         auto const node_P{g.pins[0].nodes};
         auto const node_M{g.pins[1].nodes};
         if(node_P && node_M) [[likely]]
         {
             double const T{1.0 / g.freq};
-            double const t0{tTime + g.phase/(2.0*::std::numbers::pi)/g.freq};
+            double const t0{tTime + g.phase / (2.0 * ::std::numbers::pi) / g.freq};
             double const t{::std::fmod(t0, T)};
             double const Ton{g.duty * T};
             double val{};
@@ -96,10 +120,7 @@ namespace phy_engine::model
                 double const k{(g.Vh - g.Vl) / ::std::max(g.tr, 1e-30)};
                 val = g.Vl + k * t;
             }
-            else if(t < Ton - g.tf)
-            {
-                val = g.Vh;
-            }
+            else if(t < Ton - g.tf) { val = g.Vh; }
             else if(t < Ton)
             {
                 double const k{(g.Vh - g.Vl) / ::std::max(g.tf, 1e-30)};
@@ -134,4 +155,4 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<pulse_gen>);
-}
+}  // namespace phy_engine::model

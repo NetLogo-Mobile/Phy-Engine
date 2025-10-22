@@ -22,12 +22,19 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::model<comparator>);
 
-    inline constexpr bool set_attribute_define(::phy_engine::model::model_reserve_type_t<comparator>, comparator& c, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
+    inline constexpr bool
+        set_attribute_define(::phy_engine::model::model_reserve_type_t<comparator>, comparator& c, ::std::size_t idx, ::phy_engine::model::variant vi) noexcept
     {
         switch(idx)
         {
-            case 0: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; c.Ll = vi.d; return true;
-            case 1: if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] return false; c.Hl = vi.d; return true;
+            case 0:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                c.Ll = vi.d;
+                return true;
+            case 1:
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                c.Hl = vi.d;
+                return true;
             default: return false;
         }
         return false;
@@ -35,7 +42,8 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_set_attribute<comparator>);
 
-    inline constexpr ::phy_engine::model::variant get_attribute_define(::phy_engine::model::model_reserve_type_t<comparator>, comparator const& c, ::std::size_t idx) noexcept
+    inline constexpr ::phy_engine::model::variant
+        get_attribute_define(::phy_engine::model::model_reserve_type_t<comparator>, comparator const& c, ::std::size_t idx) noexcept
     {
         switch(idx)
         {
@@ -61,11 +69,12 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute_name<comparator>);
 
-    inline constexpr ::phy_engine::digital::need_operate_analog_node_t update_digital_clk_define(::phy_engine::model::model_reserve_type_t<comparator>,
-                                                                                                 comparator& c,
-                                                                                                 ::phy_engine::digital::digital_node_update_table& table,
-                                                                                                 double /*tr_duration*/,
-                                                                                                 ::phy_engine::model::digital_update_method_t /*method*/) noexcept
+    inline constexpr ::phy_engine::digital::need_operate_analog_node_t
+        update_digital_clk_define(::phy_engine::model::model_reserve_type_t<comparator>,
+                                  comparator& c,
+                                  ::phy_engine::digital::digital_node_update_table& table,
+                                  double /*tr_duration*/,
+                                  ::phy_engine::model::digital_update_method_t /*method*/) noexcept
     {
         auto const node_A{c.pins[0].nodes};
         auto const node_B{c.pins[1].nodes};
@@ -79,12 +88,15 @@ namespace phy_engine::model
             if(node_o->num_of_analog_node != 0)
             {
                 if(vA >= vB) { return {c.Hl, node_o}; }
-                else { return {c.Ll, node_o}; }
+                else
+                {
+                    return {c.Ll, node_o};
+                }
             }
             else
             {
-                node_o->node_information.dn.state = vA >= vB ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                             : ::phy_engine::model::digital_node_statement_t::false_state;
+                node_o->node_information.dn.state =
+                    vA >= vB ? ::phy_engine::model::digital_node_statement_t::true_state : ::phy_engine::model::digital_node_statement_t::false_state;
                 table.tables.insert(node_o);
             }
         }
@@ -99,6 +111,5 @@ namespace phy_engine::model
     }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<comparator>);
-}
-
+}  // namespace phy_engine::model
 

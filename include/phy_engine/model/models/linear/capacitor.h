@@ -12,10 +12,10 @@ namespace phy_engine::model
         inline static constexpr ::fast_io::u8string_view identification_name{u8"C"};
 
         double m_kZimag{1e-5};
-        
+
         // Trapezoidal integration state
-        double m_tr_hist_current{};   // history current (Norton equivalent) used by TR: i = g*v + m_tr_hist_current
-        double m_tr_prev_g{};         // g used in the previous step (2*C/dt)
+        double m_tr_hist_current{};  // history current (Norton equivalent) used by TR: i = g*v + m_tr_hist_current
+        double m_tr_prev_g{};        // g used in the previous step (2*C/dt)
 
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
     };
@@ -62,8 +62,7 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::has_get_attribute<capacitor>);
 
-    inline constexpr ::fast_io::u8string_view
-        get_attribute_name_define(::phy_engine::model::model_reserve_type_t<capacitor>, ::std::size_t n) noexcept
+    inline constexpr ::fast_io::u8string_view get_attribute_name_define(::phy_engine::model::model_reserve_type_t<capacitor>, ::std::size_t n) noexcept
     {
         switch(n)
         {
@@ -128,10 +127,7 @@ namespace phy_engine::model
 
             // Update history current to the value for this step using last and new conductances:
             // h^n = -(g_new + g_prev)*v_prev - h^{n-1}; if no previous step, assume i^0 ≈ 0 => h^0 = -g_new*v_prev
-            if(c.m_tr_prev_g > 0.0)
-            {
-                c.m_tr_hist_current = -(g_new + c.m_tr_prev_g) * v_prev - c.m_tr_hist_current;
-            }
+            if(c.m_tr_prev_g > 0.0) { c.m_tr_hist_current = -(g_new + c.m_tr_prev_g) * v_prev - c.m_tr_hist_current; }
             else
             {
                 c.m_tr_hist_current = -g_new * v_prev;
@@ -150,9 +146,7 @@ namespace phy_engine::model
         return true;
     }
 
-    inline constexpr bool iterate_trop_define(::phy_engine::model::model_reserve_type_t<capacitor>,
-                                              capacitor& /*c*/,
-                                              ::phy_engine::MNA::MNA& /*mna*/) noexcept
+    inline constexpr bool iterate_trop_define(::phy_engine::model::model_reserve_type_t<capacitor>, capacitor& /*c*/, ::phy_engine::MNA::MNA& /*mna*/) noexcept
     {
         // Capacitor is open-circuit for transient operating point; no stamp needed
         return true;
