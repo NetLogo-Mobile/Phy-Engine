@@ -18,7 +18,9 @@ endif()
 file(GLOB_RECURSE test_srcs "${CMAKE_SOURCE_DIR}/**.cpp")
 
 include_directories(${CMAKE_SOURCE_DIR}/../include)
-link_libraries(ntdll)
+if (WIN32)
+    link_libraries(ntdll)
+endif()
 
 foreach(a_test IN LISTS test_srcs)
     get_filename_component(filename ${a_test} NAME_WE)
