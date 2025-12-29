@@ -1,6 +1,8 @@
 ﻿#pragma once
 #include <cstdint>
+#include <limits>
 #include <utility>
+#include <vector>
 #include <fast_io/fast_io_dsal/vector.h>
 
 #ifdef PHY_ENGINE_USE_MKL
@@ -18,6 +20,10 @@
 #include "analyze.h"
 #include "analyzer/impl.h"
 #include "digital/update_table.h"
+
+#if defined(__CUDA__) && !defined(__CUDA_ARCH__)
+    #include "solver/cuda_sparse_lu.h"
+#endif
 
 namespace phy_engine
 {
@@ -52,10 +58,16 @@ namespace phy_engine
         using smXcd = ::Eigen::SparseMatrix<::std::complex<double>>;
         using svXcd = ::Eigen::SparseVector<::std::complex<double>>;
 #ifdef PHY_ENGINE_USE_MKL
-        ::Eigen::PardisoLU<smXcd> solver{}; //  large-scale hybrid circuit
+        ::Eigen::PardisoLU<smXcd> solver{};  //  large-scale hybrid circuit
 #else
         ::Eigen::SparseLU<smXcd> solver{};
 #endif
+
+        inline static constexpr ::std::size_t cuda_node_threshold{100000};
+#if defined(__CUDA__) && !defined(__CUDA_ARCH__)
+        ::phy_engine::solver::cuda_sparse_lu cuda_solver{};
+#endif
+
         double tr_duration{};  // TR
         double last_step{};    // TR
 
@@ -89,10 +101,7 @@ namespace phy_engine
                     double t_time{};
 
                     auto const t_step{analyzer_setting.tr.t_step};
-                    if (t_step <= 0.0) [[unlikely]]
-                    {
-                        return false;
-                    }
+                    if(t_step <= 0.0) [[unlikely]] { return false; }
 
                     auto const t_stop{analyzer_setting.tr.t_stop};
 
@@ -542,6 +551,71 @@ namespace phy_engine
                     // no solution
                     return true;
                 }
+
+#if defined(__CUDA__) && !defined(__CUDA_ARCH__)
+                if(node_counter >= cuda_node_threshold && cuda_solver.is_available())
+                {
+                    if(row_size > static_cast<::std::size_t>(::std::numeric_limits<int>::max())) [[unlikely]] { return false; }
+
+                    ::std::size_t nnz_size{};
+                    for(auto const& row: mna.A) { nnz_size += row.second.size(); }
+                    if(nnz_size > static_cast<::std::size_t>(::std::numeric_limits<int>::max())) [[unlikely]] { return false; }
+
+                    ::std::vector<int> csr_row_ptr(row_size + 1);
+                    ::std::vector<int> csr_col_ind{};
+                    ::std::vector<::std::complex<double>> csr_values{};
+                    csr_col_ind.reserve(nnz_size);
+                    csr_values.reserve(nnz_size);
+
+                    ::std::size_t nnz_counter{};
+                    csr_row_ptr[0] = 0;
+
+                    auto it{mna.A.begin()};
+                    auto const ed{mna.A.end()};
+                    for(::std::size_t r{}; r != row_size; ++r)
+                    {
+                        if(it != ed && it->first == r)
+                        {
+                            for(auto const& [col, v]: it->second)
+                            {
+                                csr_col_ind.push_back(static_cast<int>(col));
+                                csr_values.push_back(v);
+                                ++nnz_counter;
+                            }
+                            ++it;
+                        }
+                        csr_row_ptr[r + 1] = static_cast<int>(nnz_counter);
+                    }
+
+                    ::std::vector<::std::complex<double>> b(row_size, {});
+                    for(auto const& [idx, v]: mna.Z)
+                    {
+                        if(idx >= row_size) [[unlikely]] { return false; }
+                        b[idx] = v;
+                    }
+
+                    ::std::vector<::std::complex<double>> x(row_size);
+
+                    if(!cuda_solver.solve_csr(static_cast<int>(row_size),
+                                              static_cast<int>(nnz_size),
+                                              csr_row_ptr.data(),
+                                              csr_col_ind.data(),
+                                              csr_values.data(),
+                                              b.data(),
+                                              x.data())) [[unlikely]]
+                    {
+                        return false;
+                    }
+
+                    ::std::size_t i{};
+                    for(; i < mna.node_size; ++i) { size_t_to_node_p.index_unchecked(i)->node_information.an.voltage = x[i]; }
+                    nl.ground_node.node_information.an.voltage = {};
+                    ::std::size_t c{};
+                    for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p.index_unchecked(c++)->current = x[i]; }
+
+                    return true;
+                }
+#endif
 
                 // mna A matrix
                 smXcd temp_A{static_cast<::Eigen::Index>(row_size), static_cast<::Eigen::Index>(row_size)};
