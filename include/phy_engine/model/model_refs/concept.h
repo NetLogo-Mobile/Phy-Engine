@@ -147,7 +147,7 @@ namespace phy_engine::model
         /* In some case, no need to pass param `t` to `get_attribute_name_define`
          */
         template <typename mod>
-        concept has_reduced_get_attribute_name = requires () {
+        concept has_reduced_get_attribute_name = requires() {
             { get_attribute_name_define(model_reserve_type<::std::remove_cvref_t<mod>>, ::std::size_t{}) } -> ::std::same_as<::fast_io::u8string_view>;
         };
 
@@ -193,13 +193,27 @@ namespace phy_engine::model
 
     }  // namespace defines
 
+    namespace details
+    {
+        template <typename mod, typename = void>
+        struct model_check : ::std::false_type
+        {
+        };
+
+        template <typename mod>
+        struct model_check<mod,
+                           ::std::void_t<decltype(::std::remove_cvref_t<mod>::model_name),
+                                         decltype(::std::remove_cvref_t<mod>::device_type),
+                                         decltype(::std::remove_cvref_t<mod>::identification_name)>> :
+            ::std::bool_constant<
+                ::std::is_same_v<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::model_name)>, ::fast_io::u8string_view>&& ::std::
+                    is_same_v<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::device_type)>, ::phy_engine::model::model_device_type>&& ::std::
+                        is_same_v<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::identification_name)>, ::fast_io::u8string_view>>
+        {
+        };
+    }  // namespace details
+
     template <typename mod>
-    concept model = requires(mod&& t) {
-        // constexpr static value
-        requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::model_name)>, ::fast_io::u8string_view>;
-        // requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::type)>, ::phy_engine::model::model_type>;
-        requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::device_type)>, ::phy_engine::model::model_device_type>;
-        requires ::std::same_as<::std::remove_cvref_t<decltype(::std::remove_cvref_t<mod>::identification_name)>, ::fast_io::u8string_view>;
-    };
+    concept model = details::model_check<mod>::value;
 
 }  // namespace phy_engine::model
