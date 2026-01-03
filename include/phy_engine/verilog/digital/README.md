@@ -31,14 +31,14 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 
 ### Preprocessor / Compilation Units
 - [ ] `` `include `` (file loading, include search paths)
-- [ ] Macro arguments (function-like macros)
-- [ ] Better `line`/column mapping through preprocessing (for diagnostics)
+- [x] Macro arguments (function-like macros) (basic: `` `NAME(...) ``; no stringify/paste/line-continuation)
+- [x] Better `line`/column mapping through preprocessing (for diagnostics)
 
 ### SystemVerilog / Elaboration
-- [ ] `parameter` / `localparam` and parameterized instantiation `#(...)`
-- [ ] `generate` / `genvar` / `for-generate`
-- [ ] Hierarchical names (e.g. `u0.sig`, `top.u1.sub.x`)
-- [ ] `function` / `task` definitions and calls
+- [x] `parameter` / `localparam` and parameterized instantiation `#(...)` (subset: const-int params only; params modeled as `[31:0]`)
+- [x] `generate` / `genvar` / `for-generate` (subset: for-generate that instantiates modules; genvar treated as compile-time constant)
+- [x] Hierarchical names (subset: `inst.port` resolves to the parent-side connection expression for named port connections)
+- [x] `function` / `task` definitions and calls (subset: single-expression functions + single-assignment tasks)
 
 ### Expressions (coverage & semantics)
 - [ ] Modulo `%`
@@ -74,4 +74,3 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 
 - This implementation is meant to be “good enough” for embedded digital behavior in circuits, not a full HDL toolchain.
 - If you add features, prefer adding a focused test under `test/0007.verilog/` that demonstrates the expected behavior.
-
