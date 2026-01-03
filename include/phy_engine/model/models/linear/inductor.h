@@ -12,6 +12,7 @@ namespace phy_engine::model
         inline static constexpr ::fast_io::u8string_view identification_name{u8"I"};
 
         double m_kZimag{1e-5};
+        double m_tr_step{};  // dt for TR (set by step_changed_tr)
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
         ::phy_engine::model::branch branches{};
     };
@@ -134,6 +135,17 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_ac<inductor>);
 
+    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<inductor>,
+                                                 inductor& i,
+                                                 [[maybe_unused]] double nlaststep,
+                                                 double nstep) noexcept
+    {
+        i.m_tr_step = nstep;
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_step_changed_tr<inductor>);
+
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<inductor>,
                                             inductor& i,
                                             ::phy_engine::MNA::MNA& mna,
@@ -148,7 +160,8 @@ namespace phy_engine::model
             double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
             double const i_prev{i.branches.current.real()};
 
-            if(t_time <= 0.0)
+            double const dt{i.m_tr_step};
+            if(dt <= 0.0)
             {
                 // No dynamic contribution at TROP: treat as short (DC)
                 auto const k{i.branches.index};
@@ -161,7 +174,7 @@ namespace phy_engine::model
 
             // Trapezoidal integrator companion model (Thevenin):
             // req = 2*L/dt, Ueq = -v_prev - req*i_prev
-            double const req{2.0 * i.m_kZimag / t_time};
+            double const req{2.0 * i.m_kZimag / dt};
             double const Ueq{-v_prev - req * i_prev};
 
             auto const k{i.branches.index};

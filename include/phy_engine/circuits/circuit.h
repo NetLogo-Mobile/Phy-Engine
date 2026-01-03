@@ -95,18 +95,15 @@ namespace phy_engine
 
                     break;
                 }
-                case ::phy_engine::analyze_type::TR: [[fallthrough]];
-                case ::phy_engine::analyze_type::TROP:
+                case ::phy_engine::analyze_type::TR:
                 {
-                    double t_time{};
-
                     auto const t_step{analyzer_setting.tr.t_step};
                     if(t_step <= 0.0) [[unlikely]] { return false; }
 
                     auto const t_stop{analyzer_setting.tr.t_stop};
 
                     prepare();
-                    if(last_step != t_step) [[unlikely]]
+                    if(last_step != t_step)
                     {
                         for(auto& i: nl.models)
                         {
@@ -120,12 +117,51 @@ namespace phy_engine
                         last_step = t_step;
                     }
 
-                    for(; t_time < t_stop; t_time += t_step)
+                    auto const end_time{tr_duration + t_stop};
+                    for(; tr_duration < end_time; tr_duration += t_step)
                     {
                         if(!solve()) [[unlikely]] { return false; }
-
-                        tr_duration += t_step;
                     }
+                    break;
+                }
+                case ::phy_engine::analyze_type::TROP:
+                {
+                    auto const t_step{analyzer_setting.tr.t_step};
+                    if(t_step <= 0.0) [[unlikely]] { return false; }
+
+                    auto const t_stop{analyzer_setting.tr.t_stop};
+
+                    // 1) Transient operating point at the current time (capacitor open, inductor short, etc.).
+                    prepare();
+                    if(!solve()) [[unlikely]] { return false; }
+
+                    // 2) Continue with normal transient from that operating point.
+                    auto const saved_at{at};
+                    at = ::phy_engine::analyze_type::TR;
+                    has_prepare = false;
+                    prepare();
+
+                    if(last_step != t_step)
+                    {
+                        for(auto& i: nl.models)
+                        {
+                            for(auto c{i.begin}; c != i.curr; ++c)
+                            {
+                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+                                if(!c->ptr->step_changed_tr(last_step, t_step)) [[unlikely]] { ::fast_io::fast_terminate(); };
+                            }
+                        }
+
+                        last_step = t_step;
+                    }
+
+                    auto const end_time{tr_duration + t_stop};
+                    for(; tr_duration < end_time; tr_duration += t_step)
+                    {
+                        if(!solve()) [[unlikely]] { at = saved_at; return false; }
+                    }
+
+                    at = saved_at;
                     break;
                 }
                 default:
@@ -191,6 +227,7 @@ namespace phy_engine
             tr_duration = 0.0;
 
             digital_out.clear();
+            digital_update_tables.tables.clear();
 
             for(auto i: size_t_to_node_p) { i->node_information.an.voltage = {}; }
             node_counter = 0;
@@ -206,10 +243,7 @@ namespace phy_engine
         // private:
         void prepare() noexcept
         {
-            if(!has_prepare && (at == ::phy_engine::analyze_type::TR || at == ::phy_engine::analyze_type::TROP)) [[unlikely]]
-            {
-                last_step = analyzer_setting.tr.t_step;
-            }
+            digital_update_tables.tables.clear();
 
             // node
             node_counter = 0;
@@ -516,7 +550,7 @@ namespace phy_engine
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                            if(!c->ptr->iterate_tr(mna, analyzer_setting.tr.t_step)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!c->ptr->iterate_tr(mna, tr_duration)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 

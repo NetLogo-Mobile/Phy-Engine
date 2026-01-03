@@ -16,6 +16,7 @@ namespace phy_engine::model
         // Trapezoidal integration state
         double m_tr_hist_current{};  // history current (Norton equivalent) used by TR: i = g*v + m_tr_hist_current
         double m_tr_prev_g{};        // g used in the previous step (2*C/dt)
+        double m_tr_step{};          // dt for TR (set by step_changed_tr)
 
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
     };
@@ -102,6 +103,19 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_ac<capacitor>);
 
+    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>,
+                                                 capacitor& c,
+                                                 [[maybe_unused]] double nlaststep,
+                                                 double nstep) noexcept
+    {
+        c.m_tr_step = nstep;
+        c.m_tr_prev_g = 0.0;
+        c.m_tr_hist_current = 0.0;
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_step_changed_tr<capacitor>);
+
     inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<capacitor>,
                                             capacitor& c,
                                             ::phy_engine::MNA::MNA& mna,
@@ -115,15 +129,12 @@ namespace phy_engine::model
             // previous step voltage across capacitor (node_0 - node_1)
             double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
 
-            if(t_time <= 0.0)
-            {
-                // No contribution at TROP (capacitor open circuit)
-                return true;
-            }
+            double const dt{c.m_tr_step};
+            if(dt <= 0.0) { return true; }
 
             // Trapezoidal integrator companion model (Norton):
             // geq = 2*C/dt, Ieq = history current h^n
-            double const g_new{2.0 * c.m_kZimag / t_time};
+            double const g_new{2.0 * c.m_kZimag / dt};
 
             // Update history current to the value for this step using last and new conductances:
             // h^n = -(g_new + g_prev)*v_prev - h^{n-1}; if no previous step, assume i^0 ≈ 0 => h^0 = -g_new*v_prev
