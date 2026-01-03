@@ -844,7 +844,7 @@ namespace phy_engine
                         csr_row_ptr[r + 1] = static_cast<int>(nnz_counter);
                     }
 
-                    ::std::vector<::std::complex<double>> b(row_size, {});
+                    ::std::vector<::std::complex<double>> b(row_size);
                     for(auto const& [idx, v]: mna.Z)
                     {
                         if(idx >= row_size) [[unlikely]] { return false; }
