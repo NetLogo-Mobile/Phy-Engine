@@ -29,11 +29,12 @@ namespace phy_engine::verilog::digital
     //   - `always @*` / `always @(*)` as combinational (`if`/`case`/begin-end; blocking assignment `=`)
     //   - `always @(a or b or c)` / `always @(a, b, c)` accepted as combinational (sensitivity list is parsed but currently not used for scheduling)
     //   - `always @(posedge/negedge clk)` as sequential (nonblocking assignment `<=`)
-    // - Bit-select: `a[3]` (vector expressions are not supported; use bit-select on both sides)
+    // - Bit/part-select: `a[3]`, `a[msb:lsb]`
+    // - Concatenation: `{a, b, c}`, `{N{...}}`
     // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
     // - Module instantiation: named/positional port connections; vector connections require matching widths
     //
-    // Not supported: hierarchical name references, part-select/concat, generate, tasks/functions, `include`, macro args, full event lists, strength,
+    // Not supported: hierarchical name references, generate, tasks/functions, `include`, macro args, full event lists, strength,
     // multiple-driver resolution.
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
@@ -1339,23 +1340,63 @@ namespace phy_engine::verilog::digital
                     ::fast_io::u8string name{t.text};
                     p->consume();
 
-                    // bit-select: a[3]
+                    // bit/part-select: a[3], a[msb:lsb]
                     if(p->accept_sym(u8'['))
                     {
-                        int idx{};
+                        int msb{};
                         auto const& ti{p->peek()};
-                        if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx))
+                        if(ti.kind != token_kind::number || !parse_dec_int(ti.text, msb))
                         {
-                            p->err(ti, u8"expected constant integer bit-select index");
+                            p->err(ti, u8"expected constant integer bit/part-select index");
                         }
                         else { p->consume(); }
+
+                        bool is_part_select{};
+                        int lsb{msb};
+                        if(p->accept_sym(u8':'))
+                        {
+                            is_part_select = true;
+                            auto const& tj{p->peek()};
+                            if(tj.kind != token_kind::number || !parse_dec_int(tj.text, lsb))
+                            {
+                                p->err(tj, u8"expected constant integer after ':' in part-select");
+                            }
+                            else { p->consume(); }
+                        }
+
                         if(!p->accept_sym(u8']')) { p->err(p->peek(), u8"expected ']'"); }
 
+                        if(!is_part_select)
+                        {
                         return make_scalar(add_node({.kind = expr_kind::signal,
                                                      .signal = get_or_create_vector_bit(*m,
                                                                                         ::fast_io::u8string_view{name.data(), name.size()},
-                                                                                        idx,
+                                                                                        msb,
                                                                                         false)}));
+                        }
+
+                        ::fast_io::vector<::std::size_t> bits{};
+                        ::std::size_t const w{static_cast<::std::size_t>(msb >= lsb ? (msb - lsb + 1) : (lsb - msb + 1))};
+                        bits.reserve(w);
+
+                        if(msb >= lsb)
+                        {
+                            for(int idx{msb}; idx >= lsb; --idx)
+                            {
+                                auto const sig{get_or_create_vector_bit(*m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false)};
+                                bits.push_back(add_node({.kind = expr_kind::signal, .signal = sig}));
+                            }
+                        }
+                        else
+                        {
+                            for(int idx{msb}; idx <= lsb; ++idx)
+                            {
+                                auto const sig{get_or_create_vector_bit(*m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false)};
+                                bits.push_back(add_node({.kind = expr_kind::signal, .signal = sig}));
+                            }
+                        }
+
+                        return make_vector(::std::move(bits));
                     }
 
                     auto it{m->vectors.find(name)};
@@ -1389,6 +1430,77 @@ namespace phy_engine::verilog::digital
                     roots.resize(lit_bits.size());
                     for(::std::size_t i{}; i < lit_bits.size(); ++i) { roots.index_unchecked(i) = make_literal(lit_bits.index_unchecked(i)); }
                     return make_vector(::std::move(roots));
+                }
+                if(t.kind == token_kind::symbol && is_sym(t.text, u8'{'))
+                {
+                    p->consume();
+
+                    auto parse_concat_list = [&]() noexcept -> ::fast_io::vector<::std::size_t>
+                    {
+                        ::fast_io::vector<::std::size_t> bits{};
+                        if(p->accept_sym(u8'}'))
+                        {
+                            p->err(p->peek(), u8"empty concatenation is not supported");
+                            bits.push_back(make_literal(logic_t::indeterminate_state));
+                            return bits;
+                        }
+
+                        for(;;)
+                        {
+                            auto const e{parse_expr()};
+                            if(e.is_vector)
+                            {
+                                bits.reserve(bits.size() + e.vector_roots.size());
+                                for(auto const r: e.vector_roots) { bits.push_back(r); }
+                            }
+                            else { bits.push_back(e.scalar_root); }
+
+                            if(p->accept_sym(u8',')) { continue; }
+                            break;
+                        }
+
+                        if(!p->accept_sym(u8'}')) { p->err(p->peek(), u8"expected '}' to close concatenation"); }
+                        return bits;
+                    };
+
+                    bool is_replication{};
+                    int rep_count{};
+                    auto const& t_count{p->peek()};
+                    if(t_count.kind == token_kind::number)
+                    {
+                        if(p->pos + 1 < p->toks->size())
+                        {
+                            auto const& t_after{p->toks->index_unchecked(p->pos + 1)};
+                            if(t_after.kind == token_kind::symbol && is_sym(t_after.text, u8'{')) { is_replication = true; }
+                        }
+                    }
+
+                    if(is_replication)
+                    {
+                        if(!parse_dec_int(t_count.text, rep_count) || rep_count < 0)
+                        {
+                            p->err(t_count, u8"expected non-negative integer replication count");
+                            rep_count = 0;
+                        }
+                        p->consume();  // count
+
+                        if(!p->accept_sym(u8'{')) { p->err(p->peek(), u8"expected '{' after replication count"); }
+                        auto const inner_bits{parse_concat_list()};  // consumes inner '}'
+                        if(!p->accept_sym(u8'}')) { p->err(p->peek(), u8"expected '}' to close replication"); }
+
+                        if(rep_count <= 0 || inner_bits.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state)); }
+
+                        ::fast_io::vector<::std::size_t> out{};
+                        out.reserve(inner_bits.size() * static_cast<::std::size_t>(rep_count));
+                        for(int i{}; i < rep_count; ++i)
+                        {
+                            for(auto const r: inner_bits) { out.push_back(r); }
+                        }
+                        return make_vector(::std::move(out));
+                    }
+
+                    auto bits{parse_concat_list()};  // consumes outer '}'
+                    return make_vector(::std::move(bits));
                 }
                 if(t.kind == token_kind::symbol && is_sym(t.text, u8'('))
                 {
@@ -1526,16 +1638,65 @@ namespace phy_engine::verilog::digital
 
             if(p.accept_sym(u8'['))
             {
-                int idx{};
+                int msb{};
                 auto const& ti{p.peek()};
-                if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx))
+                if(ti.kind != token_kind::number || !parse_dec_int(ti.text, msb))
                 {
-                    p.err(ti, u8"expected constant integer bit-select index");
+                    p.err(ti, u8"expected constant integer bit/part-select index");
                 }
                 else { p.consume(); }
+
+                bool is_part_select{};
+                int lsb{msb};
+                if(p.accept_sym(u8':'))
+                {
+                    is_part_select = true;
+                    auto const& tj{p.peek()};
+                    if(tj.kind != token_kind::number || !parse_dec_int(tj.text, lsb))
+                    {
+                        p.err(tj, u8"expected constant integer after ':' in part-select");
+                    }
+                    else { p.consume(); }
+                }
+
                 if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
-                out.is_vector = false;
-                out.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg);
+
+                if(!is_part_select)
+                {
+                    out.is_vector = false;
+                    out.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, msb, mark_reg);
+                    return true;
+                }
+
+                if(!allow_vector) { p.err(p.peek(), u8"part-select lvalue is not allowed here"); }
+
+                out.is_vector = true;
+                ::std::size_t const w{static_cast<::std::size_t>(msb >= lsb ? (msb - lsb + 1) : (lsb - msb + 1))};
+                out.vector_signals.clear();
+                out.vector_signals.reserve(w);
+
+                if(msb >= lsb)
+                {
+                    for(int idx{msb}; idx >= lsb; --idx)
+                    {
+                        out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                    }
+                }
+                else
+                {
+                    for(int idx{msb}; idx <= lsb; ++idx)
+                    {
+                        out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                    }
+                }
+
+                if(mark_reg)
+                {
+                    for(auto const sig: out.vector_signals)
+                    {
+                        if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    }
+                }
                 return true;
             }
 
