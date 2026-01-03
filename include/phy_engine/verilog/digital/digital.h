@@ -530,6 +530,28 @@ namespace phy_engine::verilog::digital
                 make_tok(token_kind::symbol, b, p, l0, c0);
                 continue;
             }
+            if(c == u8'+' && p + 1 < e && p[1] == u8':')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+            if(c == u8'-' && p + 1 < e && p[1] == u8':')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
 
             // 1-char symbol
             {
@@ -652,7 +674,15 @@ namespace phy_engine::verilog::digital
         scalar,
         vector,
         literal,
-        literal_vector
+        literal_vector,
+        bit_list  // msb->lsb list of parent signals and/or literals (e.g. concat/slice)
+    };
+
+    struct connection_bit
+    {
+        bool is_literal{};
+        ::std::size_t signal{SIZE_MAX};  // valid when !is_literal
+        logic_t literal{logic_t::indeterminate_state};
     };
 
     struct connection_ref
@@ -662,6 +692,7 @@ namespace phy_engine::verilog::digital
         ::fast_io::u8string vector_base{};
         logic_t literal{logic_t::indeterminate_state};
         ::fast_io::vector<logic_t> literal_bits{};  // msb->lsb (only for literal_vector)
+        ::fast_io::vector<connection_bit> bit_list{};  // msb->lsb (only for bit_list)
     };
 
     struct instance_connection
@@ -1267,7 +1298,8 @@ namespace phy_engine::verilog::digital
                 }
 
                 ::std::size_t const pad{w - src.size()};
-                for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = make_literal(logic_t::false_state); }
+                auto const z{make_literal(logic_t::false_state)};
+                for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = z; }
                 for(::std::size_t i{}; i < src.size(); ++i) { out.index_unchecked(pad + i) = src.index_unchecked(i); }
                 return out;
             }
@@ -1374,6 +1406,54 @@ namespace phy_engine::verilog::digital
                 }
             }
 
+            [[nodiscard]] logic_t eval_const_root_cached(::std::size_t root,
+                                                         ::fast_io::vector<logic_t>& cache,
+                                                         ::fast_io::vector<::std::uint8_t>& ready) noexcept
+            {
+                if(root >= m->expr_nodes.size()) { return logic_t::indeterminate_state; }
+                if(root < ready.size() && ready.index_unchecked(root) != 0u) { return cache.index_unchecked(root); }
+
+                if(ready.size() < m->expr_nodes.size())
+                {
+                    ready.resize(m->expr_nodes.size());
+                    cache.resize(m->expr_nodes.size());
+                }
+
+                ready.index_unchecked(root) = 1u;
+
+                auto const& n{m->expr_nodes.index_unchecked(root)};
+                logic_t v{logic_t::indeterminate_state};
+                switch(n.kind)
+                {
+                    case expr_kind::literal: v = n.literal; break;
+                    case expr_kind::signal: v = logic_t::indeterminate_state; break;
+                    case expr_kind::unary_not: v = logic_not(eval_const_root_cached(n.a, cache, ready)); break;
+                    case expr_kind::binary_and: v = logic_and(eval_const_root_cached(n.a, cache, ready), eval_const_root_cached(n.b, cache, ready)); break;
+                    case expr_kind::binary_or: v = logic_or(eval_const_root_cached(n.a, cache, ready), eval_const_root_cached(n.b, cache, ready)); break;
+                    case expr_kind::binary_xor: v = logic_xor(eval_const_root_cached(n.a, cache, ready), eval_const_root_cached(n.b, cache, ready)); break;
+                    case expr_kind::binary_eq:
+                    {
+                        auto const a{normalize_z_to_x(eval_const_root_cached(n.a, cache, ready))};
+                        auto const b{normalize_z_to_x(eval_const_root_cached(n.b, cache, ready))};
+                        if(is_unknown(a) || is_unknown(b)) { v = logic_t::indeterminate_state; }
+                        else { v = a == b ? logic_t::true_state : logic_t::false_state; }
+                        break;
+                    }
+                    case expr_kind::binary_neq:
+                    {
+                        auto const a{normalize_z_to_x(eval_const_root_cached(n.a, cache, ready))};
+                        auto const b{normalize_z_to_x(eval_const_root_cached(n.b, cache, ready))};
+                        if(is_unknown(a) || is_unknown(b)) { v = logic_t::indeterminate_state; }
+                        else { v = a != b ? logic_t::true_state : logic_t::false_state; }
+                        break;
+                    }
+                    default: v = logic_t::indeterminate_state; break;
+                }
+
+                cache.index_unchecked(root) = v;
+                return v;
+            }
+
             [[nodiscard]] bool try_eval_const_uint64(expr_value const& v, ::std::uint64_t& out) noexcept
             {
                 ::fast_io::vector<::std::size_t> roots{};
@@ -1382,13 +1462,18 @@ namespace phy_engine::verilog::digital
 
                 if(roots.empty()) { return false; }
 
+                ::fast_io::vector<logic_t> cache{};
+                ::fast_io::vector<::std::uint8_t> ready{};
+                cache.resize(m->expr_nodes.size());
+                ready.assign(m->expr_nodes.size(), 0u);
+
                 // roots: msb->lsb, interpret as unsigned integer
                 ::std::uint64_t value{};
                 ::std::size_t const w{roots.size()};
                 for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
                 {
                     auto const r{roots.index_unchecked(w - 1 - bit_from_lsb)};
-                    auto const b{normalize_z_to_x(eval_const_root(r))};
+                    auto const b{normalize_z_to_x(eval_const_root_cached(r, cache, ready))};
                     if(is_unknown(b)) { return false; }
                     if(bit_from_lsb >= 64)
                     {
@@ -1433,6 +1518,296 @@ namespace phy_engine::verilog::digital
                 auto const a{add_node({.kind = expr_kind::binary_and, .a = sel, .b = t})};
                 auto const b{add_node({.kind = expr_kind::binary_and, .a = nsel, .b = f})};
                 return add_node({.kind = expr_kind::binary_or, .a = a, .b = b});
+            }
+
+            [[nodiscard]] expr_value make_unknown_vector(::std::size_t w) noexcept
+            {
+                if(w <= 1) { return make_scalar(make_literal(logic_t::indeterminate_state)); }
+                ::fast_io::vector<::std::size_t> roots{};
+                roots.resize(w);
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < w; ++i) { roots.index_unchecked(i) = x; }
+                return make_vector(::std::move(roots));
+            }
+
+            [[nodiscard]] ::std::size_t make_not(::std::size_t a) noexcept { return add_node({.kind = expr_kind::unary_not, .a = a}); }
+            [[nodiscard]] ::std::size_t make_and(::std::size_t a, ::std::size_t b) noexcept { return add_node({.kind = expr_kind::binary_and, .a = a, .b = b}); }
+            [[nodiscard]] ::std::size_t make_or(::std::size_t a, ::std::size_t b) noexcept { return add_node({.kind = expr_kind::binary_or, .a = a, .b = b}); }
+            [[nodiscard]] ::std::size_t make_xor(::std::size_t a, ::std::size_t b) noexcept { return add_node({.kind = expr_kind::binary_xor, .a = a, .b = b}); }
+
+            [[nodiscard]] expr_value arith_add(expr_value const& a, expr_value const& b) noexcept
+            {
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                if(w <= 1)
+                {
+                    auto const av{resize_to_vector(a, 1).front_unchecked()};
+                    auto const bv{resize_to_vector(b, 1).front_unchecked()};
+                    return make_scalar(make_xor(av, bv));
+                }
+
+                auto av{resize_to_vector(a, w)};
+                auto bv{resize_to_vector(b, w)};
+
+                ::fast_io::vector<::std::size_t> out{};
+                out.resize(w);
+
+                auto carry{make_literal(logic_t::false_state)};
+                for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
+                {
+                    ::std::size_t const pos{w - 1 - bit_from_lsb};
+                    auto const ai{av.index_unchecked(pos)};
+                    auto const bi{bv.index_unchecked(pos)};
+
+                    auto const axb{make_xor(ai, bi)};
+                    out.index_unchecked(pos) = make_xor(axb, carry);
+
+                    auto const t1{make_and(ai, bi)};
+                    auto const t2{make_and(ai, carry)};
+                    auto const t3{make_and(bi, carry)};
+                    carry = make_or(make_or(t1, t2), t3);
+                }
+
+                return make_vector(::std::move(out));
+            }
+
+            [[nodiscard]] expr_value arith_sub(expr_value const& a, expr_value const& b) noexcept
+            {
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                if(w <= 1)
+                {
+                    auto const av{resize_to_vector(a, 1).front_unchecked()};
+                    auto const bv{resize_to_vector(b, 1).front_unchecked()};
+                    return make_scalar(make_xor(av, bv));  // 1-bit subtraction (mod-2)
+                }
+
+                auto av{resize_to_vector(a, w)};
+                auto bv{resize_to_vector(b, w)};
+
+                ::fast_io::vector<::std::size_t> out{};
+                out.resize(w);
+
+                auto carry{make_literal(logic_t::true_state)};  // +1 for two's complement
+                for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
+                {
+                    ::std::size_t const pos{w - 1 - bit_from_lsb};
+                    auto const ai{av.index_unchecked(pos)};
+                    auto const bi{make_not(bv.index_unchecked(pos))};
+
+                    auto const axb{make_xor(ai, bi)};
+                    out.index_unchecked(pos) = make_xor(axb, carry);
+
+                    auto const t1{make_and(ai, bi)};
+                    auto const t2{make_and(ai, carry)};
+                    auto const t3{make_and(bi, carry)};
+                    carry = make_or(make_or(t1, t2), t3);
+                }
+
+                return make_vector(::std::move(out));
+            }
+
+            [[nodiscard]] expr_value arith_mul(expr_value const& a, expr_value const& b) noexcept
+            {
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                if(w <= 1)
+                {
+                    auto const av{resize_to_vector(a, 1).front_unchecked()};
+                    auto const bv{resize_to_vector(b, 1).front_unchecked()};
+                    return make_scalar(make_and(av, bv));
+                }
+
+                auto av{resize_to_vector(a, w)};
+                auto bv{resize_to_vector(b, w)};
+
+                expr_value acc{make_uint_literal(0, w)};
+                auto const z{make_literal(logic_t::false_state)};
+
+                for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
+                {
+                    ::std::size_t const bpos{w - 1 - bit_from_lsb};
+                    auto const bbit{bv.index_unchecked(bpos)};
+
+                    ::fast_io::vector<::std::size_t> partial{};
+                    partial.resize(w);
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        if(pos + bit_from_lsb < w) { partial.index_unchecked(pos) = make_and(av.index_unchecked(pos + bit_from_lsb), bbit); }
+                        else { partial.index_unchecked(pos) = z; }
+                    }
+
+                    acc = arith_add(acc, make_vector(::std::move(partial)));
+                }
+
+                return acc;
+            }
+
+            [[nodiscard]] expr_value arith_div(expr_value const& a, expr_value const& b) noexcept
+            {
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                ::std::uint64_t av{};
+                ::std::uint64_t bv{};
+                if(!try_eval_const_uint64(a, av) || !try_eval_const_uint64(b, bv)) { return make_unknown_vector(w); }
+                if(bv == 0) { return make_unknown_vector(w); }
+                return make_uint_literal(av / bv, w);
+            }
+
+            [[nodiscard]] expr_value shift_left(expr_value const& v, expr_value const& sh) noexcept
+            {
+                ::std::size_t const w{width(v)};
+                if(w <= 1) { return resize(v, 1); }
+
+                int sh_const{};
+                if(try_eval_const_int(sh, sh_const) && sh_const >= 0)
+                {
+                    ::std::size_t const s{static_cast<::std::size_t>(sh_const)};
+                    auto cur{resize_to_vector(v, w)};
+                    auto const z{make_literal(logic_t::false_state)};
+                    ::fast_io::vector<::std::size_t> out{};
+                    out.resize(w);
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        out.index_unchecked(pos) = (pos + s < w) ? cur.index_unchecked(pos + s) : z;
+                    }
+                    return make_vector(::std::move(out));
+                }
+
+                ::std::size_t nbits{};
+                while((1ull << nbits) < w && nbits < 64) { ++nbits; }
+                if(nbits == 0) { return resize(v, w); }
+
+                auto cur{resize_to_vector(v, w)};
+                auto shv{resize_to_vector(sh, nbits)};
+                auto const z{make_literal(logic_t::false_state)};
+
+                for(::std::size_t k{}; k < nbits; ++k)
+                {
+                    ::std::size_t const shift_by{1ull << k};
+                    auto const sel{shv.index_unchecked(nbits - 1 - k)};  // LSB..MSB
+
+                    ::fast_io::vector<::std::size_t> shifted{};
+                    shifted.resize(w);
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        shifted.index_unchecked(pos) = (pos + shift_by < w) ? cur.index_unchecked(pos + shift_by) : z;
+                    }
+
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        cur.index_unchecked(pos) = make_mux(sel, shifted.index_unchecked(pos), cur.index_unchecked(pos));
+                    }
+                }
+
+                return make_vector(::std::move(cur));
+            }
+
+            [[nodiscard]] expr_value shift_right(expr_value const& v, expr_value const& sh) noexcept
+            {
+                ::std::size_t const w{width(v)};
+                if(w <= 1) { return resize(v, 1); }
+
+                int sh_const{};
+                if(try_eval_const_int(sh, sh_const) && sh_const >= 0)
+                {
+                    ::std::size_t const s{static_cast<::std::size_t>(sh_const)};
+                    auto cur{resize_to_vector(v, w)};
+                    auto const z{make_literal(logic_t::false_state)};
+                    ::fast_io::vector<::std::size_t> out{};
+                    out.resize(w);
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        out.index_unchecked(pos) = (pos >= s) ? cur.index_unchecked(pos - s) : z;
+                    }
+                    return make_vector(::std::move(out));
+                }
+
+                ::std::size_t nbits{};
+                while((1ull << nbits) < w && nbits < 64) { ++nbits; }
+                if(nbits == 0) { return resize(v, w); }
+
+                auto cur{resize_to_vector(v, w)};
+                auto shv{resize_to_vector(sh, nbits)};
+                auto const z{make_literal(logic_t::false_state)};
+
+                for(::std::size_t k{}; k < nbits; ++k)
+                {
+                    ::std::size_t const shift_by{1ull << k};
+                    auto const sel{shv.index_unchecked(nbits - 1 - k)};  // LSB..MSB
+
+                    ::fast_io::vector<::std::size_t> shifted{};
+                    shifted.resize(w);
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        shifted.index_unchecked(pos) = (pos >= shift_by) ? cur.index_unchecked(pos - shift_by) : z;
+                    }
+
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        cur.index_unchecked(pos) = make_mux(sel, shifted.index_unchecked(pos), cur.index_unchecked(pos));
+                    }
+                }
+
+                return make_vector(::std::move(cur));
+            }
+
+            [[nodiscard]] ::std::size_t compare_lt(expr_value const& a, expr_value const& b) noexcept
+            {
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                auto av{resize_to_vector(a, w)};
+                auto bv{resize_to_vector(b, w)};
+
+                auto eq_prefix{make_literal(logic_t::true_state)};
+                auto lt{make_literal(logic_t::false_state)};
+
+                for(::std::size_t pos{}; pos < w; ++pos)
+                {
+                    auto const ai{av.index_unchecked(pos)};
+                    auto const bi{bv.index_unchecked(pos)};
+
+                    auto const eq_bit{add_node({.kind = expr_kind::binary_eq, .a = ai, .b = bi})};
+                    auto const lt_bit{make_and(make_not(ai), bi)};
+                    lt = make_or(lt, make_and(eq_prefix, lt_bit));
+                    eq_prefix = make_and(eq_prefix, eq_bit);
+                }
+                return lt;
+            }
+
+            [[nodiscard]] ::std::size_t compare_le(expr_value const& a, expr_value const& b) noexcept
+            {
+                auto const lt{compare_lt(a, b)};
+                auto const eq{compare_eq(a, b)};
+                return make_or(lt, eq);
+            }
+
+            [[nodiscard]] ::std::size_t compare_gt(expr_value const& a, expr_value const& b) noexcept { return compare_lt(b, a); }
+
+            [[nodiscard]] ::std::size_t compare_ge(expr_value const& a, expr_value const& b) noexcept
+            {
+                auto const gt{compare_lt(b, a)};
+                auto const eq{compare_eq(a, b)};
+                return make_or(gt, eq);
+            }
+
+            [[nodiscard]] expr_value make_conditional(expr_value const& cond, expr_value const& t, expr_value const& f) noexcept
+            {
+                auto const sel{to_bool_root(cond)};
+                ::std::size_t const w{::std::max(width(t), width(f))};
+
+                if(w <= 1)
+                {
+                    auto const tv{resize_to_vector(t, 1).front_unchecked()};
+                    auto const fv{resize_to_vector(f, 1).front_unchecked()};
+                    return make_scalar(make_mux(sel, tv, fv));
+                }
+
+                auto tv{resize_to_vector(t, w)};
+                auto fv{resize_to_vector(f, w)};
+
+                ::fast_io::vector<::std::size_t> out{};
+                out.resize(w);
+                for(::std::size_t pos{}; pos < w; ++pos)
+                {
+                    out.index_unchecked(pos) = make_mux(sel, tv.index_unchecked(pos), fv.index_unchecked(pos));
+                }
+                return make_vector(::std::move(out));
             }
 
             [[nodiscard]] expr_value apply_bit_select(expr_value const& base, expr_value const& idx_expr) noexcept
@@ -1512,6 +1887,108 @@ namespace phy_engine::verilog::digital
                 }
 
                 return make_vector_with_range(::std::move(bits), sel_msb, sel_lsb);
+            }
+
+            [[nodiscard]] expr_value apply_indexed_part_select(expr_value const& base,
+                                                               expr_value const& start_expr,
+                                                               expr_value const& width_expr,
+                                                               bool plus) noexcept
+            {
+                int w{};
+                if(!try_eval_const_int(width_expr, w) || w <= 0)
+                {
+                    p->err(p->peek(), u8"indexed part-select width must be a positive constant integer expression in this subset");
+                    return make_scalar(make_literal(logic_t::indeterminate_state));
+                }
+
+                vector_desc vd{};
+                vd.msb = base.msb;
+                vd.lsb = base.lsb;
+
+                ::fast_io::vector<::std::size_t> base_bits{};
+                if(base.is_vector) { base_bits = base.vector_roots; }
+                else { base_bits.push_back(base.scalar_root); }
+
+                auto compute_bounds = [&]([[maybe_unused]] int start) noexcept -> ::std::pair<int, int>
+                {
+                    bool const desc{vd.msb >= vd.lsb};
+                    if(plus)
+                    {
+                        if(desc) { return {start + (w - 1), start}; }
+                        return {start, start + (w - 1)};
+                    }
+                    // -:
+                    if(desc) { return {start, start - (w - 1)}; }
+                    return {start - (w - 1), start};
+                };
+
+                auto slice_bits_for_start = [&](int start, ::fast_io::vector<::std::size_t>& bits_out) noexcept
+                {
+                    auto const [sel_msb, sel_lsb]{compute_bounds(start)};
+                    bits_out.clear();
+                    bits_out.reserve(static_cast<::std::size_t>(w));
+
+                    auto const x{make_literal(logic_t::indeterminate_state)};
+                    if(sel_msb >= sel_lsb)
+                    {
+                        for(int idx{sel_msb}; idx >= sel_lsb; --idx)
+                        {
+                            auto const pos{vector_pos(vd, idx)};
+                            bits_out.push_back(pos == SIZE_MAX ? x : base_bits.index_unchecked(pos));
+                        }
+                    }
+                    else
+                    {
+                        for(int idx{sel_msb}; idx <= sel_lsb; ++idx)
+                        {
+                            auto const pos{vector_pos(vd, idx)};
+                            bits_out.push_back(pos == SIZE_MAX ? x : base_bits.index_unchecked(pos));
+                        }
+                    }
+                };
+
+                int start_const{};
+                if(try_eval_const_int(start_expr, start_const))
+                {
+                    ::fast_io::vector<::std::size_t> bits{};
+                    slice_bits_for_start(start_const, bits);
+                    auto const [sel_msb, sel_lsb]{compute_bounds(start_const)};
+                    return make_vector_with_range(::std::move(bits), sel_msb, sel_lsb);
+                }
+
+                int const min_idx{vd.msb < vd.lsb ? vd.msb : vd.lsb};
+                int const max_idx{vd.msb < vd.lsb ? vd.lsb : vd.msb};
+                if(max_idx < 0) { return make_unknown_vector(static_cast<::std::size_t>(w)); }
+
+                ::std::size_t base_max{static_cast<::std::size_t>(max_idx)};
+                ::std::size_t need_bits{1};
+                while((1ull << need_bits) <= base_max && need_bits < 64) { ++need_bits; }
+                ::std::size_t const cmp_w{::std::max(width(start_expr), need_bits)};
+
+                auto const idx_norm{resize(start_expr, cmp_w)};
+
+                ::fast_io::vector<::std::size_t> out{};
+                out.resize(static_cast<::std::size_t>(w));
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < out.size(); ++i) { out.index_unchecked(i) = x; }
+
+                ::fast_io::vector<::std::size_t> bits{};
+                for(int s{min_idx}; s <= max_idx; ++s)
+                {
+                    if(s < 0) { continue; }
+                    slice_bits_for_start(s, bits);
+                    if(static_cast<::std::size_t>(bits.size()) != out.size()) { continue; }
+
+                    auto const idx_lit{make_uint_literal(static_cast<::std::uint64_t>(s), cmp_w)};
+                    auto const cond{compare_eq(idx_norm, idx_lit)};
+
+                    for(::std::size_t pos{}; pos < out.size(); ++pos)
+                    {
+                        out.index_unchecked(pos) = make_mux(cond, bits.index_unchecked(pos), out.index_unchecked(pos));
+                    }
+                }
+
+                return make_vector(::std::move(out));
             }
 
             [[nodiscard]] expr_value parse_primary() noexcept
@@ -1668,16 +2145,30 @@ namespace phy_engine::verilog::digital
                 // postfix bit/part-select on any primary: expr[...], expr[msb:lsb]
                 while(p->accept_sym(u8'['))
                 {
-                    auto const msb_e{parse_expr()};
+                    auto const first_e{parse_expr()};
+                    if(p->accept_sym2(u8'+', u8':'))
+                    {
+                        auto const w_e{parse_expr()};
+                        if(!p->accept_sym(u8']')) { p->err(p->peek(), u8"expected ']'"); }
+                        base = apply_indexed_part_select(base, first_e, w_e, true);
+                        continue;
+                    }
+                    if(p->accept_sym2(u8'-', u8':'))
+                    {
+                        auto const w_e{parse_expr()};
+                        if(!p->accept_sym(u8']')) { p->err(p->peek(), u8"expected ']'"); }
+                        base = apply_indexed_part_select(base, first_e, w_e, false);
+                        continue;
+                    }
                     if(p->accept_sym(u8':'))
                     {
                         auto const lsb_e{parse_expr()};
                         if(!p->accept_sym(u8']')) { p->err(p->peek(), u8"expected ']'"); }
-                        base = apply_part_select(base, msb_e, lsb_e);
+                        base = apply_part_select(base, first_e, lsb_e);
                         continue;
                     }
                     if(!p->accept_sym(u8']')) { p->err(p->peek(), u8"expected ']'"); }
-                    base = apply_bit_select(base, msb_e);
+                    base = apply_bit_select(base, first_e);
                 }
 
                 return base;
@@ -1685,6 +2176,17 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] expr_value parse_unary() noexcept
             {
+                if(p->accept_sym(u8'!'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(make_not(to_bool_root(a)));
+                }
+                if(p->accept_sym(u8'+')) { return parse_unary(); }
+                if(p->accept_sym(u8'-'))
+                {
+                    auto const a{parse_unary()};
+                    return arith_sub(make_uint_literal(0, width(a)), a);
+                }
                 if(p->accept_sym(u8'~'))
                 {
                     auto const a{parse_unary()};
@@ -1693,14 +2195,77 @@ namespace phy_engine::verilog::digital
                 return parse_primary();
             }
 
-            [[nodiscard]] expr_value parse_and() noexcept
+            [[nodiscard]] expr_value parse_mul() noexcept
             {
                 auto lhs{parse_unary()};
                 for(;;)
                 {
-                    if(p->accept_sym(u8'&'))
+                    if(p->accept_sym(u8'*'))
                     {
                         auto const rhs{parse_unary()};
+                        lhs = arith_mul(lhs, rhs);
+                        continue;
+                    }
+                    if(p->accept_sym(u8'/'))
+                    {
+                        auto const rhs{parse_unary()};
+                        lhs = arith_div(lhs, rhs);
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] expr_value parse_add() noexcept
+            {
+                auto lhs{parse_mul()};
+                for(;;)
+                {
+                    if(p->accept_sym(u8'+'))
+                    {
+                        auto const rhs{parse_mul()};
+                        lhs = arith_add(lhs, rhs);
+                        continue;
+                    }
+                    if(p->accept_sym(u8'-'))
+                    {
+                        auto const rhs{parse_mul()};
+                        lhs = arith_sub(lhs, rhs);
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] expr_value parse_shift() noexcept
+            {
+                auto lhs{parse_add()};
+                for(;;)
+                {
+                    if(p->accept_sym2(u8'<', u8'<'))
+                    {
+                        auto const rhs{parse_add()};
+                        lhs = shift_left(lhs, rhs);
+                        continue;
+                    }
+                    if(p->accept_sym2(u8'>', u8'>'))
+                    {
+                        auto const rhs{parse_add()};
+                        lhs = shift_right(lhs, rhs);
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] expr_value parse_and() noexcept
+            {
+                auto lhs{parse_shift()};
+                for(;;)
+                {
+                    if(p->accept_sym(u8'&'))
+                    {
+                        auto const rhs{parse_shift()};
                         lhs = bitwise_binary(lhs, rhs, expr_kind::binary_and);
                         continue;
                     }
@@ -1738,22 +2303,54 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            [[nodiscard]] expr_value parse_eq() noexcept
+            [[nodiscard]] expr_value parse_rel() noexcept
             {
                 auto lhs{parse_or()};
                 for(;;)
                 {
-                    if(p->accept_sym2(u8'=', u8'='))
+                    if(p->accept_sym(u8'<'))
                     {
                         auto const rhs{parse_or()};
+                        lhs = make_scalar(compare_lt(lhs, rhs));
+                        continue;
+                    }
+                    if(p->accept_sym2(u8'<', u8'='))
+                    {
+                        auto const rhs{parse_or()};
+                        lhs = make_scalar(compare_le(lhs, rhs));
+                        continue;
+                    }
+                    if(p->accept_sym(u8'>'))
+                    {
+                        auto const rhs{parse_or()};
+                        lhs = make_scalar(compare_gt(lhs, rhs));
+                        continue;
+                    }
+                    if(p->accept_sym2(u8'>', u8'='))
+                    {
+                        auto const rhs{parse_or()};
+                        lhs = make_scalar(compare_ge(lhs, rhs));
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] expr_value parse_eq() noexcept
+            {
+                auto lhs{parse_rel()};
+                for(;;)
+                {
+                    if(p->accept_sym2(u8'=', u8'='))
+                    {
+                        auto const rhs{parse_rel()};
                         lhs = make_scalar(compare_eq(lhs, rhs));
                         continue;
                     }
                     if(p->accept_sym2(u8'!', u8'='))
                     {
-                        auto const rhs{parse_or()};
-                        auto const eq{compare_eq(lhs, rhs)};
-                        lhs = make_scalar(add_node({.kind = expr_kind::unary_not, .a = eq}));
+                        auto const rhs{parse_rel()};
+                        lhs = make_scalar(make_not(compare_eq(lhs, rhs)));
                         continue;
                     }
                     return lhs;
@@ -1790,14 +2387,36 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            [[nodiscard]] expr_value parse_expr() noexcept { return parse_lor(); }
+            [[nodiscard]] expr_value parse_cond() noexcept
+            {
+                auto cond{parse_lor()};
+                if(!p->accept_sym(u8'?')) { return cond; }
+                auto const t{parse_cond()};
+                if(!p->accept_sym(u8':')) { p->err(p->peek(), u8"expected ':' in conditional operator"); }
+                auto const f{parse_cond()};
+                return make_conditional(cond, t, f);
+            }
+
+            [[nodiscard]] expr_value parse_expr() noexcept { return parse_cond(); }
         };
 
         struct lvalue_ref
         {
-            bool is_vector{};
+            enum class kind : ::std::uint_fast8_t
+            {
+                scalar,
+                vector,
+                dynamic_bit_select,          // a[idx]
+                dynamic_indexed_part_select  // a[idx +: W] / a[idx -: W]
+            };
+
+            kind k{kind::scalar};
             ::std::size_t scalar_signal{SIZE_MAX};
             ::fast_io::vector<::std::size_t> vector_signals{};  // msb->lsb
+            vector_desc base_desc{};                            // for dynamic selects (msb/lsb only)
+            expr_value index_expr{};                            // idx/start expression (only for dynamic selects)
+            bool indexed_plus{true};                            // only for dynamic_indexed_part_select
+            ::std::size_t indexed_width{};                      // only for dynamic_indexed_part_select
         };
 
         inline bool parse_lvalue_ref(parser& p, compiled_module& m, lvalue_ref& out, bool mark_reg, bool allow_vector) noexcept
@@ -1807,54 +2426,179 @@ namespace phy_engine::verilog::digital
 
             if(p.accept_sym(u8'['))
             {
-                int msb{};
+                expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+                auto const first_e{ep.parse_expr()};
+
+                bool indexed{};
+                bool indexed_plus{};
+                if(p.accept_sym2(u8'+', u8':'))
                 {
-                    expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
-                    auto const msb_e{ep.parse_expr()};
-                    if(!ep.try_eval_const_int(msb_e, msb)) { p.err(p.peek(), u8"expected constant integer bit/part-select index"); }
+                    indexed = true;
+                    indexed_plus = true;
+                }
+                else if(p.accept_sym2(u8'-', u8':'))
+                {
+                    indexed = true;
+                    indexed_plus = false;
                 }
 
-                bool is_part_select{};
-                int lsb{msb};
-                if(p.accept_sym(u8':'))
+                if(indexed)
                 {
-                    is_part_select = true;
-                    expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
-                    auto const lsb_e{ep.parse_expr()};
-                    if(!ep.try_eval_const_int(lsb_e, lsb)) { p.err(p.peek(), u8"expected constant integer after ':' in part-select"); }
-                }
+                    if(!allow_vector) { p.err(p.peek(), u8"indexed part-select lvalue is not allowed here"); }
+                    auto const w_e{ep.parse_expr()};
+                    int w{};
+                    if(!ep.try_eval_const_int(w_e, w) || w <= 0)
+                    {
+                        p.err(p.peek(), u8"indexed part-select width must be a positive constant integer expression in this subset");
+                        w = 0;
+                    }
 
-                if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+                    if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
 
-                if(!is_part_select)
-                {
-                    out.is_vector = false;
-                    out.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, msb, mark_reg);
+                    int start_const{};
+                    if(w > 0 && ep.try_eval_const_int(first_e, start_const))
+                    {
+                        out.k = lvalue_ref::kind::vector;
+                        out.vector_signals.clear();
+                        out.vector_signals.reserve(static_cast<::std::size_t>(w));
+
+                        auto itv{m.vectors.find(name)};
+                        bool const desc{itv != m.vectors.end() ? (itv->second.msb >= itv->second.lsb) : true};
+
+                        int sel_msb{};
+                        int sel_lsb{};
+                        if(indexed_plus)
+                        {
+                            if(desc) { sel_msb = start_const + (w - 1); sel_lsb = start_const; }
+                            else { sel_msb = start_const; sel_lsb = start_const + (w - 1); }
+                        }
+                        else
+                        {
+                            if(desc) { sel_msb = start_const; sel_lsb = start_const - (w - 1); }
+                            else { sel_msb = start_const - (w - 1); sel_lsb = start_const; }
+                        }
+
+                        if(sel_msb >= sel_lsb)
+                        {
+                            for(int idx{sel_msb}; idx >= sel_lsb; --idx)
+                            {
+                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                            }
+                        }
+                        else
+                        {
+                            for(int idx{sel_msb}; idx <= sel_lsb; ++idx)
+                            {
+                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                            }
+                        }
+
+                        if(mark_reg)
+                        {
+                            for(auto const sig: out.vector_signals)
+                            {
+                                if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                            }
+                        }
+                        return true;
+                    }
+
+                    auto itv{m.vectors.find(name)};
+                    if(itv == m.vectors.end() || details::vector_width(itv->second) <= 1)
+                    {
+                        p.err(p.peek(), u8"indexed part-select requires a declared vector");
+                        out.k = lvalue_ref::kind::scalar;
+                        out.scalar_signal = get_or_create_signal(m, name);
+                        return true;
+                    }
+
+                    out.k = lvalue_ref::kind::dynamic_indexed_part_select;
+                    out.vector_signals = itv->second.bits;
+                    out.base_desc.msb = itv->second.msb;
+                    out.base_desc.lsb = itv->second.lsb;
+                    out.index_expr = first_e;
+                    out.indexed_plus = indexed_plus;
+                    out.indexed_width = w > 0 ? static_cast<::std::size_t>(w) : 0;
+
+                    if(mark_reg)
+                    {
+                        for(auto const sig: out.vector_signals)
+                        {
+                            if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                        }
+                    }
                     return true;
                 }
 
-                if(!allow_vector) { p.err(p.peek(), u8"part-select lvalue is not allowed here"); }
-
-                out.is_vector = true;
-                ::std::size_t const w{static_cast<::std::size_t>(msb >= lsb ? (msb - lsb + 1) : (lsb - msb + 1))};
-                out.vector_signals.clear();
-                out.vector_signals.reserve(w);
-
-                if(msb >= lsb)
+                // plain bit/part-select: a[idx] or a[msb:lsb]
+                if(p.accept_sym(u8':'))
                 {
-                    for(int idx{msb}; idx >= lsb; --idx)
+                    if(!allow_vector) { p.err(p.peek(), u8"part-select lvalue is not allowed here"); }
+
+                    auto const lsb_e{ep.parse_expr()};
+                    int msb{};
+                    int lsb{};
+                    if(!ep.try_eval_const_int(first_e, msb)) { p.err(p.peek(), u8"expected constant integer bit/part-select index"); msb = 0; }
+                    if(!ep.try_eval_const_int(lsb_e, lsb)) { p.err(p.peek(), u8"expected constant integer after ':' in part-select"); lsb = msb; }
+
+                    if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+                    out.k = lvalue_ref::kind::vector;
+                    ::std::size_t const w{static_cast<::std::size_t>(msb >= lsb ? (msb - lsb + 1) : (lsb - msb + 1))};
+                    out.vector_signals.clear();
+                    out.vector_signals.reserve(w);
+
+                    if(msb >= lsb)
                     {
-                        out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                        for(int idx{msb}; idx >= lsb; --idx)
+                        {
+                            out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                        }
                     }
-                }
-                else
-                {
-                    for(int idx{msb}; idx <= lsb; ++idx)
+                    else
                     {
-                        out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                        for(int idx{msb}; idx <= lsb; ++idx)
+                        {
+                            out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                        }
                     }
+
+                    if(mark_reg)
+                    {
+                        for(auto const sig: out.vector_signals)
+                        {
+                            if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                        }
+                    }
+                    return true;
                 }
 
+                int idx_const{};
+                if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+                if(ep.try_eval_const_int(first_e, idx_const))
+                {
+                    out.k = lvalue_ref::kind::scalar;
+                    out.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx_const, mark_reg);
+                    if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
+                    return true;
+                }
+
+                auto itv{m.vectors.find(name)};
+                if(itv == m.vectors.end() || details::vector_width(itv->second) <= 1)
+                {
+                    p.err(p.peek(), u8"dynamic bit-select requires a declared vector");
+                    out.k = lvalue_ref::kind::scalar;
+                    out.scalar_signal = get_or_create_signal(m, name);
+                    if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
+                    return true;
+                }
+
+                out.k = lvalue_ref::kind::dynamic_bit_select;
+                out.vector_signals = itv->second.bits;
+                out.base_desc.msb = itv->second.msb;
+                out.base_desc.lsb = itv->second.lsb;
+                out.index_expr = first_e;
                 if(mark_reg)
                 {
                     for(auto const sig: out.vector_signals)
@@ -1870,7 +2614,7 @@ namespace phy_engine::verilog::digital
                 auto it{m.vectors.find(name)};
                 if(it != m.vectors.end() && !it->second.bits.empty() && details::vector_width(it->second) > 1)
                 {
-                    out.is_vector = true;
+                    out.k = lvalue_ref::kind::vector;
                     out.vector_signals = it->second.bits;
                     if(mark_reg)
                     {
@@ -1883,7 +2627,7 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            out.is_vector = false;
+            out.k = lvalue_ref::kind::scalar;
             out.scalar_signal = get_or_create_signal(m, name);
             if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
             return true;
@@ -1893,7 +2637,185 @@ namespace phy_engine::verilog::digital
         {
             connection_ref r{};
             auto const& t{p.peek()};
-            if(t.kind == token_kind::symbol && (is_sym(t.text, u8')') || is_sym(t.text, u8','))) { return r; }
+            if(t.kind == token_kind::symbol && (is_sym(t.text, u8')') || is_sym(t.text, u8',') || is_sym(t.text, u8'}'))) { return r; }
+
+            auto append_ref_bits = [&](::fast_io::vector<connection_bit>& dst, connection_ref const& src) noexcept
+            {
+                if(src.kind == connection_kind::unconnected)
+                {
+                    dst.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state});
+                    return;
+                }
+                if(src.kind == connection_kind::scalar)
+                {
+                    dst.push_back({.is_literal = false, .signal = src.scalar_signal, .literal = {}});
+                    return;
+                }
+                if(src.kind == connection_kind::literal)
+                {
+                    dst.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = src.literal});
+                    return;
+                }
+                if(src.kind == connection_kind::literal_vector)
+                {
+                    for(auto const b: src.literal_bits) { dst.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = b}); }
+                    return;
+                }
+                if(src.kind == connection_kind::vector)
+                {
+                    auto itv{m.vectors.find(src.vector_base)};
+                    if(itv == m.vectors.end() || itv->second.bits.empty())
+                    {
+                        dst.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state});
+                        return;
+                    }
+                    for(auto const sig: itv->second.bits) { dst.push_back({.is_literal = false, .signal = sig, .literal = {}}); }
+                    return;
+                }
+                if(src.kind == connection_kind::bit_list)
+                {
+                    dst.reserve(dst.size() + src.bit_list.size());
+                    for(auto const& b: src.bit_list) { dst.push_back(b); }
+                    return;
+                }
+
+                dst.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state});
+            };
+
+            auto try_eval_bits_uint64 = [&](::fast_io::vector<logic_t> const& bits, ::std::uint64_t& out) noexcept -> bool
+            {
+                if(bits.empty()) { return false; }
+                ::std::uint64_t value{};
+                ::std::size_t const w{bits.size()};
+                for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
+                {
+                    auto const b{normalize_z_to_x(bits.index_unchecked(w - 1 - bit_from_lsb))};
+                    if(is_unknown(b)) { return false; }
+                    if(bit_from_lsb >= 64)
+                    {
+                        if(b == logic_t::true_state) { return false; }
+                        continue;
+                    }
+                    if(b == logic_t::true_state) { value |= (1ull << bit_from_lsb); }
+                }
+                out = value;
+                return true;
+            };
+
+            auto try_eval_connection_int = [&](connection_ref const& v, int& outi) noexcept -> bool
+            {
+                ::std::uint64_t u{};
+                if(v.kind == connection_kind::literal)
+                {
+                    auto const b{normalize_z_to_x(v.literal)};
+                    if(is_unknown(b)) { return false; }
+                    u = (b == logic_t::true_state) ? 1u : 0u;
+                }
+                else if(v.kind == connection_kind::literal_vector)
+                {
+                    if(!try_eval_bits_uint64(v.literal_bits, u)) { return false; }
+                }
+                else if(v.kind == connection_kind::bit_list)
+                {
+                    ::fast_io::vector<logic_t> bits{};
+                    bits.reserve(v.bit_list.size());
+                    for(auto const& b: v.bit_list)
+                    {
+                        if(!b.is_literal) { return false; }
+                        bits.push_back(b.literal);
+                    }
+                    if(!try_eval_bits_uint64(bits, u)) { return false; }
+                }
+                else { return false; }
+
+                if(u > static_cast<::std::uint64_t>(::std::numeric_limits<int>::max())) { return false; }
+                outi = static_cast<int>(u);
+                return true;
+            };
+
+            if(t.kind == token_kind::symbol && is_sym(t.text, u8'('))
+            {
+                p.consume();
+                r = parse_connection_ref(p, m);
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after connection expression"); }
+                return r;
+            }
+
+            if(t.kind == token_kind::symbol && is_sym(t.text, u8'{'))
+            {
+                p.consume();
+
+                if(p.accept_sym(u8'}'))
+                {
+                    p.err(p.peek(), u8"empty concatenation is not supported in connection");
+                    r.kind = connection_kind::bit_list;
+                    r.bit_list.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state});
+                    return r;
+                }
+
+                auto parse_concat_items_until_rbrace = [&]() noexcept -> ::fast_io::vector<connection_bit>
+                {
+                    ::fast_io::vector<connection_bit> bits{};
+                    if(p.accept_sym(u8'}'))
+                    {
+                        p.err(p.peek(), u8"empty concatenation is not supported in connection");
+                        bits.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state});
+                        return bits;
+                    }
+
+                    for(;;)
+                    {
+                        auto const item{parse_connection_ref(p, m)};
+                        append_ref_bits(bits, item);
+                        if(p.accept_sym(u8',')) { continue; }
+                        break;
+                    }
+
+                    if(!p.accept_sym(u8'}')) { p.err(p.peek(), u8"expected '}'"); }
+                    return bits;
+                };
+
+                auto const first_item{parse_connection_ref(p, m)};
+                if(p.accept_sym(u8'{'))
+                {
+                    int rep_count{};
+                    if(!try_eval_connection_int(first_item, rep_count) || rep_count < 0)
+                    {
+                        p.err(p.peek(), u8"expected non-negative constant integer replication count in connection");
+                        rep_count = 0;
+                    }
+
+                    auto const inner_bits{parse_concat_items_until_rbrace()};  // consumes inner '}'
+                    if(!p.accept_sym(u8'}')) { p.err(p.peek(), u8"expected '}'"); }
+
+                    r.kind = connection_kind::bit_list;
+                    if(rep_count <= 0 || inner_bits.empty())
+                    {
+                        r.bit_list.push_back({.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state});
+                    }
+                    else
+                    {
+                        r.bit_list.reserve(inner_bits.size() * static_cast<::std::size_t>(rep_count));
+                        for(int i{}; i < rep_count; ++i)
+                        {
+                            for(auto const& b: inner_bits) { r.bit_list.push_back(b); }
+                        }
+                    }
+                    return r;
+                }
+
+                ::fast_io::vector<connection_bit> bits{};
+                append_ref_bits(bits, first_item);
+                while(p.accept_sym(u8','))
+                {
+                    auto const item{parse_connection_ref(p, m)};
+                    append_ref_bits(bits, item);
+                }
+                if(!p.accept_sym(u8'}')) { p.err(p.peek(), u8"expected '}'"); }
+                r.kind = connection_kind::bit_list;
+                r.bit_list = ::std::move(bits);
+                return r;
+            }
 
             if(t.kind == token_kind::number)
             {
@@ -1926,13 +2848,109 @@ namespace phy_engine::verilog::digital
 
                 if(p.accept_sym(u8'['))
                 {
-                    int idx{};
-                    auto const& ti{p.peek()};
-                    if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx))
+                    expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+                    auto const first_e{ep.parse_expr()};
+
+                    bool indexed{};
+                    bool indexed_plus{};
+                    if(p.accept_sym2(u8'+', u8':'))
                     {
-                        p.err(ti, u8"expected constant integer bit-select index");
+                        indexed = true;
+                        indexed_plus = true;
                     }
-                    else { p.consume(); }
+                    else if(p.accept_sym2(u8'-', u8':'))
+                    {
+                        indexed = true;
+                        indexed_plus = false;
+                    }
+
+                    if(indexed)
+                    {
+                        auto const w_e{ep.parse_expr()};
+                        int w{};
+                        int start{};
+                        if(!ep.try_eval_const_int(w_e, w) || w <= 0) { p.err(p.peek(), u8"indexed part-select width must be a positive constant integer expression"); w = 0; }
+                        if(!ep.try_eval_const_int(first_e, start)) { p.err(p.peek(), u8"indexed part-select base must be a constant integer expression"); start = 0; }
+                        if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+                        r.kind = connection_kind::bit_list;
+                        if(w <= 0) { return r; }
+
+                        auto itv{m.vectors.find(name)};
+                        bool const desc{itv != m.vectors.end() ? (itv->second.msb >= itv->second.lsb) : true};
+
+                        int sel_msb{};
+                        int sel_lsb{};
+                        if(indexed_plus)
+                        {
+                            if(desc) { sel_msb = start + (w - 1); sel_lsb = start; }
+                            else { sel_msb = start; sel_lsb = start + (w - 1); }
+                        }
+                        else
+                        {
+                            if(desc) { sel_msb = start; sel_lsb = start - (w - 1); }
+                            else { sel_msb = start - (w - 1); sel_lsb = start; }
+                        }
+
+                        r.bit_list.reserve(static_cast<::std::size_t>(w));
+                        if(sel_msb >= sel_lsb)
+                        {
+                            for(int idx{sel_msb}; idx >= sel_lsb; --idx)
+                            {
+                                r.bit_list.push_back({.is_literal = false,
+                                                      .signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false),
+                                                      .literal = {}});
+                            }
+                        }
+                        else
+                        {
+                            for(int idx{sel_msb}; idx <= sel_lsb; ++idx)
+                            {
+                                r.bit_list.push_back({.is_literal = false,
+                                                      .signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false),
+                                                      .literal = {}});
+                            }
+                        }
+
+                        return r;
+                    }
+
+                    if(p.accept_sym(u8':'))
+                    {
+                        auto const lsb_e{ep.parse_expr()};
+                        int msb{};
+                        int lsb{};
+                        if(!ep.try_eval_const_int(first_e, msb)) { p.err(p.peek(), u8"expected constant integer bit/part-select index"); msb = 0; }
+                        if(!ep.try_eval_const_int(lsb_e, lsb)) { p.err(p.peek(), u8"expected constant integer after ':' in part-select"); lsb = msb; }
+                        if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+                        r.kind = connection_kind::bit_list;
+                        ::std::size_t const w{static_cast<::std::size_t>(msb >= lsb ? (msb - lsb + 1) : (lsb - msb + 1))};
+                        r.bit_list.reserve(w);
+
+                        if(msb >= lsb)
+                        {
+                            for(int idx{msb}; idx >= lsb; --idx)
+                            {
+                                r.bit_list.push_back({.is_literal = false,
+                                                      .signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false),
+                                                      .literal = {}});
+                            }
+                        }
+                        else
+                        {
+                            for(int idx{msb}; idx <= lsb; ++idx)
+                            {
+                                r.bit_list.push_back({.is_literal = false,
+                                                      .signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false),
+                                                      .literal = {}});
+                            }
+                        }
+                        return r;
+                    }
+
+                    int idx{};
+                    if(!ep.try_eval_const_int(first_e, idx)) { p.err(p.peek(), u8"expected constant integer bit-select index"); idx = 0; }
                     if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
 
                     r.kind = connection_kind::scalar;
@@ -2184,7 +3202,7 @@ namespace phy_engine::verilog::digital
                 p.skip_until_semicolon();
             }
 
-            if(lhs.is_vector)
+            if(lhs.k == lvalue_ref::kind::vector)
             {
                 auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size())};
 
@@ -2202,6 +3220,173 @@ namespace phy_engine::verilog::digital
                     blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
 
                     if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                }
+
+                return add_stmt(arena, ::std::move(blk));
+            }
+
+            if(lhs.k == lvalue_ref::kind::dynamic_bit_select)
+            {
+                auto const rhs1{ep.resize(rhs, 1)};
+                vector_desc vd{};
+                vd.msb = lhs.base_desc.msb;
+                vd.lsb = lhs.base_desc.lsb;
+
+                int const max_idx{vd.msb >= vd.lsb ? vd.msb : vd.lsb};
+                ::std::size_t base_max{max_idx >= 0 ? static_cast<::std::size_t>(max_idx) : 0u};
+                ::std::size_t need_bits{1};
+                while((1ull << need_bits) <= base_max && need_bits < 64) { ++need_bits; }
+                ::std::size_t const cmp_w{::std::max(ep.width(lhs.index_expr), need_bits)};
+
+                auto const idx_norm{ep.resize(lhs.index_expr, cmp_w)};
+
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                blk.stmts.reserve(lhs.vector_signals.size());
+
+                for(::std::size_t pos{}; pos < lhs.vector_signals.size(); ++pos)
+                {
+                    int const idx_val{vector_index_at(vd, pos)};
+                    if(idx_val < 0) { continue; }
+
+                    auto const idx_lit{ep.make_uint_literal(static_cast<::std::uint64_t>(idx_val), cmp_w)};
+                    auto const cond{ep.compare_eq(idx_norm, idx_lit)};
+
+                    stmt_node asn{};
+                    asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                    asn.delay_ticks = delay;
+                    asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
+                    asn.expr_root = rhs1.scalar_root;
+                    auto const asn_idx{add_stmt(arena, ::std::move(asn))};
+
+                    stmt_node ifs{};
+                    ifs.k = stmt_node::kind::if_stmt;
+                    ifs.expr_root = cond;
+                    ifs.stmts.push_back(asn_idx);
+                    blk.stmts.push_back(add_stmt(arena, ::std::move(ifs)));
+
+                    if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
+                    {
+                        m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
+                    }
+                }
+
+                return add_stmt(arena, ::std::move(blk));
+            }
+
+            if(lhs.k == lvalue_ref::kind::dynamic_indexed_part_select)
+            {
+                if(lhs.indexed_width == 0)
+                {
+                    p.err(p.peek(), u8"indexed part-select lvalue width must be positive");
+                    return add_stmt(arena, {});
+                }
+
+                auto rhs_bits{ep.resize_to_vector(rhs, lhs.indexed_width)};
+                vector_desc vd{};
+                vd.msb = lhs.base_desc.msb;
+                vd.lsb = lhs.base_desc.lsb;
+
+                int const min_idx{vd.msb < vd.lsb ? vd.msb : vd.lsb};
+                int const max_idx{vd.msb < vd.lsb ? vd.lsb : vd.msb};
+
+                int const w_int{static_cast<int>(lhs.indexed_width)};
+                int start_min{};
+                int start_max{};
+                if(lhs.indexed_plus)
+                {
+                    start_min = min_idx;
+                    start_max = max_idx - (w_int - 1);
+                }
+                else
+                {
+                    start_min = min_idx + (w_int - 1);
+                    start_max = max_idx;
+                }
+
+                if(start_min > start_max)
+                {
+                    p.err(p.peek(), u8"indexed part-select out of range");
+                    return add_stmt(arena, {});
+                }
+
+                ::std::size_t base_max{max_idx >= 0 ? static_cast<::std::size_t>(max_idx) : 0u};
+                ::std::size_t need_bits{1};
+                while((1ull << need_bits) <= base_max && need_bits < 64) { ++need_bits; }
+                ::std::size_t const cmp_w{::std::max(ep.width(lhs.index_expr), need_bits)};
+
+                auto const idx_norm{ep.resize(lhs.index_expr, cmp_w)};
+                bool const desc{vd.msb >= vd.lsb};
+
+                auto compute_bounds = [&](int start) noexcept -> ::std::pair<int, int>
+                {
+                    if(lhs.indexed_plus)
+                    {
+                        if(desc) { return {start + (w_int - 1), start}; }
+                        return {start, start + (w_int - 1)};
+                    }
+                    if(desc) { return {start, start - (w_int - 1)}; }
+                    return {start - (w_int - 1), start};
+                };
+
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                blk.stmts.reserve(static_cast<::std::size_t>(start_max - start_min + 1));
+
+                for(int s{start_min}; s <= start_max; ++s)
+                {
+                    if(s < 0) { continue; }
+                    auto const idx_lit{ep.make_uint_literal(static_cast<::std::uint64_t>(s), cmp_w)};
+                    auto const cond{ep.compare_eq(idx_norm, idx_lit)};
+
+                    stmt_node ifs{};
+                    ifs.k = stmt_node::kind::if_stmt;
+                    ifs.expr_root = cond;
+
+                    auto const [sel_msb, sel_lsb]{compute_bounds(s)};
+                    ::std::size_t j{};
+                    if(sel_msb >= sel_lsb)
+                    {
+                        for(int idx{sel_msb}; idx >= sel_lsb && j < rhs_bits.size(); --idx, ++j)
+                        {
+                            auto const pos{vector_pos(vd, idx)};
+                            if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
+
+                            stmt_node asn{};
+                            asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                            asn.delay_ticks = delay;
+                            asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
+                            asn.expr_root = rhs_bits.index_unchecked(j);
+                            ifs.stmts.push_back(add_stmt(arena, ::std::move(asn)));
+
+                            if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
+                            {
+                                m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        for(int idx{sel_msb}; idx <= sel_lsb && j < rhs_bits.size(); ++idx, ++j)
+                        {
+                            auto const pos{vector_pos(vd, idx)};
+                            if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
+
+                            stmt_node asn{};
+                            asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                            asn.delay_ticks = delay;
+                            asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
+                            asn.expr_root = rhs_bits.index_unchecked(j);
+                            ifs.stmts.push_back(add_stmt(arena, ::std::move(asn)));
+
+                            if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
+                            {
+                                m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
+                            }
+                        }
+                    }
+
+                    blk.stmts.push_back(add_stmt(arena, ::std::move(ifs)));
                 }
 
                 return add_stmt(arena, ::std::move(blk));
@@ -2317,7 +3502,13 @@ namespace phy_engine::verilog::digital
                 p.skip_until_semicolon();
             }
 
-            if(lhs.is_vector)
+            if(lhs.k == lvalue_ref::kind::dynamic_bit_select || lhs.k == lvalue_ref::kind::dynamic_indexed_part_select)
+            {
+                p.err(p.peek(), u8"dynamic lvalue selects are not supported in continuous assign in this subset");
+                return;
+            }
+
+            if(lhs.k == lvalue_ref::kind::vector)
             {
                 auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size())};
                 for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
@@ -2677,6 +3868,11 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<logic_t> prev_values{};
         ::fast_io::vector<scheduled_event> events{};
         ::fast_io::vector<::std::pair<::std::size_t, logic_t>> nba_queue{};
+
+        // Per-evaluation memoization to avoid exponential recursion on shared DAGs (e.g. adders).
+        ::fast_io::vector<logic_t> expr_eval_cache{};
+        ::fast_io::vector<::std::uint32_t> expr_eval_mark{};
+        ::std::uint32_t expr_eval_token{1};
     };
 
     inline void init_state(module_state& st, compiled_module const& m) noexcept
@@ -2686,6 +3882,77 @@ namespace phy_engine::verilog::digital
         st.prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         st.events.clear();
         st.nba_queue.clear();
+        st.expr_eval_cache.clear();
+        st.expr_eval_mark.clear();
+        st.expr_eval_token = 1;
+    }
+
+    inline logic_t eval_expr_cached(compiled_module const& m, ::std::size_t root, module_state& st) noexcept
+    {
+        ::std::size_t const n_nodes{m.expr_nodes.size()};
+        if(root >= n_nodes) { return logic_t::indeterminate_state; }
+
+        if(st.expr_eval_cache.size() < n_nodes)
+        {
+            st.expr_eval_cache.resize(n_nodes);
+            st.expr_eval_mark.resize(n_nodes);
+        }
+
+        ++st.expr_eval_token;
+        if(st.expr_eval_token == 0)
+        {
+            st.expr_eval_token = 1;
+            ::std::fill(st.expr_eval_mark.begin(), st.expr_eval_mark.end(), 0u);
+        }
+
+        ::std::uint32_t const token{st.expr_eval_token};
+
+        auto eval = [&](auto&& self, ::std::size_t r) noexcept -> logic_t
+        {
+            if(r >= n_nodes) { return logic_t::indeterminate_state; }
+            if(st.expr_eval_mark.index_unchecked(r) == token) { return st.expr_eval_cache.index_unchecked(r); }
+
+            st.expr_eval_mark.index_unchecked(r) = token;
+
+            auto const& n{m.expr_nodes.index_unchecked(r)};
+            logic_t v{logic_t::indeterminate_state};
+            switch(n.kind)
+            {
+                case expr_kind::literal: v = n.literal; break;
+                case expr_kind::signal:
+                {
+                    if(n.signal >= st.values.size()) { v = logic_t::indeterminate_state; }
+                    else { v = st.values.index_unchecked(n.signal); }
+                    break;
+                }
+                case expr_kind::unary_not: v = logic_not(self(self, n.a)); break;
+                case expr_kind::binary_and: v = logic_and(self(self, n.a), self(self, n.b)); break;
+                case expr_kind::binary_or: v = logic_or(self(self, n.a), self(self, n.b)); break;
+                case expr_kind::binary_xor: v = logic_xor(self(self, n.a), self(self, n.b)); break;
+                case expr_kind::binary_eq:
+                {
+                    auto const a{normalize_z_to_x(self(self, n.a))};
+                    auto const b{normalize_z_to_x(self(self, n.b))};
+                    if(is_unknown(a) || is_unknown(b)) { v = logic_t::indeterminate_state; }
+                    else { v = a == b ? logic_t::true_state : logic_t::false_state; }
+                    break;
+                }
+                case expr_kind::binary_neq:
+                {
+                    auto const a{normalize_z_to_x(self(self, n.a))};
+                    auto const b{normalize_z_to_x(self(self, n.b))};
+                    if(is_unknown(a) || is_unknown(b)) { v = logic_t::indeterminate_state; }
+                    else { v = a != b ? logic_t::true_state : logic_t::false_state; }
+                    break;
+                }
+                default: v = logic_t::indeterminate_state; break;
+            }
+
+            st.expr_eval_cache.index_unchecked(r) = v;
+            return v;
+        };
+
+        return eval(eval, root);
     }
 
     struct port_binding
@@ -2783,7 +4050,7 @@ namespace phy_engine::verilog::digital
                         st.events.push_back({tick + n.delay_ticks, false, n.lhs_signal, n.expr_root});
                         return false;
                     }
-                    auto const v{eval_expr(m, n.expr_root, st.values)};
+                    auto const v{eval_expr_cached(m, n.expr_root, st)};
                     return assign_signal(st, n.lhs_signal, v);
                 }
                 case stmt_node::kind::nonblocking_assign:
@@ -2796,7 +4063,7 @@ namespace phy_engine::verilog::digital
                             st.events.push_back({tick + n.delay_ticks, false, n.lhs_signal, n.expr_root});
                             return false;
                         }
-                        auto const v{eval_expr(m, n.expr_root, st.values)};
+                        auto const v{eval_expr_cached(m, n.expr_root, st)};
                         return assign_signal(st, n.lhs_signal, v);
                     }
 
@@ -2805,13 +4072,13 @@ namespace phy_engine::verilog::digital
                         st.events.push_back({tick + n.delay_ticks, true, n.lhs_signal, n.expr_root});
                         return false;
                     }
-                    auto const v{eval_expr(m, n.expr_root, st.values)};
+                    auto const v{eval_expr_cached(m, n.expr_root, st)};
                     st.nba_queue.push_back({n.lhs_signal, v});
                     return false;
                 }
                 case stmt_node::kind::if_stmt:
                 {
-                    auto const c{normalize_z_to_x(eval_expr(m, n.expr_root, st.values))};
+                    auto const c{normalize_z_to_x(eval_expr_cached(m, n.expr_root, st))};
                     bool const take{c == logic_t::true_state};
 
                     bool changed{};
@@ -2821,7 +4088,7 @@ namespace phy_engine::verilog::digital
                 }
                 case stmt_node::kind::case_stmt:
                 {
-                    auto const key{normalize_z_to_x(eval_expr(m, n.case_expr_root, st.values))};
+                    auto const key{normalize_z_to_x(eval_expr_cached(m, n.case_expr_root, st))};
                     case_item const* def{};
                     case_item const* match{};
 
@@ -2870,11 +4137,11 @@ namespace phy_engine::verilog::digital
 
                 if(ev.nonblocking)
                 {
-                    st.nba_queue.push_back({ev.lhs_signal, eval_expr(m, ev.expr_root, st.values)});
+                    st.nba_queue.push_back({ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st)});
                 }
                 else
                 {
-                    (void)assign_signal(st, ev.lhs_signal, eval_expr(m, ev.expr_root, st.values));
+                    (void)assign_signal(st, ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st));
                 }
             }
 
@@ -2926,7 +4193,7 @@ namespace phy_engine::verilog::digital
 
             for(auto const& a: m.assigns)
             {
-                auto const v{eval_expr(m, a.expr_root, st.values)};
+                auto const v{eval_expr_cached(m, a.expr_root, st)};
                 changed = assign_signal(st, a.lhs_signal, v) || changed;
             }
 
@@ -3106,6 +4373,15 @@ namespace phy_engine::verilog::digital
                             bind_bit(port_offset, {port_binding::kind::parent_signal, itv->second.bits.front_unchecked(), {}});
                         }
                     }
+                    else if(ref.kind == connection_kind::bit_list)
+                    {
+                        if(!ref.bit_list.empty())
+                        {
+                            auto const& b{ref.bit_list.back_unchecked()};  // LSB
+                            if(b.is_literal) { bind_bit(port_offset, {port_binding::kind::literal, SIZE_MAX, b.literal}); }
+                            else { bind_bit(port_offset, {port_binding::kind::parent_signal, b.signal, {}}); }
+                        }
+                    }
                 }
                 else
                 {
@@ -3117,6 +4393,18 @@ namespace phy_engine::verilog::digital
                             for(::std::size_t pos{}; pos < width; ++pos)
                             {
                                 bind_bit(port_offset + pos, {port_binding::kind::parent_signal, itv->second.bits.index_unchecked(pos), {}});
+                            }
+                        }
+                    }
+                    else if(ref.kind == connection_kind::bit_list)
+                    {
+                        if(ref.bit_list.size() == width)
+                        {
+                            for(::std::size_t pos{}; pos < width; ++pos)
+                            {
+                                auto const& b{ref.bit_list.index_unchecked(pos)};
+                                if(b.is_literal) { bind_bit(port_offset + pos, {port_binding::kind::literal, SIZE_MAX, b.literal}); }
+                                else { bind_bit(port_offset + pos, {port_binding::kind::parent_signal, b.signal, {}}); }
                             }
                         }
                     }
