@@ -117,7 +117,7 @@ namespace phy_engine::solver
             constexpr double tol{0.0};
             constexpr int reorder{1};
 
-            auto const st{cusolverSpZcsrlsvlu(cusolver_handle, n, nnz, descrA, d_values, d_row_ptr, d_col_ind, d_b, tol, reorder, d_x, &singularity)};
+            auto const st{cusolverSpZcsrlsvqr(cusolver_handle, n, nnz, descrA, d_values, d_row_ptr, d_col_ind, d_b, tol, reorder, d_x, &singularity)};
 
             if(st != CUSOLVER_STATUS_SUCCESS || singularity >= 0) { return false; }
 
