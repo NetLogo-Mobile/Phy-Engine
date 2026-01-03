@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <utility>
+#include <vector>
 
 #include <absl/container/btree_map.h>
 
@@ -18,15 +19,21 @@
 namespace phy_engine::verilog::digital
 {
     // This is a deliberately small, synthesizable Verilog subset intended for use as a digital "device" in Phy-Engine.
-    // Supported (initial):
+    // Supported:
     // - `module` / `endmodule`
-    // - Port declarations: `input` / `output` / `inout` (scalar only)
-    // - `wire` / `reg` declarations (scalar only)
+    // - Simple preprocessor: `define`/`undef`/`ifdef`/`ifndef`/`else`/`endif` + `NAME` macro expansion
+    // - Port declarations: `input` / `output` / `inout`, scalar or vectors (`[msb:lsb]`), and `output reg`
+    // - `wire` / `reg` declarations (scalar or vectors)
     // - Continuous assignment: `assign lhs = expr;`
-    // - Sequential always: `always @(posedge clk)` / `always @(negedge clk)` with nonblocking assigns `<=`
-    // - Expressions: identifiers, 1-bit literals, parentheses, unary `~`, binary `&` `^` `|`
+    // - always blocks:
+    //   - `always @*` / `always @(*)` as combinational (`if`/`case`/begin-end; blocking assignment `=`)
+    //   - `always @(posedge/negedge clk)` as sequential (nonblocking assignment `<=`)
+    // - Bit-select: `a[3]` (vector expressions are not supported; use bit-select on both sides)
+    // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
+    // - Module instantiation: named/positional port connections; vector connections require matching widths
     //
-    // Not supported yet: vectors/buses, generate, functions/tasks, delays, blocking assignment semantics, case/if, strength, multiple drivers.
+    // Not supported: hierarchical name references, part-select/concat, generate, tasks/functions, `include`, macro args, full event lists, strength,
+    // multiple-driver resolution.
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
 
@@ -152,7 +159,7 @@ namespace phy_engine::verilog::digital
             if(p >= end || !(details::is_alpha(*p) || *p == u8'$')) { return {}; }
             ++p;
             while(p < end && details::is_ident_continue(*p)) { ++p; }
-            return {b, static_cast<::std::size_t>(p - b)};
+            return ::fast_io::u8string_view{b, static_cast<::std::size_t>(p - b)};
         };
 
         char8_t const* p{src.data()};
@@ -203,7 +210,7 @@ namespace phy_engine::verilog::digital
                         {
                             while(t < logical_end && details::is_space(*t)) { ++t; }
                             ::fast_io::u8string value{};
-                            value.assign(t, static_cast<::std::size_t>(logical_end - t));
+                            value.assign(::fast_io::u8string_view{t, static_cast<::std::size_t>(logical_end - t)});
                             macros.insert_or_assign(::fast_io::u8string{name_sv}, ::std::move(value));
                         }
                     }
@@ -286,7 +293,7 @@ namespace phy_engine::verilog::digital
                         }
                         else
                         {
-                            out.output += it->second;
+                            out.output.append(it->second);
                         }
                         s = t;
                         continue;
@@ -585,6 +592,7 @@ namespace phy_engine::verilog::digital
         enum class kind : ::std::uint_fast8_t
         {
             empty,
+            block,
             blocking_assign,
             nonblocking_assign,
             if_stmt,
@@ -622,24 +630,26 @@ namespace phy_engine::verilog::digital
     {
         port_dir dir{port_dir::unknown};
         bool has_range{};
-        int low{};
-        int high{};
+        int msb{};
+        int lsb{};
         bool is_reg{};
     };
 
     struct vector_desc
     {
-        int low{};
-        int high{};
+        int msb{};
+        int lsb{};
         bool is_reg{};
-        ::fast_io::vector<::std::size_t> bits{};  // bits[index-low] => scalar signal id
+        // Bits are stored in *declaration order*: [0] is msb, last is lsb.
+        ::fast_io::vector<::std::size_t> bits{};
     };
 
     enum class connection_kind : ::std::uint_fast8_t
     {
         unconnected,
         scalar,
-        vector
+        vector,
+        literal
     };
 
     struct connection_ref
@@ -647,6 +657,7 @@ namespace phy_engine::verilog::digital
         connection_kind kind{connection_kind::unconnected};
         ::std::size_t scalar_signal{SIZE_MAX};
         ::fast_io::u8string vector_base{};
+        logic_t literal{logic_t::indeterminate_state};
     };
 
     struct instance_connection
@@ -847,8 +858,8 @@ namespace phy_engine::verilog::digital
         struct range_desc
         {
             bool has_range{};
-            int low{};
-            int high{};
+            int msb{};
+            int lsb{};
         };
 
         inline bool accept_range(parser& p, range_desc& r) noexcept
@@ -881,8 +892,8 @@ namespace phy_engine::verilog::digital
             if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
 
             r.has_range = true;
-            r.low = ::std::min(a, b);
-            r.high = ::std::max(a, b);
+            r.msb = a;
+            r.lsb = b;
             return true;
         }
 
@@ -895,73 +906,88 @@ namespace phy_engine::verilog::digital
             return name;
         }
 
-        inline vector_desc& declare_vector(compiled_module& m, ::fast_io::u8string_view base, int low, int high, bool is_reg) noexcept
+        inline ::std::size_t vector_width(vector_desc const& vd) noexcept
+        {
+            auto const d{vd.msb - vd.lsb};
+            return static_cast<::std::size_t>(d >= 0 ? d + 1 : -d + 1);
+        }
+
+        inline bool vector_contains(vector_desc const& vd, int idx) noexcept
+        {
+            if(vd.msb >= vd.lsb) { return idx <= vd.msb && idx >= vd.lsb; }
+            return idx >= vd.msb && idx <= vd.lsb;
+        }
+
+        inline ::std::size_t vector_pos(vector_desc const& vd, int idx) noexcept
+        {
+            if(!vector_contains(vd, idx)) { return SIZE_MAX; }
+            if(vd.msb >= vd.lsb) { return static_cast<::std::size_t>(vd.msb - idx); }
+            return static_cast<::std::size_t>(idx - vd.msb);
+        }
+
+        inline int vector_index_at(vector_desc const& vd, ::std::size_t pos) noexcept
+        {
+            if(vd.msb >= vd.lsb) { return vd.msb - static_cast<int>(pos); }
+            return vd.msb + static_cast<int>(pos);
+        }
+
+        inline vector_desc& declare_vector_range(parser* p, compiled_module& m, ::fast_io::u8string_view base, int msb, int lsb, bool is_reg) noexcept
         {
             ::fast_io::u8string key{base};
             auto it{m.vectors.find(key)};
-            if(it == m.vectors.end())
+            if(it != m.vectors.end())
             {
-                vector_desc vd{};
-                vd.low = low;
-                vd.high = high;
-                vd.is_reg = is_reg;
-                vd.bits.resize(static_cast<::std::size_t>(high - low + 1));
-                for(int i{low}; i <= high; ++i)
+                auto& vd{it->second};
+                if(vd.msb != msb || vd.lsb != lsb)
                 {
-                    auto const bit_name{make_bit_name(base, i)};
-                    auto const sig{get_or_create_signal(m, bit_name)};
-                    vd.bits.index_unchecked(static_cast<::std::size_t>(i - low)) = sig;
-                    if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    if(p) { p->err(p->peek(), u8"redeclared vector with a different range is not supported"); }
                 }
-                auto res{m.vectors.insert({::std::move(key), ::std::move(vd)})};
-                return res.first->second;
+                if(is_reg && !vd.is_reg)
+                {
+                    vd.is_reg = true;
+                    for(auto const sig: vd.bits)
+                    {
+                        if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    }
+                }
+                return vd;
             }
 
-            auto& vd{it->second};
-            int const new_low{::std::min(vd.low, low)};
-            int const new_high{::std::max(vd.high, high)};
-            if(new_low != vd.low || new_high != vd.high)
+            vector_desc vd{};
+            vd.msb = msb;
+            vd.lsb = lsb;
+            vd.is_reg = is_reg;
+
+            ::std::size_t const w{vector_width(vd)};
+            vd.bits.resize(w);
+
+            for(::std::size_t pos{}; pos < w; ++pos)
             {
-                bool const reg{is_reg || vd.is_reg};
-                ::fast_io::vector<::std::size_t> new_bits{};
-                new_bits.resize(static_cast<::std::size_t>(new_high - new_low + 1));
-
-                for(int i{vd.low}; i <= vd.high; ++i)
-                {
-                    new_bits.index_unchecked(static_cast<::std::size_t>(i - new_low)) = vd.bits.index_unchecked(static_cast<::std::size_t>(i - vd.low));
-                }
-
-                for(int i{new_low}; i <= new_high; ++i)
-                {
-                    auto& slot{new_bits.index_unchecked(static_cast<::std::size_t>(i - new_low))};
-                    if(slot != 0 || (vd.low <= i && i <= vd.high)) { continue; }
-                    auto const bit_name{make_bit_name(base, i)};
-                    slot = get_or_create_signal(m, bit_name);
-                    if(reg) { m.signal_is_reg.index_unchecked(slot) = true; }
-                }
-
-                vd.low = new_low;
-                vd.high = new_high;
-                vd.bits = ::std::move(new_bits);
+                int const idx{vector_index_at(vd, pos)};
+                auto const bit_name{make_bit_name(base, idx)};
+                auto const sig{get_or_create_signal(m, bit_name)};
+                vd.bits.index_unchecked(pos) = sig;
+                if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
             }
 
-            if(is_reg && !vd.is_reg)
-            {
-                vd.is_reg = true;
-                for(auto const sig: vd.bits)
-                {
-                    if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
-                }
-            }
-
-            return vd;
+            auto res{m.vectors.insert({::std::move(key), ::std::move(vd)})};
+            return res.first->second;
         }
 
         inline ::std::size_t get_or_create_vector_bit(compiled_module& m, ::fast_io::u8string_view base, int idx, bool is_reg) noexcept
         {
-            auto& vd{declare_vector(m, base, idx, idx, is_reg)};
-            if(idx < vd.low || idx > vd.high) { return SIZE_MAX; }
-            return vd.bits.index_unchecked(static_cast<::std::size_t>(idx - vd.low));
+            ::fast_io::u8string key{base};
+            auto it{m.vectors.find(key)};
+            if(it != m.vectors.end())
+            {
+                auto const pos{vector_pos(it->second, idx)};
+                if(pos != SIZE_MAX) { return it->second.bits.index_unchecked(pos); }
+            }
+
+            auto const bit_name{make_bit_name(base, idx)};
+            auto const sig{get_or_create_signal(m, bit_name)};
+            if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
+            return sig;
         }
 
         inline port_decl& ensure_port_decl(compiled_module& m, ::fast_io::u8string_view base) noexcept
@@ -991,8 +1017,38 @@ namespace phy_engine::verilog::digital
                 auto const& t{p->peek()};
                 if(t.kind == token_kind::identifier)
                 {
-                    auto const name{t.text};
+                    ::fast_io::u8string name{t.text};
                     p->consume();
+
+                    // bit-select: a[3]
+                    if(p->accept_sym(u8'['))
+                    {
+                        int idx{};
+                        auto const& ti{p->peek()};
+                        if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx))
+                        {
+                            p->err(ti, u8"expected constant integer bit-select index");
+                        }
+                        else { p->consume(); }
+                        if(!p->accept_sym(u8']')) { p->err(p->peek(), u8"expected ']'"); }
+
+                        return add_node({.kind = expr_kind::signal,
+                                         .signal = get_or_create_vector_bit(*m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false)});
+                    }
+
+                    // If the identifier is a vector, require bit-select unless width==1.
+                    auto it{m->vectors.find(name)};
+                    if(it != m->vectors.end() && vector_width(it->second) != 1)
+                    {
+                        p->err(t, u8"vector used in 1-bit expression without bit-select");
+                        return add_node({.kind = expr_kind::literal, .literal = logic_t::indeterminate_state});
+                    }
+
+                    if(it != m->vectors.end() && !it->second.bits.empty())
+                    {
+                        return add_node({.kind = expr_kind::signal, .signal = it->second.bits.front_unchecked()});
+                    }
+
                     return add_node({.kind = expr_kind::signal, .signal = get_or_create_signal(*m, name)});
                 }
                 if(t.kind == token_kind::number)
@@ -1068,27 +1124,403 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            [[nodiscard]] ::std::size_t parse_expr() noexcept { return parse_or(); }
+            [[nodiscard]] ::std::size_t parse_eq() noexcept
+            {
+                ::std::size_t lhs{parse_or()};
+                for(;;)
+                {
+                    if(p->accept_sym2(u8'=', u8'='))
+                    {
+                        ::std::size_t const rhs{parse_or()};
+                        lhs = add_node({.kind = expr_kind::binary_eq, .a = lhs, .b = rhs});
+                        continue;
+                    }
+                    if(p->accept_sym2(u8'!', u8'='))
+                    {
+                        ::std::size_t const rhs{parse_or()};
+                        lhs = add_node({.kind = expr_kind::binary_neq, .a = lhs, .b = rhs});
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] ::std::size_t parse_land() noexcept
+            {
+                ::std::size_t lhs{parse_eq()};
+                for(;;)
+                {
+                    if(p->accept_sym2(u8'&', u8'&'))
+                    {
+                        ::std::size_t const rhs{parse_eq()};
+                        lhs = add_node({.kind = expr_kind::binary_and, .a = lhs, .b = rhs});
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] ::std::size_t parse_lor() noexcept
+            {
+                ::std::size_t lhs{parse_land()};
+                for(;;)
+                {
+                    if(p->accept_sym2(u8'|', u8'|'))
+                    {
+                        ::std::size_t const rhs{parse_land()};
+                        lhs = add_node({.kind = expr_kind::binary_or, .a = lhs, .b = rhs});
+                        continue;
+                    }
+                    return lhs;
+                }
+            }
+
+            [[nodiscard]] ::std::size_t parse_expr() noexcept { return parse_lor(); }
         };
+
+        inline bool parse_lvalue(parser& p, compiled_module& m, ::std::size_t& sig_out, bool mark_reg) noexcept
+        {
+            auto const name{p.expect_ident(u8"expected identifier")};
+            if(name.empty()) { return false; }
+
+            if(p.accept_sym(u8'['))
+            {
+                int idx{};
+                auto const& ti{p.peek()};
+                if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx))
+                {
+                    p.err(ti, u8"expected constant integer bit-select index");
+                }
+                else { p.consume(); }
+                if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+                sig_out = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg);
+                return true;
+            }
+
+            sig_out = get_or_create_signal(m, name);
+            if(mark_reg && sig_out < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig_out) = true; }
+            return true;
+        }
+
+        inline connection_ref parse_connection_ref(parser& p, compiled_module& m) noexcept
+        {
+            connection_ref r{};
+            auto const& t{p.peek()};
+            if(t.kind == token_kind::symbol && (is_sym(t.text, u8')') || is_sym(t.text, u8','))) { return r; }
+
+            if(t.kind == token_kind::number)
+            {
+                r.kind = connection_kind::literal;
+                r.literal = parse_1bit_literal(t.text);
+                p.consume();
+                return r;
+            }
+
+            if(t.kind == token_kind::identifier)
+            {
+                ::fast_io::u8string name{t.text};
+                p.consume();
+
+                if(p.accept_sym(u8'['))
+                {
+                    int idx{};
+                    auto const& ti{p.peek()};
+                    if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx))
+                    {
+                        p.err(ti, u8"expected constant integer bit-select index");
+                    }
+                    else { p.consume(); }
+                    if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+                    r.kind = connection_kind::scalar;
+                    r.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, false);
+                    return r;
+                }
+
+                if(m.vectors.find(name) != m.vectors.end())
+                {
+                    r.kind = connection_kind::vector;
+                    r.vector_base = ::std::move(name);
+                    return r;
+                }
+
+                r.kind = connection_kind::scalar;
+                r.scalar_signal = get_or_create_signal(m, name);
+                return r;
+            }
+
+            p.err(t, u8"expected connection expression");
+            p.consume();
+            return r;
+        }
+
+        inline bool try_parse_instance(parser& p, compiled_module& m) noexcept
+        {
+            ::std::size_t const pos0{p.pos};
+            auto const& t0{p.peek()};
+            if(t0.kind != token_kind::identifier) { return false; }
+
+            ::fast_io::u8string module_name{t0.text};
+            p.consume();
+
+            auto const inst_name{p.expect_ident(u8"expected instance identifier")};
+            if(inst_name.empty())
+            {
+                p.pos = pos0;
+                return false;
+            }
+
+            if(!p.accept_sym(u8'('))
+            {
+                p.pos = pos0;
+                return false;
+            }
+
+            instance inst{};
+            inst.module_name = ::std::move(module_name);
+            inst.instance_name = inst_name;
+
+            if(!p.accept_sym(u8')'))
+            {
+                for(;;)
+                {
+                    instance_connection ic{};
+                    if(p.accept_sym(u8'.'))
+                    {
+                        ic.port_name = p.expect_ident(u8"expected port identifier after '.'");
+                        if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after .port"); }
+                        if(!p.accept_sym(u8')'))
+                        {
+                            ic.ref = parse_connection_ref(p, m);
+                            if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after connection"); }
+                        }
+                    }
+                    else
+                    {
+                        ic.ref = parse_connection_ref(p, m);
+                    }
+
+                    inst.connections.push_back(::std::move(ic));
+
+                    if(p.accept_sym(u8')')) { break; }
+                    if(!p.accept_sym(u8','))
+                    {
+                        p.err(p.peek(), u8"expected ',' or ')' in instance connection list");
+                        while(!p.eof() && !p.accept_sym(u8')')) { p.consume(); }
+                        break;
+                    }
+                }
+            }
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';' after instance");
+                p.skip_until_semicolon();
+            }
+
+            m.instances.push_back(::std::move(inst));
+            return true;
+        }
+
+        inline ::std::size_t add_stmt(::fast_io::vector<stmt_node>& arena, stmt_node n) noexcept
+        {
+            ::std::size_t const idx{arena.size()};
+            arena.push_back(::std::move(n));
+            return idx;
+        }
+
+        inline ::std::uint64_t parse_delay_ticks(parser& p) noexcept
+        {
+            auto const& t{p.peek()};
+            if(t.kind != token_kind::number)
+            {
+                p.err(t, u8"expected integer delay after '#'");
+                return 0;
+            }
+
+            int v{};
+            if(!parse_dec_int(t.text, v) || v < 0)
+            {
+                p.err(t, u8"expected non-negative integer delay after '#'");
+                p.consume();
+                return 0;
+            }
+
+            p.consume();
+            return static_cast<::std::uint64_t>(v);
+        }
+
+        inline ::std::size_t parse_proc_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool allow_nonblocking) noexcept
+        {
+            if(p.accept_sym(u8';')) { return add_stmt(arena, {}); }
+
+            ::std::uint64_t delay{};
+            if(p.accept_sym(u8'#')) { delay = parse_delay_ticks(p); }
+
+            if(p.accept_kw(u8"begin"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before begin/end block is not supported"); }
+
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                while(!p.eof() && !p.accept_kw(u8"end"))
+                {
+                    blk.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking));
+                }
+                return add_stmt(arena, ::std::move(blk));
+            }
+
+            if(p.accept_kw(u8"if"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before if is not supported"); }
+
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after if"); }
+                expr_parser ep{&p, &m};
+                ::std::size_t const cond{ep.parse_expr()};
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after if condition"); }
+
+                stmt_node st{};
+                st.k = stmt_node::kind::if_stmt;
+                st.expr_root = cond;
+                st.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking));
+                if(p.accept_kw(u8"else")) { st.else_stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking)); }
+                return add_stmt(arena, ::std::move(st));
+            }
+
+            if(p.accept_kw(u8"case"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before case is not supported"); }
+
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after case"); }
+                expr_parser ep{&p, &m};
+                ::std::size_t const cexpr{ep.parse_expr()};
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after case expression"); }
+
+                stmt_node st{};
+                st.k = stmt_node::kind::case_stmt;
+                st.case_expr_root = cexpr;
+
+                while(!p.eof())
+                {
+                    if(p.accept_kw(u8"endcase")) { break; }
+
+                    if(p.accept_kw(u8"default"))
+                    {
+                        if(!p.accept_sym(u8':')) { p.err(p.peek(), u8"expected ':' after default"); }
+                        case_item ci{};
+                        ci.is_default = true;
+                        ci.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking));
+                        st.case_items.push_back(::std::move(ci));
+                        continue;
+                    }
+
+                    ::fast_io::vector<logic_t> matches{};
+                    for(;;)
+                    {
+                        auto const& mt{p.peek()};
+                        if(mt.kind != token_kind::number)
+                        {
+                            p.err(mt, u8"expected 1-bit literal in case item");
+                            break;
+                        }
+                        matches.push_back(parse_1bit_literal(mt.text));
+                        p.consume();
+                        if(!p.accept_sym(u8',')) { break; }
+                    }
+
+                    if(!p.accept_sym(u8':')) { p.err(p.peek(), u8"expected ':' after case item"); }
+                    ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking)};
+
+                    for(auto const mv: matches)
+                    {
+                        case_item ci{};
+                        ci.is_default = false;
+                        ci.match = mv;
+                        ci.stmts.push_back(body);
+                        st.case_items.push_back(::std::move(ci));
+                    }
+                }
+
+                return add_stmt(arena, ::std::move(st));
+            }
+
+            ::std::size_t lhs{};
+            if(!parse_lvalue(p, m, lhs, true))
+            {
+                p.skip_until_semicolon();
+                return add_stmt(arena, {});
+            }
+
+            bool nonblocking{};
+            if(p.accept_sym2(u8'<', u8'='))
+            {
+                if(!allow_nonblocking) { p.err(p.peek(), u8"nonblocking assignments are not supported here"); }
+                nonblocking = true;
+            }
+            else if(!p.accept_sym(u8'='))
+            {
+                p.err(p.peek(), u8"expected '=' or '<=' in assignment");
+                p.skip_until_semicolon();
+                return add_stmt(arena, {});
+            }
+
+            expr_parser ep{&p, &m};
+            ::std::size_t const rhs{ep.parse_expr()};
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';' after assignment");
+                p.skip_until_semicolon();
+            }
+
+            stmt_node st{};
+            st.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+            st.delay_ticks = delay;
+            st.lhs_signal = lhs;
+            st.expr_root = rhs;
+            if(lhs < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(lhs) = true; }
+            return add_stmt(arena, ::std::move(st));
+        }
 
         inline void parse_decl_list(parser& p, compiled_module& m, port_dir d) noexcept
         {
-            // optional range: [msb:lsb] (ignored for now)
-            if(p.accept_sym(u8'['))
+            bool is_reg{};
+            if(d == port_dir::output)
             {
-                while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                if(p.accept_kw(u8"reg")) { is_reg = true; }
+                else if(p.accept_kw(u8"wire"))
+                {
+                    // ignored
+                }
             }
+
+            range_desc r{};
+            accept_range(p, r);
 
             for(;;)
             {
                 auto const name{p.expect_ident(u8"expected identifier in declaration")};
                 if(name.empty()) { return; }
 
-                auto const sig{get_or_create_signal(m, name)};
-                if(d != port_dir::unknown) { set_port_dir(m, name, d); }
+                auto& pd{ensure_port_decl(m, ::fast_io::u8string_view{name.data(), name.size()})};
+                pd.dir = d;
+                if(is_reg) { pd.is_reg = true; }
+                if(r.has_range)
+                {
+                    pd.has_range = true;
+                    pd.msb = r.msb;
+                    pd.lsb = r.lsb;
+                    (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg);
+                }
+                else
+                {
+                    auto const sig{get_or_create_signal(m, name)};
+                    if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                }
 
                 if(!p.accept_sym(u8',')) { break; }
             }
+
             if(!p.accept_sym(u8';'))
             {
                 p.err(p.peek(), u8"expected ';'");
@@ -1098,14 +1530,27 @@ namespace phy_engine::verilog::digital
 
         inline void parse_wire_list(parser& p, compiled_module& m, bool is_reg) noexcept
         {
+            range_desc r{};
+            accept_range(p, r);
+
             for(;;)
             {
                 auto const name{p.expect_ident(u8"expected identifier in declaration")};
                 if(name.empty()) { return; }
-                auto const sig{get_or_create_signal(m, name)};
-                if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
+
+                if(r.has_range)
+                {
+                    (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg);
+                }
+                else
+                {
+                    auto const sig{get_or_create_signal(m, name)};
+                    if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                }
+
                 if(!p.accept_sym(u8',')) { break; }
             }
+
             if(!p.accept_sym(u8';'))
             {
                 p.err(p.peek(), u8"expected ';'");
@@ -1115,8 +1560,8 @@ namespace phy_engine::verilog::digital
 
         inline void parse_assign_stmt(parser& p, compiled_module& m) noexcept
         {
-            auto const lhs_name{p.expect_ident(u8"expected lhs identifier after 'assign'")};
-            if(lhs_name.empty())
+            ::std::size_t lhs{};
+            if(!parse_lvalue(p, m, lhs, false))
             {
                 p.skip_until_semicolon();
                 return;
@@ -1137,88 +1582,67 @@ namespace phy_engine::verilog::digital
                 p.skip_until_semicolon();
             }
 
-            m.assigns.push_back({get_or_create_signal(m, lhs_name), root});
+            m.assigns.push_back({lhs, root});
         }
 
-        inline void parse_always_ff(parser& p, compiled_module& m) noexcept
+        inline void parse_always(parser& p, compiled_module& m) noexcept
         {
-            // always @ ( posedge clk ) <stmt>
-            if(!p.accept_sym(u8'@'))
+            if(!p.accept_sym(u8'@')) { p.err(p.peek(), u8"expected '@' after always"); p.skip_until_semicolon(); return; }
+
+            bool comb{};
+            if(p.accept_sym(u8'*'))
             {
-                p.err(p.peek(), u8"expected '@' after always");
-                p.skip_until_semicolon();
-                return;
+                comb = true;
             }
-            if(!p.accept_sym(u8'('))
+            else
             {
-                p.err(p.peek(), u8"expected '(' after @");
-                p.skip_until_semicolon();
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after @"); p.skip_until_semicolon(); return; }
+                if(p.accept_sym(u8'*'))
+                {
+                    comb = true;
+                    if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after @*"); }
+                }
+            }
+
+            if(comb)
+            {
+                always_comb ac{};
+                ac.stmt_nodes.reserve(64);
+                ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, false));
+                m.always_combs.push_back(::std::move(ac));
                 return;
             }
 
             bool posedge{true};
             if(p.accept_kw(u8"posedge")) { posedge = true; }
             else if(p.accept_kw(u8"negedge")) { posedge = false; }
-            else
-            {
-                p.err(p.peek(), u8"expected posedge/negedge");
-            }
+            else { p.err(p.peek(), u8"expected posedge/negedge or '*'"); }
 
             auto const clk_name{p.expect_ident(u8"expected clock identifier")};
             if(clk_name.empty())
             {
-                p.skip_until_semicolon();
+                while(!p.eof() && !p.accept_sym(u8')')) { p.consume(); }
                 return;
             }
 
-            if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after event"); }
+            while(!p.eof() && !p.accept_sym(u8')')) { p.consume(); }
 
             always_ff ff{};
             ff.clk_signal = get_or_create_signal(m, clk_name);
             ff.posedge = posedge;
-
-            auto parse_one_nb_assign = [&]() noexcept
-            {
-                auto const lhs{p.expect_ident(u8"expected lhs identifier in nonblocking assignment")};
-                if(lhs.empty())
-                {
-                    p.skip_until_semicolon();
-                    return;
-                }
-                if(!p.accept_sym2(u8'<', u8'='))
-                {
-                    p.err(p.peek(), u8"expected '<='");
-                    p.skip_until_semicolon();
-                    return;
-                }
-                expr_parser ep{&p, &m};
-                ::std::size_t const root{ep.parse_expr()};
-                if(!p.accept_sym(u8';'))
-                {
-                    p.err(p.peek(), u8"expected ';'");
-                    p.skip_until_semicolon();
-                }
-                ff.assigns.push_back({get_or_create_signal(m, lhs), root});
-            };
-
-            if(p.accept_kw(u8"begin"))
-            {
-                while(!p.eof() && !p.accept_kw(u8"end")) { parse_one_nb_assign(); }
-            }
-            else
-            {
-                parse_one_nb_assign();
-            }
-
-            if(!ff.assigns.empty()) { m.always_ffs.push_back(::std::move(ff)); }
+            ff.stmt_nodes.reserve(64);
+            ff.roots.push_back(parse_proc_stmt(p, m, ff.stmt_nodes, true));
+            m.always_ffs.push_back(::std::move(ff));
         }
 
         inline compiled_module parse_module(parser& p) noexcept
         {
             compiled_module m{};
-            m.expr_nodes.reserve(128);
-            m.assigns.reserve(64);
-            m.always_ffs.reserve(16);
+            m.expr_nodes.reserve(256);
+            m.assigns.reserve(128);
+            m.always_ffs.reserve(32);
+            m.always_combs.reserve(32);
+            m.instances.reserve(64);
 
             m.name = p.expect_ident(u8"expected module name");
 
@@ -1229,42 +1653,64 @@ namespace phy_engine::verilog::digital
                 return m;
             }
 
-            // port list
+            // port list: plain names or ANSI declarations (scalar/vectors)
             if(!p.accept_sym(u8')'))
             {
                 port_dir current_dir{port_dir::unknown};
+                bool current_is_reg{};
+                range_desc current_range{};
 
-                // Parse both styles:
-                // - module m(a,b,y);
-                // - module m(input a, input b, output y);
                 for(;;)
                 {
-                    if(p.accept_kw(u8"input")) { current_dir = port_dir::input; }
-                    else if(p.accept_kw(u8"output")) { current_dir = port_dir::output; }
-                    else if(p.accept_kw(u8"inout")) { current_dir = port_dir::inout; }
-
-                    // optional range: [msb:lsb] (ignored for now)
-                    if(p.accept_sym(u8'['))
+                    if(p.accept_kw(u8"input"))
                     {
-                        while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                        current_dir = port_dir::input;
+                        current_is_reg = false;
+                        current_range = {};
+                        accept_range(p, current_range);
+                    }
+                    else if(p.accept_kw(u8"output"))
+                    {
+                        current_dir = port_dir::output;
+                        current_is_reg = false;
+                        current_range = {};
+                        if(p.accept_kw(u8"reg")) { current_is_reg = true; }
+                        else if(p.accept_kw(u8"wire"))
+                        {
+                            // ignored
+                        }
+                        accept_range(p, current_range);
+                    }
+                    else if(p.accept_kw(u8"inout"))
+                    {
+                        current_dir = port_dir::inout;
+                        current_is_reg = false;
+                        current_range = {};
+                        accept_range(p, current_range);
                     }
 
                     auto const port_name{p.expect_ident(u8"expected port identifier")};
                     if(!port_name.empty())
                     {
-                        ::std::size_t const sig{get_or_create_signal(m, port_name)};
-                        m.ports.push_back({::fast_io::u8string{port_name}, current_dir, sig});
+                        auto& pd{ensure_port_decl(m, ::fast_io::u8string_view{port_name.data(), port_name.size()})};
+                        if(current_dir != port_dir::unknown) { pd.dir = current_dir; }
+                        if(current_is_reg) { pd.is_reg = true; }
+                        if(current_range.has_range)
+                        {
+                            pd.has_range = true;
+                            pd.msb = current_range.msb;
+                            pd.lsb = current_range.lsb;
+                            (void)declare_vector_range(&p,
+                                                       m,
+                                                       ::fast_io::u8string_view{port_name.data(), port_name.size()},
+                                                       current_range.msb,
+                                                       current_range.lsb,
+                                                       current_is_reg);
+                        }
                     }
 
                     if(p.accept_sym(u8')')) { break; }
                     if(!p.accept_sym(u8',')) { p.err(p.peek(), u8"expected ',' or ')' in port list"); }
-
-                    // If next token is a direction keyword, it starts a new declaration and resets dir.
-                    auto const& nt{p.peek()};
-                    if(nt.kind == token_kind::identifier && (is_kw(nt.text, u8"input") || is_kw(nt.text, u8"output") || is_kw(nt.text, u8"inout")))
-                    {
-                        current_dir = port_dir::unknown;
-                    }
                 }
             }
 
@@ -1313,12 +1759,41 @@ namespace phy_engine::verilog::digital
                 }
                 if(p.accept_kw(u8"always"))
                 {
-                    parse_always_ff(p, m);
+                    parse_always(p, m);
                     continue;
                 }
 
-                // unknown statement/instantiation: skip
+                if(try_parse_instance(p, m)) { continue; }
+
+                // unknown statement: skip
                 p.skip_until_semicolon();
+            }
+
+            // finalize bit-level ports (expand vectors)
+            m.ports.clear();
+            for(auto const& base: m.port_order)
+            {
+                auto it{m.port_decls.find(base)};
+                port_decl pd{};
+                if(it != m.port_decls.end()) { pd = it->second; }
+
+                if(pd.has_range)
+                {
+                    auto& vd{declare_vector_range(nullptr, m, ::fast_io::u8string_view{base.data(), base.size()}, pd.msb, pd.lsb, pd.is_reg)};
+                    ::std::size_t const w{vector_width(vd)};
+                    for(::std::size_t pos{}; pos < w; ++pos)
+                    {
+                        int const idx{vector_index_at(vd, pos)};
+                        ::fast_io::u8string pn{make_bit_name(::fast_io::u8string_view{base.data(), base.size()}, idx)};
+                        m.ports.push_back({::std::move(pn), pd.dir, vd.bits.index_unchecked(pos)});
+                    }
+                }
+                else
+                {
+                    auto const sig{get_or_create_signal(m, base)};
+                    if(pd.is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    m.ports.push_back({base, pd.dir, sig});
+                }
             }
 
             return m;
@@ -1328,8 +1803,12 @@ namespace phy_engine::verilog::digital
     inline compile_result compile(::fast_io::u8string_view src) noexcept
     {
         compile_result out{};
-        auto const lr{lex(src)};
-        out.errors = lr.errors;
+        auto pp{preprocess(src)};
+        out.errors = ::std::move(pp.errors);
+
+        auto const lr{lex(::fast_io::u8string_view{pp.output.data(), pp.output.size()})};
+        out.errors.reserve(out.errors.size() + lr.errors.size());
+        for(auto const& e: lr.errors) { out.errors.push_back(e); }
 
         details::parser p{__builtin_addressof(lr.tokens), 0, __builtin_addressof(out.errors)};
 
@@ -1361,15 +1840,39 @@ namespace phy_engine::verilog::digital
             case expr_kind::binary_and: return logic_and(eval_expr(m, n.a, values), eval_expr(m, n.b, values));
             case expr_kind::binary_or: return logic_or(eval_expr(m, n.a, values), eval_expr(m, n.b, values));
             case expr_kind::binary_xor: return logic_xor(eval_expr(m, n.a, values), eval_expr(m, n.b, values));
+            case expr_kind::binary_eq:
+            {
+                auto const a{normalize_z_to_x(eval_expr(m, n.a, values))};
+                auto const b{normalize_z_to_x(eval_expr(m, n.b, values))};
+                if(is_unknown(a) || is_unknown(b)) { return logic_t::indeterminate_state; }
+                return a == b ? logic_t::true_state : logic_t::false_state;
+            }
+            case expr_kind::binary_neq:
+            {
+                auto const a{normalize_z_to_x(eval_expr(m, n.a, values))};
+                auto const b{normalize_z_to_x(eval_expr(m, n.b, values))};
+                if(is_unknown(a) || is_unknown(b)) { return logic_t::indeterminate_state; }
+                return a != b ? logic_t::true_state : logic_t::false_state;
+            }
             default: return logic_t::indeterminate_state;
         }
     }
+
+    struct scheduled_event
+    {
+        ::std::uint64_t due_tick{};
+        bool nonblocking{};
+        ::std::size_t lhs_signal{SIZE_MAX};
+        ::std::size_t expr_root{SIZE_MAX};
+    };
 
     struct module_state
     {
         compiled_module const* mod{};
         ::fast_io::vector<logic_t> values{};
         ::fast_io::vector<logic_t> prev_values{};
+        ::fast_io::vector<scheduled_event> events{};
+        ::fast_io::vector<::std::pair<::std::size_t, logic_t>> nba_queue{};
     };
 
     inline void init_state(module_state& st, compiled_module const& m) noexcept
@@ -1377,65 +1880,488 @@ namespace phy_engine::verilog::digital
         st.mod = __builtin_addressof(m);
         st.values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         st.prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
+        st.events.clear();
+        st.nba_queue.clear();
     }
 
-    inline bool simulate_tick(module_state& st, bool process_sequential) noexcept
+    struct port_binding
     {
-        if(st.mod == nullptr) [[unlikely]] { return false; }
-        auto const& m{*st.mod};
-
-        // sequential (edge triggered)
-        if(process_sequential)
+        enum class kind : ::std::uint_fast8_t
         {
-            ::fast_io::vector<::std::pair<::std::size_t, logic_t>> pending{};
-            pending.reserve(16);
+            unconnected,
+            parent_signal,
+            literal
+        };
+
+        kind k{kind::unconnected};
+        ::std::size_t parent_signal{SIZE_MAX};
+        logic_t literal{logic_t::indeterminate_state};
+    };
+
+    struct instance_state
+    {
+        compiled_module const* mod{};
+        ::fast_io::u8string instance_name{};
+        module_state state{};
+        // For each bit-level port in `mod->ports`, a binding into the parent instance.
+        ::fast_io::vector<port_binding> bindings{};
+        ::std::vector<instance_state> children{};
+    };
+
+    struct compiled_design
+    {
+        ::fast_io::vector<compiled_module> modules{};
+        ::absl::btree_map<::fast_io::u8string, ::std::size_t> module_index{};
+    };
+
+    inline compiled_design build_design(compile_result&& cr) noexcept
+    {
+        compiled_design d{};
+        d.modules = ::std::move(cr.modules);
+        for(::std::size_t i{}; i < d.modules.size(); ++i)
+        {
+            auto const& nm{d.modules.index_unchecked(i).name};
+            if(d.module_index.find(nm) == d.module_index.end()) { d.module_index.insert({nm, i}); }
+        }
+        return d;
+    }
+
+    inline compiled_module const* find_module(compiled_design const& d, ::fast_io::u8string_view name) noexcept
+    {
+        auto it{d.module_index.find(::fast_io::u8string{name})};
+        if(it == d.module_index.end()) { return nullptr; }
+        return __builtin_addressof(d.modules.index_unchecked(it->second));
+    }
+
+    inline compiled_module const* find_module(compiled_design const& d, ::fast_io::u8string const& name) noexcept
+    {
+        return find_module(d, ::fast_io::u8string_view{name.data(), name.size()});
+    }
+
+    namespace runtime_details
+    {
+        inline bool assign_signal(module_state& st, ::std::size_t sig, logic_t v) noexcept
+        {
+            if(sig >= st.values.size()) { return false; }
+            auto& dst{st.values.index_unchecked(sig)};
+            if(dst != v)
+            {
+                dst = v;
+                return true;
+            }
+            return false;
+        }
+
+        inline bool exec_stmt(compiled_module const& m,
+                              ::fast_io::vector<stmt_node> const& arena,
+                              ::std::size_t stmt_idx,
+                              module_state& st,
+                              ::std::uint64_t tick,
+                              bool treat_nonblocking_as_blocking) noexcept
+        {
+            if(stmt_idx >= arena.size()) { return false; }
+            auto const& n{arena.index_unchecked(stmt_idx)};
+
+            switch(n.k)
+            {
+                case stmt_node::kind::empty: return false;
+                case stmt_node::kind::block:
+                {
+                    bool changed{};
+                    for(auto const sub: n.stmts) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    return changed;
+                }
+                case stmt_node::kind::blocking_assign:
+                {
+                    if(n.lhs_signal >= st.values.size()) { return false; }
+                    if(n.delay_ticks != 0)
+                    {
+                        st.events.push_back({tick + n.delay_ticks, false, n.lhs_signal, n.expr_root});
+                        return false;
+                    }
+                    auto const v{eval_expr(m, n.expr_root, st.values)};
+                    return assign_signal(st, n.lhs_signal, v);
+                }
+                case stmt_node::kind::nonblocking_assign:
+                {
+                    if(n.lhs_signal >= st.values.size()) { return false; }
+                    if(treat_nonblocking_as_blocking)
+                    {
+                        if(n.delay_ticks != 0)
+                        {
+                            st.events.push_back({tick + n.delay_ticks, false, n.lhs_signal, n.expr_root});
+                            return false;
+                        }
+                        auto const v{eval_expr(m, n.expr_root, st.values)};
+                        return assign_signal(st, n.lhs_signal, v);
+                    }
+
+                    if(n.delay_ticks != 0)
+                    {
+                        st.events.push_back({tick + n.delay_ticks, true, n.lhs_signal, n.expr_root});
+                        return false;
+                    }
+                    auto const v{eval_expr(m, n.expr_root, st.values)};
+                    st.nba_queue.push_back({n.lhs_signal, v});
+                    return false;
+                }
+                case stmt_node::kind::if_stmt:
+                {
+                    auto const c{normalize_z_to_x(eval_expr(m, n.expr_root, st.values))};
+                    bool const take{c == logic_t::true_state};
+
+                    bool changed{};
+                    auto const& list{take ? n.stmts : n.else_stmts};
+                    for(auto const sub: list) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    return changed;
+                }
+                case stmt_node::kind::case_stmt:
+                {
+                    auto const key{normalize_z_to_x(eval_expr(m, n.case_expr_root, st.values))};
+                    case_item const* def{};
+                    case_item const* match{};
+
+                    for(auto const& ci: n.case_items)
+                    {
+                        if(ci.is_default)
+                        {
+                            def = __builtin_addressof(ci);
+                            continue;
+                        }
+                        if(normalize_z_to_x(ci.match) == key)
+                        {
+                            match = __builtin_addressof(ci);
+                            break;
+                        }
+                    }
+
+                    auto const* chosen{match ? match : def};
+                    if(chosen == nullptr) { return false; }
+
+                    bool changed{};
+                    for(auto const sub: chosen->stmts) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    return changed;
+                }
+                default: return false;
+            }
+        }
+
+        inline void process_due_events(module_state& st, ::std::uint64_t tick) noexcept
+        {
+            if(st.mod == nullptr) { return; }
+            auto const& m{*st.mod};
+
+            ::fast_io::vector<scheduled_event> keep{};
+            keep.reserve(st.events.size());
+
+            for(auto const& ev: st.events)
+            {
+                if(ev.due_tick > tick)
+                {
+                    keep.push_back(ev);
+                    continue;
+                }
+
+                if(ev.lhs_signal >= st.values.size()) { continue; }
+
+                if(ev.nonblocking)
+                {
+                    st.nba_queue.push_back({ev.lhs_signal, eval_expr(m, ev.expr_root, st.values)});
+                }
+                else
+                {
+                    (void)assign_signal(st, ev.lhs_signal, eval_expr(m, ev.expr_root, st.values));
+                }
+            }
+
+            st.events = ::std::move(keep);
+        }
+
+        inline bool apply_nba(module_state& st) noexcept
+        {
+            bool changed{};
+            for(auto const& [lhs, v]: st.nba_queue) { changed = assign_signal(st, lhs, v) || changed; }
+            st.nba_queue.clear();
+            return changed;
+        }
+
+        inline void run_sequential(instance_state& inst, ::std::uint64_t tick) noexcept
+        {
+            if(inst.mod == nullptr) { return; }
+            auto const& m{*inst.mod};
+            auto& st{inst.state};
 
             for(auto const& ff: m.always_ffs)
             {
-                auto const clk_prev{st.prev_values.index_unchecked(ff.clk_signal)};
-                auto const clk_now{st.values.index_unchecked(ff.clk_signal)};
+                if(ff.clk_signal >= st.values.size() || ff.clk_signal >= st.prev_values.size()) { continue; }
+
+                auto const clk_prev{normalize_z_to_x(st.prev_values.index_unchecked(ff.clk_signal))};
+                auto const clk_now{normalize_z_to_x(st.values.index_unchecked(ff.clk_signal))};
 
                 bool fire{};
-                if(ff.posedge) { fire = (normalize_z_to_x(clk_prev) == logic_t::false_state) && (normalize_z_to_x(clk_now) == logic_t::true_state); }
-                else
-                {
-                    fire = (normalize_z_to_x(clk_prev) == logic_t::true_state) && (normalize_z_to_x(clk_now) == logic_t::false_state);
-                }
+                if(ff.posedge) { fire = (clk_prev == logic_t::false_state) && (clk_now == logic_t::true_state); }
+                else { fire = (clk_prev == logic_t::true_state) && (clk_now == logic_t::false_state); }
 
                 if(!fire) { continue; }
 
-                for(auto const& [lhs, root]: ff.assigns) { pending.push_back({lhs, eval_expr(m, root, st.values)}); }
-            }
-
-            for(auto const& [lhs, v]: pending)
-            {
-                if(lhs < st.values.size()) { st.values.index_unchecked(lhs) = v; }
+                for(auto const root: ff.roots) { (void)exec_stmt(m, ff.stmt_nodes, root, st, tick, false); }
             }
         }
 
-        // combinational (continuous assign), fixed-point
-        constexpr ::std::size_t max_iter{64};
-        for(::std::size_t iter{}; iter < max_iter; ++iter)
+        inline bool run_comb_local(instance_state& inst, ::std::uint64_t tick) noexcept
         {
+            if(inst.mod == nullptr) { return false; }
+            auto const& m{*inst.mod};
+            auto& st{inst.state};
+
             bool changed{};
+            for(auto const& ac: m.always_combs)
+            {
+                for(auto const root: ac.roots) { changed = exec_stmt(m, ac.stmt_nodes, root, st, tick, true) || changed; }
+            }
+
             for(auto const& a: m.assigns)
             {
                 auto const v{eval_expr(m, a.expr_root, st.values)};
-                if(a.lhs_signal < st.values.size())
-                {
-                    auto& dst{st.values.index_unchecked(a.lhs_signal)};
-                    if(dst != v)
-                    {
-                        dst = v;
-                        changed = true;
-                    }
-                }
+                changed = assign_signal(st, a.lhs_signal, v) || changed;
             }
-            if(!changed) { break; }
+
+            return changed;
         }
 
-        st.prev_values = st.values;
-        return true;
+        inline bool propagate_parent_to_child(instance_state& parent, instance_state& child) noexcept
+        {
+            if(child.mod == nullptr) { return false; }
+
+            auto const& cm{*child.mod};
+            auto& cst{child.state};
+
+            bool changed{};
+            ::std::size_t const nports{cm.ports.size()};
+            if(child.bindings.size() < nports) { return false; }
+
+            for(::std::size_t i{}; i < nports; ++i)
+            {
+                auto const& p{cm.ports.index_unchecked(i)};
+                if(p.dir == port_dir::output) { continue; }
+
+                logic_t v{logic_t::indeterminate_state};
+                auto const& b{child.bindings.index_unchecked(i)};
+                if(b.k == port_binding::kind::parent_signal)
+                {
+                    if(b.parent_signal < parent.state.values.size()) { v = parent.state.values.index_unchecked(b.parent_signal); }
+                }
+                else if(b.k == port_binding::kind::literal) { v = b.literal; }
+
+                changed = assign_signal(cst, p.signal, v) || changed;
+            }
+
+            return changed;
+        }
+
+        inline bool propagate_child_to_parent(instance_state& child, instance_state& parent) noexcept
+        {
+            if(child.mod == nullptr) { return false; }
+
+            auto const& cm{*child.mod};
+            auto& cst{child.state};
+
+            bool changed{};
+            ::std::size_t const nports{cm.ports.size()};
+            if(child.bindings.size() < nports) { return false; }
+
+            for(::std::size_t i{}; i < nports; ++i)
+            {
+                auto const& p{cm.ports.index_unchecked(i)};
+                if(p.dir == port_dir::input) { continue; }
+
+                auto const& b{child.bindings.index_unchecked(i)};
+                if(b.k != port_binding::kind::parent_signal) { continue; }
+                if(b.parent_signal >= parent.state.values.size() || p.signal >= cst.values.size()) { continue; }
+
+                changed = assign_signal(parent.state, b.parent_signal, cst.values.index_unchecked(p.signal)) || changed;
+            }
+
+            return changed;
+        }
+
+        inline void sequential_pass(instance_state& inst, ::std::uint64_t tick, bool process_sequential) noexcept
+        {
+            inst.state.nba_queue.clear();
+            process_due_events(inst.state, tick);
+            if(process_sequential) { run_sequential(inst, tick); }
+
+            for(auto& child: inst.children)
+            {
+                (void)propagate_parent_to_child(inst, child);
+                sequential_pass(child, tick, process_sequential);
+            }
+        }
+
+        inline bool comb_resolve(instance_state& inst, ::std::uint64_t tick) noexcept
+        {
+            constexpr ::std::size_t max_iter{64};
+            bool any_changed{};
+
+            for(::std::size_t iter{}; iter < max_iter; ++iter)
+            {
+                bool changed{};
+
+                for(auto& child: inst.children) { changed = propagate_parent_to_child(inst, child) || changed; }
+                for(auto& child: inst.children) { changed = comb_resolve(child, tick) || changed; }
+                for(auto& child: inst.children) { changed = propagate_child_to_parent(child, inst) || changed; }
+
+                changed = run_comb_local(inst, tick) || changed;
+
+                if(!changed) { break; }
+                any_changed = true;
+            }
+
+            return any_changed;
+        }
+
+        inline bool apply_nba_recursive(instance_state& inst) noexcept
+        {
+            bool changed{apply_nba(inst.state)};
+            for(auto& c: inst.children) { changed = apply_nba_recursive(c) || changed; }
+            return changed;
+        }
+
+        inline void update_prev_recursive(instance_state& inst) noexcept
+        {
+            inst.state.prev_values = inst.state.values;
+            for(auto& c: inst.children) { update_prev_recursive(c); }
+        }
+
+        inline void fill_bindings(compiled_module const& pm,
+                                  compiled_module const& cm,
+                                  instance const& idef,
+                                  ::fast_io::vector<port_binding>& bindings) noexcept
+        {
+            // Map child base ports (cm.port_order) to connection_ref
+            ::absl::btree_map<::fast_io::u8string, connection_ref> named{};
+            bool any_named{};
+            for(auto const& c: idef.connections)
+            {
+                if(!c.port_name.empty())
+                {
+                    any_named = true;
+                    named.insert_or_assign(c.port_name, c.ref);
+                }
+            }
+
+            ::std::size_t positional_idx{};
+            ::std::size_t port_offset{};
+
+            for(auto const& base: cm.port_order)
+            {
+                connection_ref ref{};
+                if(any_named)
+                {
+                    auto it{named.find(base)};
+                    if(it != named.end()) { ref = it->second; }
+                }
+                else
+                {
+                    if(positional_idx < idef.connections.size()) { ref = idef.connections.index_unchecked(positional_idx).ref; }
+                    ++positional_idx;
+                }
+
+                port_decl pd{};
+                auto itpd{cm.port_decls.find(base)};
+                if(itpd != cm.port_decls.end()) { pd = itpd->second; }
+
+                ::std::size_t width{1};
+                if(pd.has_range) { width = static_cast<::std::size_t>((pd.msb - pd.lsb) >= 0 ? (pd.msb - pd.lsb + 1) : (pd.lsb - pd.msb + 1)); }
+
+                // helper to bind one bit
+                auto bind_bit = [&](::std::size_t port_bit, port_binding b) noexcept
+                {
+                    if(port_bit < bindings.size()) { bindings.index_unchecked(port_bit) = b; }
+                };
+
+                if(width == 1)
+                {
+                    if(ref.kind == connection_kind::scalar)
+                    {
+                        bind_bit(port_offset, {port_binding::kind::parent_signal, ref.scalar_signal, {}});
+                    }
+                    else if(ref.kind == connection_kind::literal)
+                    {
+                        bind_bit(port_offset, {port_binding::kind::literal, SIZE_MAX, ref.literal});
+                    }
+                    else if(ref.kind == connection_kind::vector)
+                    {
+                        auto itv{pm.vectors.find(ref.vector_base)};
+                        if(itv != pm.vectors.end() && details::vector_width(itv->second) == 1)
+                        {
+                            bind_bit(port_offset, {port_binding::kind::parent_signal, itv->second.bits.front_unchecked(), {}});
+                        }
+                    }
+                }
+                else
+                {
+                    if(ref.kind == connection_kind::vector)
+                    {
+                        auto itv{pm.vectors.find(ref.vector_base)};
+                        if(itv != pm.vectors.end() && details::vector_width(itv->second) == width)
+                        {
+                            for(::std::size_t pos{}; pos < width; ++pos)
+                            {
+                                bind_bit(port_offset + pos, {port_binding::kind::parent_signal, itv->second.bits.index_unchecked(pos), {}});
+                            }
+                        }
+                    }
+                }
+
+                port_offset += width;
+            }
+        }
+
+        inline void elaborate_children(compiled_design const& d, instance_state& parent, ::std::size_t depth) noexcept
+        {
+            if(parent.mod == nullptr) { return; }
+            if(depth > 64) { return; }
+
+            auto const& pm{*parent.mod};
+            for(auto const& idef: pm.instances)
+            {
+                auto const* cm{find_module(d, idef.module_name)};
+                if(cm == nullptr) { continue; }
+
+                instance_state child{};
+                child.mod = cm;
+                child.instance_name = idef.instance_name;
+                init_state(child.state, *cm);
+                child.bindings.assign(cm->ports.size(), {});
+
+                fill_bindings(pm, *cm, idef, child.bindings);
+                elaborate_children(d, child, depth + 1);
+
+                parent.children.push_back(::std::move(child));
+            }
+        }
+    }  // namespace runtime_details
+
+    inline instance_state elaborate(compiled_design const& d, compiled_module const& top) noexcept
+    {
+        instance_state root{};
+        root.mod = __builtin_addressof(top);
+        root.instance_name = top.name;
+        init_state(root.state, top);
+        runtime_details::elaborate_children(d, root, 0);
+        return root;
     }
+
+    inline void simulate(instance_state& top, ::std::uint64_t tick, bool process_sequential) noexcept
+    {
+        runtime_details::sequential_pass(top, tick, process_sequential);
+        (void)runtime_details::comb_resolve(top, tick);
+        (void)runtime_details::apply_nba_recursive(top);
+        (void)runtime_details::comb_resolve(top, tick);
+        runtime_details::update_prev_recursive(top);
+    }
+
+    inline void simulate(instance_state& top, ::std::uint64_t tick) noexcept { simulate(top, tick, true); }
 
 }  // namespace phy_engine::verilog::digital

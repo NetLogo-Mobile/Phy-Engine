@@ -28,9 +28,10 @@ namespace phy_engine::model
         ::fast_io::u8string source{};
         ::fast_io::u8string top{};
 
-        // Compiled representation and runtime state.
-        ::std::shared_ptr<::phy_engine::verilog::digital::compiled_module> compiled{};
-        ::phy_engine::verilog::digital::module_state state{};
+        // Compiled representation and runtime state (supports hierarchy/instances).
+        ::std::shared_ptr<::phy_engine::verilog::digital::compiled_design> design{};
+        ::phy_engine::verilog::digital::instance_state top_instance{};
+        ::std::uint64_t tick{};
 
         // Ports are exposed as pins in the same order as the Verilog module port list.
         ::fast_io::vector<::fast_io::u8string> pin_name_storage{};
@@ -103,8 +104,8 @@ namespace phy_engine::model
                                                                                                  double /*tr_duration*/,
                                                                                                  ::phy_engine::model::digital_update_method_t method) noexcept
     {
-        if(m.compiled == nullptr || m.state.mod == nullptr) [[unlikely]] { return {}; }
-        auto const& cm{*m.compiled};
+        if(m.design == nullptr || m.top_instance.mod == nullptr) [[unlikely]] { return {}; }
+        auto const& cm{*m.top_instance.mod};
 
         auto read_dn = [&](::phy_engine::model::node_t* n) noexcept -> ::phy_engine::verilog::digital::logic_t
         {
@@ -119,6 +120,8 @@ namespace phy_engine::model
             return ::phy_engine::verilog::digital::logic_t::indeterminate_state;
         };
 
+        if(method == ::phy_engine::model::digital_update_method_t::before_all_clk) { ++m.tick; }
+
         // Sample input ports into internal signal table.
         for(::std::size_t i{}; i < cm.ports.size() && i < m.pins.size(); ++i)
         {
@@ -128,13 +131,15 @@ namespace phy_engine::model
             {
                 auto const* node{m.pins.index_unchecked(i).nodes};
                 if(node == nullptr) { continue; }
-                if(p.signal < m.state.values.size()) { m.state.values.index_unchecked(p.signal) = read_dn(const_cast<::phy_engine::model::node_t*>(node)); }
+                if(p.signal < m.top_instance.state.values.size())
+                {
+                    m.top_instance.state.values.index_unchecked(p.signal) = read_dn(const_cast<::phy_engine::model::node_t*>(node));
+                }
             }
         }
 
-        // Only process sequential logic on the "tick" call. Combinational eval always runs.
         bool const process_sequential{method == ::phy_engine::model::digital_update_method_t::before_all_clk};
-        if(!::phy_engine::verilog::digital::simulate_tick(m.state, process_sequential)) [[unlikely]] { return {}; }
+        ::phy_engine::verilog::digital::simulate(m.top_instance, m.tick, process_sequential);
 
         // Drive output ports.
         for(::std::size_t i{}; i < cm.ports.size() && i < m.pins.size(); ++i)
@@ -143,9 +148,9 @@ namespace phy_engine::model
             if(p.dir != ::phy_engine::verilog::digital::port_dir::output && p.dir != ::phy_engine::verilog::digital::port_dir::inout) { continue; }
 
             auto* node{m.pins.index_unchecked(i).nodes};
-            if(node == nullptr || p.signal >= m.state.values.size()) { continue; }
+            if(node == nullptr || p.signal >= m.top_instance.state.values.size()) { continue; }
 
-            auto const v{m.state.values.index_unchecked(p.signal)};
+            auto const v{m.top_instance.state.values.index_unchecked(p.signal)};
 
             if(node->num_of_analog_node == 0)
             {
@@ -168,9 +173,9 @@ namespace phy_engine::model
             if(p.dir != ::phy_engine::verilog::digital::port_dir::output && p.dir != ::phy_engine::verilog::digital::port_dir::inout) { continue; }
 
             auto* node{m.pins.index_unchecked(i).nodes};
-            if(node == nullptr || node->num_of_analog_node == 0 || p.signal >= m.state.values.size()) { continue; }
+            if(node == nullptr || node->num_of_analog_node == 0 || p.signal >= m.top_instance.state.values.size()) { continue; }
 
-            auto const v{m.state.values.index_unchecked(p.signal)};
+            auto const v{m.top_instance.state.values.index_unchecked(p.signal)};
             if(v == ::phy_engine::verilog::digital::logic_t::high_impedence_state) { continue; }
 
             m.analog_emit_cursor = (i + 1) % nports;
@@ -196,33 +201,23 @@ namespace phy_engine::model
         m.source = ::fast_io::u8string{source};
         m.top = ::fast_io::u8string{top_name};
 
-        auto const cr{::phy_engine::verilog::digital::compile(source)};
+        auto cr{::phy_engine::verilog::digital::compile(source)};
         if(cr.modules.empty()) { return m; }
 
-        ::phy_engine::verilog::digital::compiled_module const* chosen{};
-        for(auto const& mod: cr.modules)
-        {
-            if(mod.name == top_name)
-            {
-                chosen = __builtin_addressof(mod);
-                break;
-            }
-        }
-        if(chosen == nullptr)
-        {
-            // fallback: first module
-            chosen = __builtin_addressof(cr.modules.front_unchecked());
-        }
+        m.design = ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
+        if(m.design->modules.empty()) { return m; }
 
-        m.compiled = ::std::make_shared<::phy_engine::verilog::digital::compiled_module>(*chosen);
-        ::phy_engine::verilog::digital::init_state(m.state, *m.compiled);
+        auto const* chosen{::phy_engine::verilog::digital::find_module(*m.design, top_name)};
+        if(chosen == nullptr) { chosen = __builtin_addressof(m.design->modules.front_unchecked()); }
+
+        m.top_instance = ::phy_engine::verilog::digital::elaborate(*m.design, *chosen);
 
         m.pin_name_storage.clear();
         m.pins.clear();
-        m.pin_name_storage.reserve(m.compiled->ports.size());
-        m.pins.reserve(m.compiled->ports.size());
+        m.pin_name_storage.reserve(m.top_instance.mod->ports.size());
+        m.pins.reserve(m.top_instance.mod->ports.size());
 
-        for(auto const& p: m.compiled->ports)
+        for(auto const& p: m.top_instance.mod->ports)
         {
             m.pin_name_storage.push_back(p.name);
             auto const& name{m.pin_name_storage.back_unchecked()};
