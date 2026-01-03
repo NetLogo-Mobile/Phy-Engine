@@ -78,7 +78,7 @@ int main(int argc, char** argv)
     auto const dc_st{cudaGetDeviceCount(&device_count)};
     if(dc_st != cudaSuccess || device_count <= 0)
     {
-        ::fast_io::io::perr("No CUDA device visible (", cudaGetErrorString(dc_st), ").\n");
+        ::fast_io::io::perr("No CUDA device visible (", ::fast_io::mnp::os_c_str(cudaGetErrorString(dc_st)), ").\n");
         return 77;
     }
 #
