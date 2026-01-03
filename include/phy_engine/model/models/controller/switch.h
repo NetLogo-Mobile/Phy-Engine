@@ -90,7 +90,7 @@ namespace phy_engine::model
         if(node_0 && node_1) [[likely]]
         {
             // Model as a variable resistance to avoid singular matrices when open.
-            double const r_contact{sps.cut_through ? 0.0 : 1e12};
+            double const r_contact{sps.cut_through ? 0.0 : mna.r_open};
 
             auto const k{sps.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;

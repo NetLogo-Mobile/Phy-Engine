@@ -144,6 +144,7 @@ namespace phy_engine::MNA
 
         ::std::size_t node_size{};
         ::std::size_t branch_size{};
+        double r_open{1e12};
 
     private:
         ::std::complex<double> d_temp;

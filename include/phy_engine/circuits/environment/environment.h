@@ -12,6 +12,7 @@ namespace phy_engine
         double I_epsr_max{};
         double charge_eps_max{};    // CHGTOL
         double g_min{};             // GMIN
+        double r_open{};            // ROPEN (open switch/relay equivalent resistance, ohm)
         double t_TOEF{};            // TRTOL
         double temperature{};       // TEMP
         double norm_temperature{};  // TNOM

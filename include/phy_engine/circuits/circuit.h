@@ -702,6 +702,8 @@ namespace phy_engine
                        ,
                        branch_counter);
 
+            mna.r_open = env.r_open > 0.0 ? env.r_open : 1e12;
+
             // setup digital
             ::std::size_t digital_branch_counter{};
             for(auto const [v, n]: digital_out)

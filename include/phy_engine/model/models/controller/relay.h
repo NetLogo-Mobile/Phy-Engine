@@ -91,7 +91,7 @@ namespace phy_engine::model
             }
 
             // Always stamp a (very) large resistance when open, to keep MNA well-conditioned.
-            double const r_contact{r.engaged ? 0.0 : 1e12};
+            double const r_contact{r.engaged ? 0.0 : mna.r_open};
 
             auto const k{r.branches.index};
             mna.B_ref(node_A->node_index, k) = 1.0;
