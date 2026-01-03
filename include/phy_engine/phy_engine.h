@@ -36,6 +36,7 @@
 #include "model/models/digital/logical/non_implication.h"
 #include "model/models/digital/logical/input.h"
 #include "model/models/digital/logical/output.h"
+#include "model/models/digital/verilog_module.h"
 
 // Combinational (no delay)
 #include "model/models/digital/combinational/half_adder.h"
