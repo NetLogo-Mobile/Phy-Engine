@@ -18,6 +18,14 @@ namespace phy_engine::model
         double L2{1e-3};
         double k{0.99};
 
+        // Trapezoidal integration state for transient analysis
+        double m_tr_step{};   // dt
+        double m_tr_req11{};  // (2/dt)*L1
+        double m_tr_req12{};  // (2/dt)*M
+        double m_tr_req22{};  // (2/dt)*L2
+        double m_tr_Ueq1{};   // history source for winding1 KVL
+        double m_tr_Ueq2{};   // history source for winding2 KVL
+
         ::phy_engine::model::pin pins[4]{{{u8"P1"}}, {{u8"P2"}}, {{u8"S1"}}, {{u8"S2"}}};  // winding1 P1-P2, winding2 S1-S2
         ::phy_engine::model::branch branches[2]{};                                         // k1 for primary, k2 for secondary
     };
@@ -149,6 +157,104 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_ac<coupled_inductors>);
 
+    inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                                 coupled_inductors& kL,
+                                                 [[maybe_unused]] double nlaststep,
+                                                 double nstep) noexcept
+    {
+        kL.m_tr_step = nstep;
+        kL.m_tr_req11 = 0.0;
+        kL.m_tr_req12 = 0.0;
+        kL.m_tr_req22 = 0.0;
+        kL.m_tr_Ueq1 = 0.0;
+        kL.m_tr_Ueq2 = 0.0;
+
+        if(nstep <= 0.0) { return true; }
+
+        auto const p1{kL.pins[0].nodes};
+        auto const p2{kL.pins[1].nodes};
+        auto const s1{kL.pins[2].nodes};
+        auto const s2{kL.pins[3].nodes};
+
+        if(p1 && p2 && s1 && s2) [[likely]]
+        {
+            double const M{kL.k * ::std::sqrt(kL.L1 * kL.L2)};
+
+            double const req_scale{2.0 / nstep};
+            kL.m_tr_req11 = req_scale * kL.L1;
+            kL.m_tr_req12 = req_scale * M;
+            kL.m_tr_req22 = req_scale * kL.L2;
+
+            double const v1_prev{p1->node_information.an.voltage.real() - p2->node_information.an.voltage.real()};
+            double const v2_prev{s1->node_information.an.voltage.real() - s2->node_information.an.voltage.real()};
+            double const i1_prev{kL.branches[0].current.real()};
+            double const i2_prev{kL.branches[1].current.real()};
+
+            // v(n) - Req*i(n) = -v(n-1) - Req*i(n-1)
+            kL.m_tr_Ueq1 = -v1_prev - (kL.m_tr_req11 * i1_prev + kL.m_tr_req12 * i2_prev);
+            kL.m_tr_Ueq2 = -v2_prev - (kL.m_tr_req12 * i1_prev + kL.m_tr_req22 * i2_prev);
+        }
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_step_changed_tr<coupled_inductors>);
+
+    inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                            coupled_inductors& kL,
+                                            ::phy_engine::MNA::MNA& mna,
+                                            [[maybe_unused]] double t_time) noexcept
+    {
+        // Trapezoidal companion model (Thevenin):
+        // [v1 v2]^T - Req * [i1 i2]^T = Ueq, where Req = (2/dt)*L_matrix and Ueq = -v_prev - Req*i_prev.
+        //
+        // For dt<=0 (e.g. TROP), fall back to DC behavior: both windings are short circuits.
+        if(kL.m_tr_step <= 0.0) { return iterate_dc_define(::phy_engine::model::model_reserve_type<coupled_inductors>, kL, mna); }
+
+        auto const p1{kL.pins[0].nodes};
+        auto const p2{kL.pins[1].nodes};
+        auto const s1{kL.pins[2].nodes};
+        auto const s2{kL.pins[3].nodes};
+        if(p1 && p2 && s1 && s2) [[likely]]
+        {
+            auto const k1{kL.branches[0].index};
+            auto const k2{kL.branches[1].index};
+
+            // Branch connections (KCL)
+            mna.B_ref(p1->node_index, k1) = 1.0;
+            mna.B_ref(p2->node_index, k1) = -1.0;
+            mna.B_ref(s1->node_index, k2) = 1.0;
+            mna.B_ref(s2->node_index, k2) = -1.0;
+
+            // KVL rows (C)
+            mna.C_ref(k1, p1->node_index) = 1.0;
+            mna.C_ref(k1, p2->node_index) = -1.0;
+            mna.C_ref(k2, s1->node_index) = 1.0;
+            mna.C_ref(k2, s2->node_index) = -1.0;
+
+            // Req matrix (D) and history sources (E)
+            mna.D_ref(k1, k1) = -kL.m_tr_req11;
+            mna.D_ref(k1, k2) = -kL.m_tr_req12;
+            mna.D_ref(k2, k1) = -kL.m_tr_req12;
+            mna.D_ref(k2, k2) = -kL.m_tr_req22;
+
+            mna.E_ref(k1) = kL.m_tr_Ueq1;
+            mna.E_ref(k2) = kL.m_tr_Ueq2;
+        }
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_iterate_tr<coupled_inductors>);
+
+    inline constexpr bool iterate_trop_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
+                                              coupled_inductors const& kL,
+                                              ::phy_engine::MNA::MNA& mna) noexcept
+    {
+        // For transient operating point, inductors behave as short circuits (DC behavior).
+        return iterate_dc_define(::phy_engine::model::model_reserve_type<coupled_inductors>, kL, mna);
+    }
+
+    static_assert(::phy_engine::model::defines::can_iterate_trop<coupled_inductors>);
+
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<coupled_inductors>,
                                                                             coupled_inductors& kL) noexcept
     {
@@ -165,4 +271,3 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<coupled_inductors>);
 }  // namespace phy_engine::model
-

@@ -123,13 +123,7 @@ namespace phy_engine::model
 
     inline constexpr bool iterate_dc_define(::phy_engine::model::model_reserve_type_t<IAC>, IAC const& iac, ::phy_engine::MNA::MNA& mna) noexcept
     {
-        auto const node_A{iac.pins[0].nodes};
-        auto const node_B{iac.pins[1].nodes};
-        if(node_A && node_B) [[likely]]
-        {
-            mna.I_ref(node_A->node_index) -= iac.m_Ip;
-            mna.I_ref(node_B->node_index) += iac.m_Ip;
-        }
+        // Pure AC current source: no DC contribution.
         return true;
     }
 

@@ -81,22 +81,19 @@ namespace phy_engine::model
             mna.B_ref(node_Q->node_index, kP) = -1.0;
             mna.C_ref(kP, node_P->node_index) = 1.0;
             mna.C_ref(kP, node_Q->node_index) = -1.0;
-            // Vp - n*Vs = 0
-            mna.C_ref(kP, node_S->node_index) -= tx.n;
-            mna.C_ref(kP, node_T->node_index) += tx.n;
 
             // Secondary branch
             mna.B_ref(node_S->node_index, kS) = 1.0;
             mna.B_ref(node_T->node_index, kS) = -1.0;
-            mna.C_ref(kS, node_S->node_index) = 1.0;
-            mna.C_ref(kS, node_T->node_index) = -1.0;
-            // Vs - (1/n)*Vp = 0
-            if(tx.n != 0.0)
-            {
-                double const invn{1.0 / tx.n};
-                mna.C_ref(kS, node_P->node_index) -= invn;
-                mna.C_ref(kS, node_Q->node_index) += invn;
-            }
+
+            // Ideal transformer constraints (dot convention: P and S are dotted ends):
+            // 1) Vp - n*Vs = 0
+            // 2) Is + n*Ip = 0   (Ampere-turns / power conservation)
+            mna.C_ref(kP, node_S->node_index) -= tx.n;
+            mna.C_ref(kP, node_T->node_index) += tx.n;
+
+            mna.D_ref(kS, kS) = 1.0;
+            mna.D_ref(kS, kP) = tx.n;
         }
         return true;
     }
@@ -118,4 +115,3 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<transformer>);
 }  // namespace phy_engine::model
-

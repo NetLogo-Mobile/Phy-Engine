@@ -90,14 +90,15 @@ namespace phy_engine::model
                 if(vctrl <= r.Voff) { r.engaged = false; }
             }
 
-            if(r.engaged)
-            {
-                auto const k{r.branches.index};
-                mna.B_ref(node_A->node_index, k) = 1.0;
-                mna.B_ref(node_B->node_index, k) = -1.0;
-                mna.C_ref(k, node_A->node_index) = 1.0;
-                mna.C_ref(k, node_B->node_index) = -1.0;
-            }
+            // Always stamp a (very) large resistance when open, to keep MNA well-conditioned.
+            double const r_contact{r.engaged ? 0.0 : 1e12};
+
+            auto const k{r.branches.index};
+            mna.B_ref(node_A->node_index, k) = 1.0;
+            mna.B_ref(node_B->node_index, k) = -1.0;
+            mna.C_ref(k, node_A->node_index) = 1.0;
+            mna.C_ref(k, node_B->node_index) = -1.0;
+            mna.D_ref(k, k) = -r_contact;
         }
         return true;
     }
@@ -113,10 +114,8 @@ namespace phy_engine::model
 
     inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<relay>, relay& r) noexcept
     {
-        if(r.engaged) { return {__builtin_addressof(r.branches), 1}; }
-        return {};
+        return {__builtin_addressof(r.branches), 1};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<relay>);
 }  // namespace phy_engine::model
-

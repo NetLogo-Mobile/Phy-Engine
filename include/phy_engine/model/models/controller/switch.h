@@ -85,19 +85,19 @@ namespace phy_engine::model
     inline constexpr bool
         iterate_dc_define(::phy_engine::model::model_reserve_type_t<single_pole_switch>, single_pole_switch const& sps, ::phy_engine::MNA::MNA& mna) noexcept
     {
-        if(sps.cut_through)
+        auto const node_0{sps.pins[0].nodes};
+        auto const node_1{sps.pins[1].nodes};
+        if(node_0 && node_1) [[likely]]
         {
-            auto const node_0{sps.pins[0].nodes};
-            auto const node_1{sps.pins[1].nodes};
-            if(node_0 && node_1) [[likely]]
-            {
-                auto const k{sps.branches.index};
-                mna.B_ref(node_0->node_index, k) = 1.0;
-                mna.B_ref(node_1->node_index, k) = -1.0;
-                mna.C_ref(k, node_0->node_index) = 1.0;
-                mna.C_ref(k, node_1->node_index) = -1.0;
-                // mna.E_ref(k) = 0.0;
-            }
+            // Model as a variable resistance to avoid singular matrices when open.
+            double const r_contact{sps.cut_through ? 0.0 : 1e12};
+
+            auto const k{sps.branches.index};
+            mna.B_ref(node_0->node_index, k) = 1.0;
+            mna.B_ref(node_1->node_index, k) = -1.0;
+            mna.C_ref(k, node_0->node_index) = 1.0;
+            mna.C_ref(k, node_1->node_index) = -1.0;
+            mna.D_ref(k, k) = -r_contact;
         }
         return true;
     }
@@ -115,11 +115,7 @@ namespace phy_engine::model
     inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<single_pole_switch>,
                                                                                   single_pole_switch& sps) noexcept
     {
-        if(sps.cut_through) { return {__builtin_addressof(sps.branches), 1}; }
-        else
-        {
-            return {};
-        }
+        return {__builtin_addressof(sps.branches), 1};
     }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<single_pole_switch>);

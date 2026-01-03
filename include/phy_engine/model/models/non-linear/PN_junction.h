@@ -24,6 +24,10 @@ namespace phy_engine::model
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
 
         // private:
+        double Is_eff{1e-14};
+        double Isr_eff{};
+        double Bv_eff{40.0};
+
         double Ut{};
         double Uth{};
         double Ud_last{};
@@ -40,10 +44,10 @@ namespace phy_engine::model
         double const Ute{pn.N * pn.Ut};
 
         /* Fix the very small voltage */
-        if(pn.Bv_set && Ud < ::std::min(0.0, -pn.Bv + 10.0 * Ute))
+        if(pn.Bv_set && Ud < ::std::min(0.0, -pn.Bv_eff + 10.0 * Ute))
         {
-            Ud_0 = -(Ud + pn.Bv);
-            Ud_1 = -(pn.Ud_last + pn.Bv);
+            Ud_0 = -(Ud + pn.Bv_eff);
+            Ud_1 = -(pn.Ud_last + pn.Bv_eff);
             flag = true;
         }
         else
@@ -79,7 +83,7 @@ namespace phy_engine::model
             }
         }
 
-        if(flag) { return -(Ud_f + pn.Bv); }
+        if(flag) { return -(Ud_f + pn.Bv_eff); }
         else
         {
             return Ud_f;
@@ -259,8 +263,9 @@ namespace phy_engine::model
 
     inline bool prepare_foundation_define(::phy_engine::model::model_reserve_type_t<PN_junction>, PN_junction& pn) noexcept
     {
-        pn.Is *= pn.Area;
-        pn.Isr *= pn.Area;
+        pn.Is_eff = pn.Is * pn.Area;
+        pn.Isr_eff = pn.Isr * pn.Area;
+        pn.Bv_eff = pn.Bv;
 
         /* Temperature voltage equivalent */
         constexpr double kKelvin{-273.15};
@@ -285,7 +290,8 @@ namespace phy_engine::model
              * Finally, Rewrite the above equation and get the following results:
              * \f[ Bv' = Bv - N \cdot Ut \cdot ln(\frac{Ibv}{Is}) $$ \f]
              */
-            pn.Bv = pn.Bv - pn.N * pn.Ut * ::std::log(pn.Ibv / pn.Is);
+            // Compute an effective breakdown voltage; keep the user parameter `Bv` unchanged.
+            pn.Bv_eff = pn.Bv - pn.N * pn.Ut * ::std::log(pn.Ibv / pn.Is_eff);
         }
 
         /*
@@ -304,7 +310,7 @@ namespace phy_engine::model
          * \f[ Uth = N \cdot Ut \cdot ln(\frac{N \cdot Ut}{\sqrt{2} \cdot Is}) \f]
          */
 
-        pn.Uth = pn.N * pn.Ut * ::std::log(pn.N * pn.Ut / (sqrt2 * pn.Is));
+        pn.Uth = pn.N * pn.Ut * ::std::log(pn.N * pn.Ut / (sqrt2 * pn.Is_eff));
 
         // last Voltage
         auto const node_0{pn.pins[0].nodes};
@@ -332,22 +338,22 @@ namespace phy_engine::model
             double const Ute{pn.N * pn.Ut};
             double const Uter{pn.Nr * pn.Ut};
 
-            if(pn.Bv_set && Ud < -pn.Bv) /* breakdown */
+            if(pn.Bv_set && Ud < -pn.Bv_eff) /* breakdown */
             {
-                double e{::std::exp(-(pn.Bv + Ud) / Ute)};
-                Id = -pn.Is * e;
-                pn.geq = pn.Is * e / Ute;
+                double e{::std::exp(-(pn.Bv_eff + Ud) / Ute)};
+                Id = -pn.Is_eff * e;
+                pn.geq = pn.Is_eff * e / Ute;
             }
             else
             {
                 double e{::std::exp(Ud / Ute)};
-                pn.geq = pn.Is * e / Ute;
-                Id = pn.Is * (e - 1.0);
+                pn.geq = pn.Is_eff * e / Ute;
+                Id = pn.Is_eff * (e - 1.0);
 
                 /* recombination current */
                 e = ::std::exp(Ud / Uter);
-                pn.geq += pn.Isr * e / Uter;
-                Id += pn.Isr * (e - 1.0);
+                pn.geq += pn.Isr_eff * e / Uter;
+                Id += pn.Isr_eff * (e - 1.0);
             }
 
             pn.Ieq = Id - Ud * pn.geq;

@@ -99,7 +99,6 @@ namespace phy_engine::model
 
     inline bool prepare_foundation_define(::phy_engine::model::model_reserve_type_t<BJT_NPN>, BJT_NPN& q) noexcept
     {
-        q.Is *= q.Area;
         constexpr double kKelvin{-273.15};
         constexpr double qElement{1.6021765314e-19};
         constexpr double kBoltzmann{1.380650524e-23};
@@ -121,6 +120,7 @@ namespace phy_engine::model
         auto const node_E{q.pins[2].nodes};
         if(node_B && node_C && node_E) [[likely]]
         {
+            double const Is_eff{q.Is * q.Area};
             double const Vbe{node_B->node_information.an.voltage.real() - node_E->node_information.an.voltage.real()};
             q.Vbe_last = Vbe;
 
@@ -128,8 +128,8 @@ namespace phy_engine::model
             double e{::std::exp(Vbe / Ute)};
 
             // Base-emitter diode linearization
-            q.geq_be = q.Is * e / Ute;
-            double const Ibe{q.Is * (e - 1.0)};
+            q.geq_be = Is_eff * e / Ute;
+            double const Ibe{Is_eff * (e - 1.0)};
             q.Ieq_be = Ibe - Vbe * q.geq_be;
 
             // Stamp BE diode between B and E
@@ -202,4 +202,3 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<BJT_NPN>);
 }  // namespace phy_engine::model
-
