@@ -6,7 +6,7 @@ int main()
 {
     decltype(auto) src = u8R"(
 module rep2(input a, input b, output [3:0] y);
-  assign y = {2{a, b}};
+  assign y = {(2){a, b}};
 endmodule
 )";
     constexpr char8_t top_name[] = u8"rep2";
@@ -42,7 +42,7 @@ endmodule
         in->ptr->set_attribute(0, {.digital{v}, .type{::phy_engine::model::variant_type::digital}});
     };
 
-    // {2{a,b}} = {a,b,a,b} = 1010
+    // {(2){a,b}} = {a,b,a,b} = 1010
     set_in(a, ::phy_engine::model::digital_node_statement_t::true_state);
     set_in(b, ::phy_engine::model::digital_node_statement_t::false_state);
 
@@ -55,4 +55,3 @@ endmodule
 
     return 0;
 }
-
