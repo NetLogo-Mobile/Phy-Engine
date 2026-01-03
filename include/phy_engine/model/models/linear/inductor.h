@@ -13,6 +13,8 @@ namespace phy_engine::model
 
         double m_kZimag{1e-5};
         double m_tr_step{};  // dt for TR (set by step_changed_tr)
+        double m_tr_req{};
+        double m_tr_Ueq{};
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
         ::phy_engine::model::branch branches{};
     };
@@ -110,23 +112,17 @@ namespace phy_engine::model
             auto const k{i.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;
             mna.B_ref(node_1->node_index, k) = -1.0;
+            mna.C_ref(k, node_0->node_index) = 1.0;
+            mna.C_ref(k, node_1->node_index) = -1.0;
 
-            if(i.m_kZimag == 0.0)
+            if(i.m_kZimag == 0.0 || omega == 0.0)
             {
-                mna.C_ref(k, node_0->node_index) = 1.0;
-                mna.C_ref(k, node_1->node_index) = -1.0;
-                // mna.E_ref(k) += 0.0;
+                // Short circuit at DC
             }
             else
             {
-                mna.D_ref(k, k) = 1.0;
-                // mna.E_ref(k) += 0.0;
-
-                ::std::complex<double> z{0.0, -1.0 / (i.m_kZimag * omega)};
-                mna.G_ref(node_0->node_index, node_0->node_index) += z;
-                mna.G_ref(node_0->node_index, node_1->node_index) -= z;
-                mna.G_ref(node_1->node_index, node_0->node_index) -= z;
-                mna.G_ref(node_1->node_index, node_1->node_index) += z;
+                // V = j*omega*L * I  =>  V - (j*omega*L)*I = 0
+                mna.D_ref(k, k) = ::std::complex<double>{0.0, -omega * i.m_kZimag};
             }
         }
 
@@ -141,6 +137,25 @@ namespace phy_engine::model
                                                  double nstep) noexcept
     {
         i.m_tr_step = nstep;
+        i.m_tr_req = 0.0;
+        i.m_tr_Ueq = 0.0;
+        if(nstep <= 0.0) { return true; }
+
+        auto const node_0{i.pins[0].nodes};
+        auto const node_1{i.pins[1].nodes};
+
+        if(node_0 && node_1) [[likely]]
+        {
+            // previous step values
+            double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+            double const i_prev{i.branches.current.real()};
+
+            // Trapezoidal integrator companion model (Thevenin):
+            // req = 2*L/dt, Ueq = -v_prev - req*i_prev
+            double const req{2.0 * i.m_kZimag / nstep};
+            i.m_tr_req = req;
+            i.m_tr_Ueq = -v_prev - req * i_prev;
+        }
         return true;
     }
 
@@ -156,12 +171,7 @@ namespace phy_engine::model
 
         if(node_0 && node_1) [[likely]]
         {
-            // previous step values
-            double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
-            double const i_prev{i.branches.current.real()};
-
-            double const dt{i.m_tr_step};
-            if(dt <= 0.0)
+            if(i.m_tr_step <= 0.0)
             {
                 // No dynamic contribution at TROP: treat as short (DC)
                 auto const k{i.branches.index};
@@ -172,18 +182,13 @@ namespace phy_engine::model
                 return true;
             }
 
-            // Trapezoidal integrator companion model (Thevenin):
-            // req = 2*L/dt, Ueq = -v_prev - req*i_prev
-            double const req{2.0 * i.m_kZimag / dt};
-            double const Ueq{-v_prev - req * i_prev};
-
             auto const k{i.branches.index};
             mna.B_ref(node_0->node_index, k) = 1.0;
             mna.B_ref(node_1->node_index, k) = -1.0;
             mna.C_ref(k, node_0->node_index) = 1.0;
             mna.C_ref(k, node_1->node_index) = -1.0;
-            mna.D_ref(k, k) = -req;
-            mna.E_ref(k) = Ueq;
+            mna.D_ref(k, k) = -i.m_tr_req;
+            mna.E_ref(k) = i.m_tr_Ueq;
         }
 
         return true;

@@ -1,4 +1,6 @@
 ﻿#pragma once
+#include <cmath>
+#include <complex>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -37,6 +39,14 @@ namespace phy_engine
         ::phy_engine::analyze_type at{};
         ::phy_engine::analyzer::analyzer_storage_t analyzer_setting{};
 
+        struct ac_sweep_point
+        {
+            double omega{};
+            ::fast_io::vector<::std::complex<double>> x{};
+        };
+
+        ::fast_io::vector<ac_sweep_point> ac_sweep_results{};
+
         // storage
 
         bool has_prepare{};
@@ -48,6 +58,9 @@ namespace phy_engine
 
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
+
+        ::fast_io::vector<::std::complex<double>> newton_prev_node{};
+        ::fast_io::vector<::std::complex<double>> newton_prev_branch{};
 
         ::phy_engine::digital::digital_node_update_table digital_update_tables{};            // digital
         ::fast_io::vector<::phy_engine::digital::need_operate_analog_node_t> digital_out{};  // digital
@@ -80,85 +93,102 @@ namespace phy_engine
 
         constexpr ::phy_engine::analyzer::analyzer_storage_t& get_analyze_setting() noexcept { return analyzer_setting; }
 
+        constexpr auto& get_ac_sweep_results() noexcept { return ac_sweep_results; }
+        constexpr auto const& get_ac_sweep_results() const noexcept { return ac_sweep_results; }
+        constexpr void clear_ac_sweep_results() noexcept { ac_sweep_results.clear(); }
+
         constexpr bool analyze() noexcept
         {
             switch(at)
             {
                 case ::phy_engine::analyze_type::OP: [[fallthrough]];
-                case ::phy_engine::analyze_type::DC: [[fallthrough]];
-                case ::phy_engine::analyze_type::AC: [[fallthrough]];
-                case ::phy_engine::analyze_type::ACOP:
+                case ::phy_engine::analyze_type::DC:
                 {
                     prepare();
 
                     if(!solve()) [[unlikely]] { return false; }
+
+                    break;
+                }
+                case ::phy_engine::analyze_type::AC:
+                {
+                    prepare();
+                    clear_ac_sweep_results();
+                    if(!run_ac_analysis()) [[unlikely]] { return false; }
+                    break;
+                }
+                case ::phy_engine::analyze_type::ACOP:
+                {
+                    prepare();
+                    clear_ac_sweep_results();
+
+                    auto const saved_at{at};
+                    at = ::phy_engine::analyze_type::OP;
+                    if(!solve()) [[unlikely]]
+                    {
+                        at = saved_at;
+                        return false;
+                    }
+
+                    at = ::phy_engine::analyze_type::AC;
+                    bool const ok{run_ac_analysis()};
+                    at = saved_at;
+                    if(!ok) [[unlikely]] { return false; }
 
                     break;
                 }
                 case ::phy_engine::analyze_type::TR:
                 {
-                    auto const t_step{analyzer_setting.tr.t_step};
-                    if(t_step <= 0.0) [[unlikely]] { return false; }
+                    auto const dt{analyzer_setting.tr.t_step};
+                    if(dt <= 0.0) [[unlikely]] { return false; }
 
                     auto const t_stop{analyzer_setting.tr.t_stop};
 
                     prepare();
-                    if(last_step != t_step)
-                    {
-                        for(auto& i: nl.models)
-                        {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                                if(!c->ptr->step_changed_tr(last_step, t_step)) [[unlikely]] { ::fast_io::fast_terminate(); };
-                            }
-                        }
-
-                        last_step = t_step;
-                    }
 
                     auto const end_time{tr_duration + t_stop};
-                    for(; tr_duration < end_time; tr_duration += t_step)
+                    for(; tr_duration < end_time;)
                     {
-                        if(!solve()) [[unlikely]] { return false; }
+                        update_tr_step(dt);
+
+                        auto const prev_time{tr_duration};
+                        tr_duration = prev_time + dt;
+                        if(!solve()) [[unlikely]]
+                        {
+                            tr_duration = prev_time;
+                            return false;
+                        }
                     }
                     break;
                 }
                 case ::phy_engine::analyze_type::TROP:
                 {
-                    auto const t_step{analyzer_setting.tr.t_step};
-                    if(t_step <= 0.0) [[unlikely]] { return false; }
+                    auto const dt{analyzer_setting.tr.t_step};
+                    if(dt <= 0.0) [[unlikely]] { return false; }
 
                     auto const t_stop{analyzer_setting.tr.t_stop};
 
-                    // 1) Transient operating point at the current time (capacitor open, inductor short, etc.).
+                    // 1) Transient operating point at current time (capacitor open, inductor short, etc.)
                     prepare();
                     if(!solve()) [[unlikely]] { return false; }
 
-                    // 2) Continue with normal transient from that operating point.
+                    // 2) Continue with normal transient from that operating point
                     auto const saved_at{at};
                     at = ::phy_engine::analyze_type::TR;
-                    has_prepare = false;
-                    prepare();
-
-                    if(last_step != t_step)
-                    {
-                        for(auto& i: nl.models)
-                        {
-                            for(auto c{i.begin}; c != i.curr; ++c)
-                            {
-                                if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
-                                if(!c->ptr->step_changed_tr(last_step, t_step)) [[unlikely]] { ::fast_io::fast_terminate(); };
-                            }
-                        }
-
-                        last_step = t_step;
-                    }
 
                     auto const end_time{tr_duration + t_stop};
-                    for(; tr_duration < end_time; tr_duration += t_step)
+                    for(; tr_duration < end_time;)
                     {
-                        if(!solve()) [[unlikely]] { at = saved_at; return false; }
+                        update_tr_step(dt);
+
+                        auto const prev_time{tr_duration};
+                        tr_duration = prev_time + dt;
+                        if(!solve()) [[unlikely]]
+                        {
+                            tr_duration = prev_time;
+                            at = saved_at;
+                            return false;
+                        }
                     }
 
                     at = saved_at;
@@ -222,9 +252,100 @@ namespace phy_engine
             digital_clk();
         }
 
+        void update_tr_step(double dt) noexcept
+        {
+            for(auto& i: nl.models)
+            {
+                for(auto c{i.begin}; c != i.curr; ++c)
+                {
+                    if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
+                    if(!c->ptr->step_changed_tr(last_step, dt)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                }
+            }
+            last_step = dt;
+        }
+
+        [[nodiscard]] ::fast_io::vector<::std::complex<double>> capture_solution_vector() const noexcept
+        {
+            ::fast_io::vector<::std::complex<double>> x{};
+            auto const row_size{node_counter + branch_counter};
+            x.resize(row_size);
+
+            for(auto const* const n: size_t_to_node_p)
+            {
+                x.index_unchecked(n->node_index) = n->node_information.an.voltage;
+            }
+
+            for(auto const* const b: size_t_to_branch_p)
+            {
+                x.index_unchecked(node_counter + b->index) = b->current;
+            }
+
+            return x;
+        }
+
+        [[nodiscard]] bool run_ac_analysis() noexcept
+        {
+            auto& ac_setting{analyzer_setting.ac};
+            using sweep_t = ::phy_engine::analyzer::AC::sweep_type;
+
+            if(ac_setting.sweep == sweep_t::single || ac_setting.points <= 1) { return solve(); }
+
+            if(ac_setting.points == 0) [[unlikely]] { return false; }
+            ac_sweep_results.clear();
+
+            if(ac_setting.sweep == sweep_t::linear)
+            {
+                double const step{(ac_setting.points == 1) ? 0.0
+                                                          : (ac_setting.omega_stop - ac_setting.omega_start) /
+                                                                static_cast<double>(ac_setting.points - 1)};
+                for(::std::size_t idx{}; idx < ac_setting.points; ++idx)
+                {
+                    ac_setting.omega = ac_setting.omega_start + step * static_cast<double>(idx);
+                    if(!solve()) [[unlikely]] { return false; }
+                    ac_sweep_results.push_back({ac_setting.omega, capture_solution_vector()});
+                }
+                return true;
+            }
+
+            if(ac_setting.sweep == sweep_t::log)
+            {
+                if(ac_setting.omega_start <= 0.0 || ac_setting.omega_stop <= 0.0) [[unlikely]] { return false; }
+
+                double const ratio{(ac_setting.points == 1) ? 1.0
+                                                            : ::std::pow(ac_setting.omega_stop / ac_setting.omega_start,
+                                                                         1.0 / static_cast<double>(ac_setting.points - 1))};
+                double omega{ac_setting.omega_start};
+                for(::std::size_t idx{}; idx < ac_setting.points; ++idx)
+                {
+                    ac_setting.omega = omega;
+                    if(!solve()) [[unlikely]] { return false; }
+                    ac_sweep_results.push_back({ac_setting.omega, capture_solution_vector()});
+                    omega *= ratio;
+                }
+                return true;
+            }
+
+            return solve();
+        }
+
+        [[nodiscard]] bool has_nonlinear_device() const noexcept
+        {
+            for(auto const& i: nl.models)
+            {
+                for(auto c{i.begin}; c != i.curr; ++c)
+                {
+                    if(c->type != ::phy_engine::model::model_type::normal || c->ptr == nullptr) [[unlikely]] { continue; }
+                    if(c->ptr->get_device_type() == ::phy_engine::model::model_device_type::non_linear) { return true; }
+                }
+            }
+            return false;
+        }
+
         void reset() noexcept
         {
             tr_duration = 0.0;
+            last_step = 0.0;
 
             digital_out.clear();
             digital_update_tables.tables.clear();
@@ -475,7 +596,102 @@ namespace phy_engine
             has_prepare = true;
         }
 
-        bool solve() noexcept
+        [[nodiscard]] bool solve() noexcept
+        {
+            if(at == ::phy_engine::analyze_type::AC) { return solve_once(); }
+
+            if(!has_nonlinear_device()) { return solve_once(); }
+
+            constexpr ::std::size_t max_iter{64};
+
+            double const v_abstol{env.V_eps_max > 0.0 ? env.V_eps_max : 1e-6};
+            double const v_reltol{env.V_epsr_max > 0.0 ? env.V_epsr_max : 1e-3};
+            double const i_abstol{env.I_eps_max > 0.0 ? env.I_eps_max : 1e-12};
+            double const i_reltol{env.I_epsr_max > 0.0 ? env.I_epsr_max : v_reltol};
+
+            newton_prev_node.resize(node_counter);
+            newton_prev_branch.resize(size_t_to_branch_p.size());
+
+            for(::std::size_t iter{}; iter < max_iter; ++iter)
+            {
+                for(::std::size_t i{}; i < node_counter; ++i)
+                {
+                    newton_prev_node.index_unchecked(i) = size_t_to_node_p.index_unchecked(i)->node_information.an.voltage;
+                }
+                for(::std::size_t i{}; i < size_t_to_branch_p.size(); ++i)
+                {
+                    newton_prev_branch.index_unchecked(i) = size_t_to_branch_p.index_unchecked(i)->current;
+                }
+
+                if(!solve_once()) [[unlikely]] { return false; }
+
+                bool converged{true};
+
+                for(::std::size_t i{}; i < node_counter; ++i)
+                {
+                    auto const v_new{size_t_to_node_p.index_unchecked(i)->node_information.an.voltage};
+                    auto const v_old{newton_prev_node.index_unchecked(i)};
+                    double const tol{v_abstol + v_reltol * ::std::max(::std::abs(v_new), ::std::abs(v_old))};
+                    if(::std::abs(v_new - v_old) > tol)
+                    {
+                        converged = false;
+                        break;
+                    }
+                }
+
+                if(converged)
+                {
+                    for(::std::size_t i{}; i < size_t_to_branch_p.size(); ++i)
+                    {
+                        auto const i_new{size_t_to_branch_p.index_unchecked(i)->current};
+                        auto const i_old{newton_prev_branch.index_unchecked(i)};
+                        double const tol{i_abstol + i_reltol * ::std::max(::std::abs(i_new), ::std::abs(i_old))};
+                        if(::std::abs(i_new - i_old) > tol)
+                        {
+                            converged = false;
+                            break;
+                        }
+                    }
+                }
+
+                if(converged)
+                {
+                    for(auto& i: nl.models)
+                    {
+                        for(auto c{i.begin}; c != i.curr; ++c)
+                        {
+                            if(c->type != ::phy_engine::model::model_type::normal || c->ptr == nullptr) [[unlikely]] { continue; }
+                            if(!c->ptr->check_convergence())
+                            {
+                                converged = false;
+                                break;
+                            }
+                        }
+                        if(!converged) { break; }
+                    }
+                }
+
+                if(converged)
+                {
+                    if(at == ::phy_engine::analyze_type::OP || at == ::phy_engine::analyze_type::DC || at == ::phy_engine::analyze_type::TROP)
+                    {
+                        for(auto& i: nl.models)
+                        {
+                            for(auto c{i.begin}; c != i.curr; ++c)
+                            {
+                                if(c->type != ::phy_engine::model::model_type::normal || c->ptr == nullptr) [[unlikely]] { continue; }
+                                if(!c->ptr->save_op()) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            }
+                        }
+                    }
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        bool solve_once() noexcept
         {
             mna.clear();
 
@@ -536,7 +752,7 @@ namespace phy_engine
                         {
                             if(c->type != ::phy_engine::model::model_type::normal) [[unlikely]] { continue; }
 
-                            if(!c->ptr->iterate_ac(mna, analyzer_setting.dc.m_currentOmega)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(!c->ptr->iterate_ac(mna, analyzer_setting.ac.omega)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -574,6 +790,11 @@ namespace phy_engine
                 {
                     ::fast_io::unreachable();
                 }
+            }
+
+            if(env.g_min != 0.0)
+            {
+                for(::std::size_t n{}; n < node_counter; ++n) { mna.G_ref(n, n) += env.g_min; }
             }
 
             // solve
@@ -641,11 +862,12 @@ namespace phy_engine
                         return false;
                     }
 
-                    ::std::size_t i{};
-                    for(; i < mna.node_size; ++i) { size_t_to_node_p.index_unchecked(i)->node_information.an.voltage = x[i]; }
+                    for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = x[n->node_index]; }
                     nl.ground_node.node_information.an.voltage = {};
-                    ::std::size_t c{};
-                    for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p.index_unchecked(c++)->current = x[i]; }
+                    for(auto* const b: size_t_to_branch_p)
+                    {
+                        b->current = x[mna.node_size + b->index];
+                    }
 
                     return true;
                 }
@@ -679,11 +901,12 @@ namespace phy_engine
                 ::Eigen::VectorXcd X{solver.solve(temp_Z)};
 
                 // storage
-                ::std::size_t i{};
-                for(; i < mna.node_size; ++i) { size_t_to_node_p.index_unchecked(i)->node_information.an.voltage = X[i]; }
+                for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = X[n->node_index]; }
                 nl.ground_node.node_information.an.voltage = {};
-                ::std::size_t c{};
-                for(; i < mna.node_size + mna.branch_size; ++i) { size_t_to_branch_p.index_unchecked(c++)->current = X[i]; }
+                for(auto* const b: size_t_to_branch_p)
+                {
+                    b->current = X[mna.node_size + b->index];
+                }
             }
 
             return true;

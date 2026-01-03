@@ -109,8 +109,21 @@ namespace phy_engine::model
                                                  double nstep) noexcept
     {
         c.m_tr_step = nstep;
-        c.m_tr_prev_g = 0.0;
-        c.m_tr_hist_current = 0.0;
+        if(nstep <= 0.0) { return true; }
+
+        auto const node_0{c.pins[0].nodes};
+        auto const node_1{c.pins[1].nodes};
+        if(node_0 && node_1) [[likely]]
+        {
+            // previous step voltage across capacitor (node_0 - node_1)
+            double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
+
+            // Trapezoidal integrator companion model (Norton):
+            // geq = 2*C/dt, Ieq(n) = -(geq + geq_prev)*v(n-1) - Ieq(n-1)
+            double const g_new{2.0 * c.m_kZimag / nstep};
+            c.m_tr_hist_current = -(g_new + c.m_tr_prev_g) * v_prev - c.m_tr_hist_current;
+            c.m_tr_prev_g = g_new;
+        }
         return true;
     }
 
@@ -126,32 +139,16 @@ namespace phy_engine::model
 
         if(node_0 && node_1) [[likely]]
         {
-            // previous step voltage across capacitor (node_0 - node_1)
-            double const v_prev{node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real()};
-
-            double const dt{c.m_tr_step};
-            if(dt <= 0.0) { return true; }
-
-            // Trapezoidal integrator companion model (Norton):
-            // geq = 2*C/dt, Ieq = history current h^n
-            double const g_new{2.0 * c.m_kZimag / dt};
-
-            // Update history current to the value for this step using last and new conductances:
-            // h^n = -(g_new + g_prev)*v_prev - h^{n-1}; if no previous step, assume i^0 ≈ 0 => h^0 = -g_new*v_prev
-            if(c.m_tr_prev_g > 0.0) { c.m_tr_hist_current = -(g_new + c.m_tr_prev_g) * v_prev - c.m_tr_hist_current; }
-            else
-            {
-                c.m_tr_hist_current = -g_new * v_prev;
-            }
-            c.m_tr_prev_g = g_new;
+            double const geq{c.m_tr_prev_g};
+            double const Ieq{c.m_tr_hist_current};
 
             // Stamp Norton equivalent
-            mna.G_ref(node_0->node_index, node_0->node_index) += g_new;
-            mna.G_ref(node_0->node_index, node_1->node_index) -= g_new;
-            mna.G_ref(node_1->node_index, node_0->node_index) -= g_new;
-            mna.G_ref(node_1->node_index, node_1->node_index) += g_new;
-            mna.I_ref(node_0->node_index) -= c.m_tr_hist_current;
-            mna.I_ref(node_1->node_index) += c.m_tr_hist_current;
+            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
+            mna.I_ref(node_0->node_index) -= Ieq;
+            mna.I_ref(node_1->node_index) += Ieq;
         }
 
         return true;
