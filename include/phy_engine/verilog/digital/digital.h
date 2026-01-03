@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <charconv>
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -28,10 +30,7 @@ namespace phy_engine::verilog::digital
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
 
-    inline constexpr logic_t normalize_z_to_x(logic_t v) noexcept
-    {
-        return v == logic_t::high_impedence_state ? logic_t::indeterminate_state : v;
-    }
+    inline constexpr logic_t normalize_z_to_x(logic_t v) noexcept { return v == logic_t::high_impedence_state ? logic_t::indeterminate_state : v; }
 
     inline constexpr bool is_unknown(logic_t v) noexcept
     {
@@ -103,22 +102,13 @@ namespace phy_engine::verilog::digital
 
     namespace details
     {
-        inline constexpr bool is_space(char8_t c) noexcept
-        {
-            return c == u8' ' || c == u8'\t' || c == u8'\n' || c == u8'\r' || c == u8'\f' || c == u8'\v';
-        }
+        inline constexpr bool is_space(char8_t c) noexcept { return c == u8' ' || c == u8'\t' || c == u8'\n' || c == u8'\r' || c == u8'\f' || c == u8'\v'; }
 
         inline constexpr bool is_digit(char8_t c) noexcept { return c >= u8'0' && c <= u8'9'; }
 
-        inline constexpr bool is_alpha(char8_t c) noexcept
-        {
-            return (c >= u8'a' && c <= u8'z') || (c >= u8'A' && c <= u8'Z') || c == u8'_';
-        }
+        inline constexpr bool is_alpha(char8_t c) noexcept { return (c >= u8'a' && c <= u8'z') || (c >= u8'A' && c <= u8'Z') || c == u8'_'; }
 
-        inline constexpr bool is_ident_continue(char8_t c) noexcept
-        {
-            return is_alpha(c) || is_digit(c) || c == u8'$';
-        }
+        inline constexpr bool is_ident_continue(char8_t c) noexcept { return is_alpha(c) || is_digit(c) || c == u8'$'; }
     }  // namespace details
 
     struct lex_result
@@ -126,6 +116,203 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<token> tokens{};
         ::fast_io::vector<compile_error> errors{};
     };
+
+    struct preprocess_result
+    {
+        ::fast_io::u8string output{};
+        ::fast_io::vector<compile_error> errors{};
+    };
+
+    inline preprocess_result preprocess(::fast_io::u8string_view src) noexcept
+    {
+        preprocess_result out{};
+        out.output.reserve(src.size());
+
+        ::absl::btree_map<::fast_io::u8string, ::fast_io::u8string> macros{};
+
+        struct if_frame
+        {
+            bool parent_active{};
+            bool cond{};
+            bool active{};
+            bool seen_else{};
+        };
+
+        ::fast_io::vector<if_frame> ifs{};
+
+        auto current_active = [&]() noexcept -> bool
+        {
+            if(ifs.empty()) { return true; }
+            return ifs.back_unchecked().active;
+        };
+
+        auto parse_ident = [&](char8_t const*& p, char8_t const* end) noexcept -> ::fast_io::u8string_view
+        {
+            char8_t const* b{p};
+            if(p >= end || !(details::is_alpha(*p) || *p == u8'$')) { return {}; }
+            ++p;
+            while(p < end && details::is_ident_continue(*p)) { ++p; }
+            return {b, static_cast<::std::size_t>(p - b)};
+        };
+
+        char8_t const* p{src.data()};
+        char8_t const* const e{src.data() + src.size()};
+        ::std::size_t line{1};
+
+        while(p < e)
+        {
+            char8_t const* const line_begin{p};
+            char8_t const* line_end{p};
+            while(line_end < e && *line_end != u8'\n') { ++line_end; }
+
+            // strip trailing \r
+            char8_t const* logical_end{line_end};
+            if(logical_end > line_begin && logical_end[-1] == u8'\r') { --logical_end; }
+
+            // find first non-space
+            char8_t const* q{line_begin};
+            while(q < logical_end && details::is_space(*q) && *q != u8'\n' && *q != u8'\r') { ++q; }
+
+            bool const is_directive{q < logical_end && *q == u8'`'};
+
+            if(is_directive)
+            {
+                char8_t const* t{q + 1};
+                while(t < logical_end && details::is_space(*t)) { ++t; }
+                auto const kw_sv{parse_ident(t, logical_end)};
+
+                auto kw_eq = [&](::fast_io::u8string_view kw) noexcept { return kw_sv == kw; };
+
+                auto do_error = [&](::fast_io::u8string_view msg, ::std::size_t col) noexcept
+                { out.errors.push_back({::fast_io::u8string{msg}, 0, line, col}); };
+
+                auto const col0{static_cast<::std::size_t>(q - line_begin) + 1};
+
+                if(kw_eq(u8"define"))
+                {
+                    if(!current_active())
+                    {
+                        // ignore defines in inactive branches, but keep line structure
+                    }
+                    else
+                    {
+                        while(t < logical_end && details::is_space(*t)) { ++t; }
+                        auto const name_sv{parse_ident(t, logical_end)};
+                        if(name_sv.empty()) { do_error(u8"expected macro name after `define", col0); }
+                        else
+                        {
+                            while(t < logical_end && details::is_space(*t)) { ++t; }
+                            ::fast_io::u8string value{};
+                            value.assign(t, static_cast<::std::size_t>(logical_end - t));
+                            macros.insert_or_assign(::fast_io::u8string{name_sv}, ::std::move(value));
+                        }
+                    }
+                }
+                else if(kw_eq(u8"undef"))
+                {
+                    if(current_active())
+                    {
+                        while(t < logical_end && details::is_space(*t)) { ++t; }
+                        auto const name_sv{parse_ident(t, logical_end)};
+                        if(name_sv.empty()) { do_error(u8"expected macro name after `undef", col0); }
+                        else
+                        {
+                            macros.erase(::fast_io::u8string{name_sv});
+                        }
+                    }
+                }
+                else if(kw_eq(u8"ifdef") || kw_eq(u8"ifndef"))
+                {
+                    while(t < logical_end && details::is_space(*t)) { ++t; }
+                    auto const name_sv{parse_ident(t, logical_end)};
+                    bool const defined{name_sv.empty() ? false : (macros.find(::fast_io::u8string{name_sv}) != macros.end())};
+                    bool const cond{kw_eq(u8"ifdef") ? defined : !defined};
+                    bool const parent{current_active()};
+                    ifs.push_back({parent, cond, parent && cond, false});
+                }
+                else if(kw_eq(u8"else"))
+                {
+                    if(ifs.empty()) { do_error(u8"`else without matching `ifdef/`ifndef", col0); }
+                    else
+                    {
+                        auto& fr{ifs.back_unchecked()};
+                        if(fr.seen_else) { do_error(u8"multiple `else in the same conditional block", col0); }
+                        else
+                        {
+                            fr.seen_else = true;
+                            fr.active = fr.parent_active && !fr.cond;
+                        }
+                    }
+                }
+                else if(kw_eq(u8"endif"))
+                {
+                    if(ifs.empty()) { do_error(u8"`endif without matching `ifdef/`ifndef", col0); }
+                    else
+                    {
+                        ifs.pop_back();
+                    }
+                }
+                else if(kw_eq(u8"include")) { do_error(u8"`include is not supported in this Verilog subset", col0); }
+                else
+                {
+                    do_error(u8"unsupported Verilog preprocessor directive", col0);
+                }
+
+                // Preserve line numbering.
+                out.output.push_back(u8'\n');
+            }
+            else if(current_active())
+            {
+                // Expand simple macros: `NAME
+                char8_t const* s{line_begin};
+                while(s < logical_end)
+                {
+                    if(*s == u8'`')
+                    {
+                        char8_t const* t{s + 1};
+                        auto const name_sv{parse_ident(t, logical_end)};
+                        if(name_sv.empty())
+                        {
+                            out.output.push_back(*s);
+                            ++s;
+                            continue;
+                        }
+
+                        auto it{macros.find(::fast_io::u8string{name_sv})};
+                        if(it == macros.end())
+                        {
+                            auto const col{static_cast<::std::size_t>(s - line_begin) + 1};
+                            out.errors.push_back({::fast_io::u8string{u8"undefined Verilog macro"}, 0, line, col});
+                        }
+                        else
+                        {
+                            out.output += it->second;
+                        }
+                        s = t;
+                        continue;
+                    }
+
+                    out.output.push_back(*s);
+                    ++s;
+                }
+                out.output.push_back(u8'\n');
+            }
+            else
+            {
+                // inactive block: emit blank line
+                out.output.push_back(u8'\n');
+            }
+
+            if(line_end < e && *line_end == u8'\n') { p = line_end + 1; }
+            else
+            {
+                p = line_end;
+            }
+            ++line;
+        }
+
+        return out;
+    }
 
     inline lex_result lex(::fast_io::u8string_view src) noexcept
     {
@@ -146,12 +333,20 @@ namespace phy_engine::verilog::digital
                 ++line;
                 col = 1;
             }
-            else { ++col; }
+            else
+            {
+                ++col;
+            }
         };
 
         auto make_tok = [&](token_kind k, char8_t const* b, char8_t const* en, ::std::size_t l, ::std::size_t c) noexcept
         {
-            out.tokens.push_back({k, ::fast_io::u8string_view{b, static_cast<::std::size_t>(en - b)}, l, c});
+            out.tokens.push_back({
+                k,
+                ::fast_io::u8string_view{b, static_cast<::std::size_t>(en - b)},
+                l,
+                c
+            });
         };
 
         while(p < e)
@@ -206,10 +401,8 @@ namespace phy_engine::verilog::digital
             {
                 ::std::size_t const l0{line};
                 ::std::size_t const c0{col};
-                out.errors.push_back({::fast_io::u8string{u8"verilog preprocessor directives are not supported yet"},
-                                      static_cast<::std::size_t>(p - base),
-                                      l0,
-                                      c0});
+                out.errors.push_back(
+                    {::fast_io::u8string{u8"verilog preprocessor directives are not supported yet"}, static_cast<::std::size_t>(p - base), l0, c0});
                 while(p < e && *p != u8'\n')
                 {
                     bump(*p);
@@ -251,6 +444,50 @@ namespace phy_engine::verilog::digital
             }
 
             // 2-char symbols
+            if(c == u8'=' && p + 1 < e && p[1] == u8'=')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+            if(c == u8'!' && p + 1 < e && p[1] == u8'=')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+            if(c == u8'&' && p + 1 < e && p[1] == u8'&')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+            if(c == u8'|' && p + 1 < e && p[1] == u8'|')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
             if((c == u8'<' || c == u8'>') && p + 1 < e && p[1] == u8'=')
             {
                 ::std::size_t const l0{line};
@@ -316,7 +553,9 @@ namespace phy_engine::verilog::digital
         unary_not,
         binary_and,
         binary_or,
-        binary_xor
+        binary_xor,
+        binary_eq,
+        binary_neq
     };
 
     struct expr_node
@@ -334,11 +573,93 @@ namespace phy_engine::verilog::digital
         ::std::size_t expr_root{};
     };
 
+    struct case_item
+    {
+        bool is_default{};
+        logic_t match{logic_t::indeterminate_state};  // 1-bit only for now
+        ::fast_io::vector<::std::size_t> stmts{};     // indices into stmt_node arena
+    };
+
+    struct stmt_node
+    {
+        enum class kind : ::std::uint_fast8_t
+        {
+            empty,
+            blocking_assign,
+            nonblocking_assign,
+            if_stmt,
+            case_stmt
+        };
+
+        kind k{kind::empty};
+        ::std::uint64_t delay_ticks{};
+
+        ::std::size_t lhs_signal{SIZE_MAX};
+        ::std::size_t expr_root{SIZE_MAX};  // assign rhs or if cond
+
+        ::fast_io::vector<::std::size_t> stmts{};       // then-branch (or block list)
+        ::fast_io::vector<::std::size_t> else_stmts{};  // else-branch
+
+        ::std::size_t case_expr_root{SIZE_MAX};
+        ::fast_io::vector<case_item> case_items{};
+    };
+
     struct always_ff
     {
         ::std::size_t clk_signal{};
         bool posedge{true};
-        ::fast_io::vector<::std::pair<::std::size_t, ::std::size_t>> assigns{};  // (lhs_signal, expr_root)
+        ::fast_io::vector<stmt_node> stmt_nodes{};
+        ::fast_io::vector<::std::size_t> roots{};
+    };
+
+    struct always_comb
+    {
+        ::fast_io::vector<stmt_node> stmt_nodes{};
+        ::fast_io::vector<::std::size_t> roots{};
+    };
+
+    struct port_decl
+    {
+        port_dir dir{port_dir::unknown};
+        bool has_range{};
+        int low{};
+        int high{};
+        bool is_reg{};
+    };
+
+    struct vector_desc
+    {
+        int low{};
+        int high{};
+        bool is_reg{};
+        ::fast_io::vector<::std::size_t> bits{};  // bits[index-low] => scalar signal id
+    };
+
+    enum class connection_kind : ::std::uint_fast8_t
+    {
+        unconnected,
+        scalar,
+        vector
+    };
+
+    struct connection_ref
+    {
+        connection_kind kind{connection_kind::unconnected};
+        ::std::size_t scalar_signal{SIZE_MAX};
+        ::fast_io::u8string vector_base{};
+    };
+
+    struct instance_connection
+    {
+        ::fast_io::u8string port_name{};  // empty => positional
+        connection_ref ref{};
+    };
+
+    struct instance
+    {
+        ::fast_io::u8string module_name{};
+        ::fast_io::u8string instance_name{};
+        ::fast_io::vector<instance_connection> connections{};
     };
 
     struct port
@@ -352,7 +673,12 @@ namespace phy_engine::verilog::digital
     {
         ::fast_io::u8string name{};
 
+        // Bit-level ports (vector ports are expanded to multiple entries).
         ::fast_io::vector<port> ports{};
+        // Port groups in order (base names), used for positional instantiation mapping.
+        ::fast_io::vector<::fast_io::u8string> port_order{};
+        ::absl::btree_map<::fast_io::u8string, port_decl> port_decls{};
+        ::absl::btree_map<::fast_io::u8string, vector_desc> vectors{};
 
         ::fast_io::vector<::fast_io::u8string> signal_names{};
         ::fast_io::vector<bool> signal_is_reg{};
@@ -361,6 +687,8 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<expr_node> expr_nodes{};
         ::fast_io::vector<continuous_assign> assigns{};
         ::fast_io::vector<always_ff> always_ffs{};
+        ::fast_io::vector<always_comb> always_combs{};
+        ::fast_io::vector<instance> instances{};
     };
 
     struct compile_result
@@ -375,10 +703,7 @@ namespace phy_engine::verilog::digital
 
         inline constexpr bool is_sym(::fast_io::u8string_view t, char8_t c) noexcept { return t.size() == 1 && t[0] == c; }
 
-        inline constexpr bool is_sym2(::fast_io::u8string_view t, char8_t a, char8_t b) noexcept
-        {
-            return t.size() == 2 && t[0] == a && t[1] == b;
-        }
+        inline constexpr bool is_sym2(::fast_io::u8string_view t, char8_t a, char8_t b) noexcept { return t.size() == 2 && t[0] == a && t[1] == b; }
 
         inline constexpr logic_t parse_1bit_literal(::fast_io::u8string_view t) noexcept
         {
@@ -405,6 +730,7 @@ namespace phy_engine::verilog::digital
             ::fast_io::vector<compile_error>* errors{};
 
             [[nodiscard]] token const& peek() const noexcept { return toks->index_unchecked(pos); }
+
             [[nodiscard]] bool eof() const noexcept { return peek().kind == token_kind::eof; }
 
             token const& consume() noexcept
@@ -414,10 +740,7 @@ namespace phy_engine::verilog::digital
                 return t;
             }
 
-            void err(token const& t, ::fast_io::u8string_view msg) noexcept
-            {
-                errors->push_back({::fast_io::u8string{msg}, 0, t.line, t.column});
-            }
+            void err(token const& t, ::fast_io::u8string_view msg) noexcept { errors->push_back({::fast_io::u8string{msg}, 0, t.line, t.column}); }
 
             [[nodiscard]] bool accept_sym(char8_t c) noexcept
             {
@@ -486,28 +809,169 @@ namespace phy_engine::verilog::digital
         }
 
         inline ::std::size_t get_or_create_signal(compiled_module& m, ::fast_io::u8string const& name) noexcept
+        { return get_or_create_signal(m, ::fast_io::u8string_view{name.data(), name.size()}); }
+
+        inline void append_decimal(::fast_io::u8string& s, int v) noexcept
         {
-            return get_or_create_signal(m, ::fast_io::u8string_view{name.data(), name.size()});
+            char buf[32];
+            auto const* const b{buf};
+            auto const* const e{buf + sizeof(buf)};
+            auto const r{::std::to_chars(const_cast<char*>(b), const_cast<char*>(e), v)};
+            if(r.ec != ::std::errc{}) [[unlikely]] { return; }
+            for(auto const* p{b}; p != r.ptr; ++p) { s.push_back(static_cast<char8_t>(*p)); }
         }
 
-        inline void set_port_dir(compiled_module& m, ::fast_io::u8string_view port_name, port_dir d) noexcept
+        inline bool parse_dec_int(::fast_io::u8string_view t, int& out) noexcept
         {
-            for(auto& p: m.ports)
+            if(t.empty()) { return false; }
+            bool neg{};
+            ::std::int64_t value{};
+            ::std::size_t i{};
+            if(t[0] == u8'-')
             {
-                if(p.name == port_name)
+                neg = true;
+                i = 1;
+            }
+            for(; i < t.size(); ++i)
+            {
+                char8_t const c{t[i]};
+                if(c == u8'_') { continue; }
+                if(c < u8'0' || c > u8'9') { return false; }
+                value = value * 10 + (c - u8'0');
+                if(value > static_cast<::std::int64_t>(::std::numeric_limits<int>::max())) { return false; }
+            }
+            out = neg ? -static_cast<int>(value) : static_cast<int>(value);
+            return true;
+        }
+
+        struct range_desc
+        {
+            bool has_range{};
+            int low{};
+            int high{};
+        };
+
+        inline bool accept_range(parser& p, range_desc& r) noexcept
+        {
+            if(!p.accept_sym(u8'[')) { return false; }
+
+            int a{};
+            auto const& t0{p.peek()};
+            if(t0.kind != token_kind::number || !parse_dec_int(t0.text, a))
+            {
+                p.err(t0, u8"expected integer in range");
+                while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                return false;
+            }
+            p.consume();
+
+            int b{a};
+            if(p.accept_sym(u8':'))
+            {
+                auto const& t1{p.peek()};
+                if(t1.kind != token_kind::number || !parse_dec_int(t1.text, b))
                 {
-                    p.dir = d;
-                    return;
+                    p.err(t1, u8"expected integer after ':'");
+                    while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                    return false;
+                }
+                p.consume();
+            }
+
+            if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+            r.has_range = true;
+            r.low = ::std::min(a, b);
+            r.high = ::std::max(a, b);
+            return true;
+        }
+
+        inline ::fast_io::u8string make_bit_name(::fast_io::u8string_view base, int idx) noexcept
+        {
+            ::fast_io::u8string name{base};
+            name.push_back(u8'[');
+            append_decimal(name, idx);
+            name.push_back(u8']');
+            return name;
+        }
+
+        inline vector_desc& declare_vector(compiled_module& m, ::fast_io::u8string_view base, int low, int high, bool is_reg) noexcept
+        {
+            ::fast_io::u8string key{base};
+            auto it{m.vectors.find(key)};
+            if(it == m.vectors.end())
+            {
+                vector_desc vd{};
+                vd.low = low;
+                vd.high = high;
+                vd.is_reg = is_reg;
+                vd.bits.resize(static_cast<::std::size_t>(high - low + 1));
+                for(int i{low}; i <= high; ++i)
+                {
+                    auto const bit_name{make_bit_name(base, i)};
+                    auto const sig{get_or_create_signal(m, bit_name)};
+                    vd.bits.index_unchecked(static_cast<::std::size_t>(i - low)) = sig;
+                    if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
+                }
+                auto res{m.vectors.insert({::std::move(key), ::std::move(vd)})};
+                return res.first->second;
+            }
+
+            auto& vd{it->second};
+            int const new_low{::std::min(vd.low, low)};
+            int const new_high{::std::max(vd.high, high)};
+            if(new_low != vd.low || new_high != vd.high)
+            {
+                bool const reg{is_reg || vd.is_reg};
+                ::fast_io::vector<::std::size_t> new_bits{};
+                new_bits.resize(static_cast<::std::size_t>(new_high - new_low + 1));
+
+                for(int i{vd.low}; i <= vd.high; ++i)
+                {
+                    new_bits.index_unchecked(static_cast<::std::size_t>(i - new_low)) = vd.bits.index_unchecked(static_cast<::std::size_t>(i - vd.low));
+                }
+
+                for(int i{new_low}; i <= new_high; ++i)
+                {
+                    auto& slot{new_bits.index_unchecked(static_cast<::std::size_t>(i - new_low))};
+                    if(slot != 0 || (vd.low <= i && i <= vd.high)) { continue; }
+                    auto const bit_name{make_bit_name(base, i)};
+                    slot = get_or_create_signal(m, bit_name);
+                    if(reg) { m.signal_is_reg.index_unchecked(slot) = true; }
+                }
+
+                vd.low = new_low;
+                vd.high = new_high;
+                vd.bits = ::std::move(new_bits);
+            }
+
+            if(is_reg && !vd.is_reg)
+            {
+                vd.is_reg = true;
+                for(auto const sig: vd.bits)
+                {
+                    if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
                 }
             }
-            // implicit port not in header
-            ::std::size_t const sig{get_or_create_signal(m, port_name)};
-            m.ports.push_back({::fast_io::u8string{port_name}, d, sig});
+
+            return vd;
         }
 
-        inline void set_port_dir(compiled_module& m, ::fast_io::u8string const& port_name, port_dir d) noexcept
+        inline ::std::size_t get_or_create_vector_bit(compiled_module& m, ::fast_io::u8string_view base, int idx, bool is_reg) noexcept
         {
-            set_port_dir(m, ::fast_io::u8string_view{port_name.data(), port_name.size()}, d);
+            auto& vd{declare_vector(m, base, idx, idx, is_reg)};
+            if(idx < vd.low || idx > vd.high) { return SIZE_MAX; }
+            return vd.bits.index_unchecked(static_cast<::std::size_t>(idx - vd.low));
+        }
+
+        inline port_decl& ensure_port_decl(compiled_module& m, ::fast_io::u8string_view base) noexcept
+        {
+            ::fast_io::u8string key{base};
+            auto it{m.port_decls.find(key)};
+            if(it != m.port_decls.end()) { return it->second; }
+            m.port_order.push_back(key);
+            auto res{m.port_decls.insert({::std::move(key), port_decl{}})};
+            return res.first->second;
         }
 
         struct expr_parser
@@ -625,7 +1089,11 @@ namespace phy_engine::verilog::digital
 
                 if(!p.accept_sym(u8',')) { break; }
             }
-            if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';'"); p.skip_until_semicolon(); }
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
         }
 
         inline void parse_wire_list(parser& p, compiled_module& m, bool is_reg) noexcept
@@ -638,19 +1106,36 @@ namespace phy_engine::verilog::digital
                 if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
                 if(!p.accept_sym(u8',')) { break; }
             }
-            if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';'"); p.skip_until_semicolon(); }
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
         }
 
         inline void parse_assign_stmt(parser& p, compiled_module& m) noexcept
         {
             auto const lhs_name{p.expect_ident(u8"expected lhs identifier after 'assign'")};
-            if(lhs_name.empty()) { p.skip_until_semicolon(); return; }
-            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '=' in assign"); p.skip_until_semicolon(); return; }
+            if(lhs_name.empty())
+            {
+                p.skip_until_semicolon();
+                return;
+            }
+            if(!p.accept_sym(u8'='))
+            {
+                p.err(p.peek(), u8"expected '=' in assign");
+                p.skip_until_semicolon();
+                return;
+            }
 
             expr_parser ep{&p, &m};
             ::std::size_t const root{ep.parse_expr()};
 
-            if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after assign"); p.skip_until_semicolon(); }
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';' after assign");
+                p.skip_until_semicolon();
+            }
 
             m.assigns.push_back({get_or_create_signal(m, lhs_name), root});
         }
@@ -658,16 +1143,33 @@ namespace phy_engine::verilog::digital
         inline void parse_always_ff(parser& p, compiled_module& m) noexcept
         {
             // always @ ( posedge clk ) <stmt>
-            if(!p.accept_sym(u8'@')) { p.err(p.peek(), u8"expected '@' after always"); p.skip_until_semicolon(); return; }
-            if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after @"); p.skip_until_semicolon(); return; }
+            if(!p.accept_sym(u8'@'))
+            {
+                p.err(p.peek(), u8"expected '@' after always");
+                p.skip_until_semicolon();
+                return;
+            }
+            if(!p.accept_sym(u8'('))
+            {
+                p.err(p.peek(), u8"expected '(' after @");
+                p.skip_until_semicolon();
+                return;
+            }
 
             bool posedge{true};
             if(p.accept_kw(u8"posedge")) { posedge = true; }
             else if(p.accept_kw(u8"negedge")) { posedge = false; }
-            else { p.err(p.peek(), u8"expected posedge/negedge"); }
+            else
+            {
+                p.err(p.peek(), u8"expected posedge/negedge");
+            }
 
             auto const clk_name{p.expect_ident(u8"expected clock identifier")};
-            if(clk_name.empty()) { p.skip_until_semicolon(); return; }
+            if(clk_name.empty())
+            {
+                p.skip_until_semicolon();
+                return;
+            }
 
             if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after event"); }
 
@@ -678,20 +1180,30 @@ namespace phy_engine::verilog::digital
             auto parse_one_nb_assign = [&]() noexcept
             {
                 auto const lhs{p.expect_ident(u8"expected lhs identifier in nonblocking assignment")};
-                if(lhs.empty()) { p.skip_until_semicolon(); return; }
-                if(!p.accept_sym2(u8'<', u8'=')) { p.err(p.peek(), u8"expected '<='"); p.skip_until_semicolon(); return; }
+                if(lhs.empty())
+                {
+                    p.skip_until_semicolon();
+                    return;
+                }
+                if(!p.accept_sym2(u8'<', u8'='))
+                {
+                    p.err(p.peek(), u8"expected '<='");
+                    p.skip_until_semicolon();
+                    return;
+                }
                 expr_parser ep{&p, &m};
                 ::std::size_t const root{ep.parse_expr()};
-                if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';'"); p.skip_until_semicolon(); }
+                if(!p.accept_sym(u8';'))
+                {
+                    p.err(p.peek(), u8"expected ';'");
+                    p.skip_until_semicolon();
+                }
                 ff.assigns.push_back({get_or_create_signal(m, lhs), root});
             };
 
             if(p.accept_kw(u8"begin"))
             {
-                while(!p.eof() && !p.accept_kw(u8"end"))
-                {
-                    parse_one_nb_assign();
-                }
+                while(!p.eof() && !p.accept_kw(u8"end")) { parse_one_nb_assign(); }
             }
             else
             {
@@ -710,7 +1222,12 @@ namespace phy_engine::verilog::digital
 
             m.name = p.expect_ident(u8"expected module name");
 
-            if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after module name"); p.skip_until_semicolon(); return m; }
+            if(!p.accept_sym(u8'('))
+            {
+                p.err(p.peek(), u8"expected '(' after module name");
+                p.skip_until_semicolon();
+                return m;
+            }
 
             // port list
             if(!p.accept_sym(u8')'))
@@ -744,30 +1261,61 @@ namespace phy_engine::verilog::digital
 
                     // If next token is a direction keyword, it starts a new declaration and resets dir.
                     auto const& nt{p.peek()};
-                    if(nt.kind == token_kind::identifier &&
-                       (is_kw(nt.text, u8"input") || is_kw(nt.text, u8"output") || is_kw(nt.text, u8"inout")))
+                    if(nt.kind == token_kind::identifier && (is_kw(nt.text, u8"input") || is_kw(nt.text, u8"output") || is_kw(nt.text, u8"inout")))
                     {
                         current_dir = port_dir::unknown;
                     }
                 }
             }
 
-            if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after module header"); p.skip_until_semicolon(); }
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';' after module header");
+                p.skip_until_semicolon();
+            }
 
             // body
             while(!p.eof())
             {
                 if(p.accept_kw(u8"endmodule")) { break; }
 
-                if(p.accept_kw(u8"input")) { parse_decl_list(p, m, port_dir::input); continue; }
-                if(p.accept_kw(u8"output")) { parse_decl_list(p, m, port_dir::output); continue; }
-                if(p.accept_kw(u8"inout")) { parse_decl_list(p, m, port_dir::inout); continue; }
+                if(p.accept_kw(u8"input"))
+                {
+                    parse_decl_list(p, m, port_dir::input);
+                    continue;
+                }
+                if(p.accept_kw(u8"output"))
+                {
+                    parse_decl_list(p, m, port_dir::output);
+                    continue;
+                }
+                if(p.accept_kw(u8"inout"))
+                {
+                    parse_decl_list(p, m, port_dir::inout);
+                    continue;
+                }
 
-                if(p.accept_kw(u8"wire")) { parse_wire_list(p, m, false); continue; }
-                if(p.accept_kw(u8"reg")) { parse_wire_list(p, m, true); continue; }
+                if(p.accept_kw(u8"wire"))
+                {
+                    parse_wire_list(p, m, false);
+                    continue;
+                }
+                if(p.accept_kw(u8"reg"))
+                {
+                    parse_wire_list(p, m, true);
+                    continue;
+                }
 
-                if(p.accept_kw(u8"assign")) { parse_assign_stmt(p, m); continue; }
-                if(p.accept_kw(u8"always")) { parse_always_ff(p, m); continue; }
+                if(p.accept_kw(u8"assign"))
+                {
+                    parse_assign_stmt(p, m);
+                    continue;
+                }
+                if(p.accept_kw(u8"always"))
+                {
+                    parse_always_ff(p, m);
+                    continue;
+                }
 
                 // unknown statement/instantiation: skip
                 p.skip_until_semicolon();
@@ -848,10 +1396,7 @@ namespace phy_engine::verilog::digital
                 auto const clk_now{st.values.index_unchecked(ff.clk_signal)};
 
                 bool fire{};
-                if(ff.posedge)
-                {
-                    fire = (normalize_z_to_x(clk_prev) == logic_t::false_state) && (normalize_z_to_x(clk_now) == logic_t::true_state);
-                }
+                if(ff.posedge) { fire = (normalize_z_to_x(clk_prev) == logic_t::false_state) && (normalize_z_to_x(clk_now) == logic_t::true_state); }
                 else
                 {
                     fire = (normalize_z_to_x(clk_prev) == logic_t::true_state) && (normalize_z_to_x(clk_now) == logic_t::false_state);
@@ -859,10 +1404,7 @@ namespace phy_engine::verilog::digital
 
                 if(!fire) { continue; }
 
-                for(auto const& [lhs, root]: ff.assigns)
-                {
-                    pending.push_back({lhs, eval_expr(m, root, st.values)});
-                }
+                for(auto const& [lhs, root]: ff.assigns) { pending.push_back({lhs, eval_expr(m, root, st.values)}); }
             }
 
             for(auto const& [lhs, v]: pending)
