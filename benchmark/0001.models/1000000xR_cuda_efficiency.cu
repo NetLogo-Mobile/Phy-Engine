@@ -1,5 +1,5 @@
-#if !defined(__CUDA__)
-#error "This benchmark must be compiled with Clang CUDA mode (clang++ -x cuda)."
+#if !defined(__CUDACC__) && !defined(__NVCC__) && !defined(__CUDA__)
+#error "This benchmark must be compiled with a CUDA compiler (nvcc or clang++ -x cuda)."
 #endif
 #
 #if !defined(__CUDA_ARCH__)
@@ -148,13 +148,20 @@ int main(int argc, char** argv)
         }
     }
 #
-    auto const nnz_size = [&]() -> std::size_t
+    if(cfg.warmup == 0)
     {
-        std::size_t nnz{};
-        for(auto const& row: c.mna.A) { nnz += row.second.size(); }
-        return nnz;
-    }();
-    ::fast_io::io::perr("nnz=", nnz_size, "\n");
+        ::fast_io::io::perr("nnz=(unknown; warmup=0, run with --warmup>=1 or set PHY_ENGINE_PROFILE_SOLVE=1)\n");
+    }
+    else
+    {
+        auto const nnz_size = [&]() -> std::size_t
+        {
+            std::size_t nnz{};
+            for(auto const& row: c.mna.A) { nnz += row.size(); }
+            return nnz;
+        }();
+        ::fast_io::io::perr("nnz=", nnz_size, "\n");
+    }
 #
     auto const t0{std::chrono::steady_clock::now()};
     for(::std::size_t i{}; i < cfg.iters; ++i)
