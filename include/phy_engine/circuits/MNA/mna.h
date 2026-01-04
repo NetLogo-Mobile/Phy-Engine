@@ -15,6 +15,9 @@ namespace phy_engine::MNA
 
         MNA(::std::size_t ns, ::std::size_t bs) noexcept : node_size{ns}, branch_size{bs}
         {
+#if 1
+            A.resize(node_size + branch_size);
+#endif
 #if 0
             X.resize(node_size + branch_size);
 #endif
@@ -24,6 +27,9 @@ namespace phy_engine::MNA
         {
             node_size = ns;
             branch_size = bs;
+#if 1
+            A.resize(node_size + branch_size);
+#endif
 #if 0
             X.resize(node_size + branch_size);
 #endif
@@ -31,10 +37,21 @@ namespace phy_engine::MNA
 
         void clear() noexcept
         {
-            A.clear();
+            for(auto& row: A) { row.clear(); }
 #if 0
             X.setZero();
 #endif
+            Z.clear();
+        }
+
+        // Keep sparsity pattern, reset numeric values to zero.
+        // This avoids re-allocating map nodes across repeated solves of the same netlist.
+        void clear_values_keep_pattern() noexcept
+        {
+            for(auto& row: A)
+            {
+                for(auto& [_, v]: row) { v = {}; }
+            }
             Z.clear();
         }
 
@@ -139,7 +156,8 @@ namespace phy_engine::MNA
             return Z[rox + node_size];
         }
 
-        ::absl::btree_map<::std::size_t, ::absl::btree_map<::std::size_t, ::std::complex<double>>> A{};
+        // Row indices are dense [0, node_size + branch_size), so use a row-indexed container.
+        ::fast_io::vector<::absl::btree_map<::std::size_t, ::std::complex<double>>> A{};
         ::absl::btree_map<::std::size_t, ::std::complex<double>> Z{};
 
         ::std::size_t node_size{};

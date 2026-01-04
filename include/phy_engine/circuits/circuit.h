@@ -2,9 +2,10 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <utility>
-#include <vector>
 #include <fast_io/fast_io_dsal/vector.h>
 
 #ifdef PHY_ENGINE_USE_MKL
@@ -23,12 +24,39 @@
 #include "analyzer/impl.h"
 #include "digital/update_table.h"
 
-#if defined(__CUDA__) && !defined(__CUDA_ARCH__)
+#if (defined(__CUDA__) || defined(__CUDACC__) || defined(__NVCC__)) && !defined(__CUDA_ARCH__)
     #include "solver/cuda_sparse_lu.h"
 #endif
 
 namespace phy_engine
 {
+    namespace details
+    {
+        inline bool profile_solve_enabled() noexcept
+        {
+            static bool const enabled = []() noexcept {
+                auto const* v = ::std::getenv("PHY_ENGINE_PROFILE_SOLVE");
+                return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+            }();
+            return enabled;
+        }
+
+        inline bool profile_solve_validate_enabled() noexcept
+        {
+            static bool const enabled = []() noexcept {
+                auto const* v = ::std::getenv("PHY_ENGINE_PROFILE_SOLVE_VALIDATE");
+                return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+            }();
+            return enabled;
+        }
+
+        template <typename Clock = ::std::chrono::steady_clock>
+        inline double ms_since(typename Clock::time_point start, typename Clock::time_point end) noexcept
+        {
+            return static_cast<double>(::std::chrono::duration_cast<::std::chrono::duration<double, ::std::milli>>(end - start).count());
+        }
+    }  // namespace details
+
 
     struct circult
     {
@@ -56,6 +84,8 @@ namespace phy_engine
         ::std::size_t node_counter{};
         ::std::size_t branch_counter{};
 
+        bool mna_keep_pattern_ready{};
+
         ::fast_io::vector<::phy_engine::model::node_t*> size_t_to_node_p{};
         ::fast_io::vector<::phy_engine::model::branch*> size_t_to_branch_p{};
 
@@ -77,8 +107,42 @@ namespace phy_engine
 #endif
 
         inline static constexpr ::std::size_t cuda_node_threshold{100000};
-#if defined(__CUDA__) && !defined(__CUDA_ARCH__)
+#if (defined(__CUDA__) || defined(__CUDACC__) || defined(__NVCC__)) && !defined(__CUDA_ARCH__)
         ::phy_engine::solver::cuda_sparse_lu cuda_solver{};
+
+        struct cuda_host_cache
+        {
+            ::std::size_t row_size{};
+            ::std::size_t nnz_size{};
+
+            ::fast_io::vector<int> csr_row_ptr{};
+            ::fast_io::vector<int> csr_col_ind{};
+
+            ::fast_io::vector<double> csr_values_real{};
+            ::fast_io::vector<::std::complex<double>> csr_values{};
+
+            ::fast_io::vector<double> b_real{};
+            ::fast_io::vector<::std::complex<double>> b{};
+            ::fast_io::vector<::std::size_t> b_touched_real{};
+            ::fast_io::vector<::std::size_t> b_touched{};
+
+            ::fast_io::vector<double> x_real{};
+            ::fast_io::vector<::std::complex<double>> x{};
+
+            void clear_b_real_touched() noexcept
+            {
+                for(auto const idx: b_touched_real) { b_real[idx] = 0.0; }
+                b_touched_real.clear();
+            }
+
+            void clear_b_touched() noexcept
+            {
+                for(auto const idx: b_touched) { b[idx] = {}; }
+                b_touched.clear();
+            }
+        };
+
+        cuda_host_cache cuda_cache{};
 #endif
 
         double tr_duration{};  // TR
@@ -358,6 +422,7 @@ namespace phy_engine
             branch_counter = 0;
             size_t_to_branch_p.clear();
             mna.clear();
+            mna_keep_pattern_ready = false;
             has_prepare = false;
         }
 
@@ -458,6 +523,7 @@ namespace phy_engine
 
             // clear mna (set zero)
             mna.clear();
+            mna_keep_pattern_ready = false;
 
             mna.resize(node_counter
 #if 0
@@ -693,7 +759,17 @@ namespace phy_engine
 
         bool solve_once() noexcept
         {
-            mna.clear();
+            using clock = ::std::chrono::steady_clock;
+            bool const prof{details::profile_solve_enabled()};
+            auto const t_total0 = clock::now();
+
+            static bool const mna_reuse_enabled = []() noexcept {
+                auto const* v = ::std::getenv("PHY_ENGINE_MNA_REUSE");
+                return v == nullptr || (*v != '0');
+            }();
+            bool const can_reuse_mna = mna_reuse_enabled && mna_keep_pattern_ready && mna.node_size == node_counter && mna.branch_size == branch_counter;
+            if(can_reuse_mna) { mna.clear_values_keep_pattern(); }
+            else { mna.clear(); }
 
             mna.resize(node_counter
 #if 0
@@ -715,6 +791,7 @@ namespace phy_engine
             }
 
             // iterate
+            auto const t_stamp0 = clock::now();
             switch(at)
             {
                 case ::phy_engine::analyze_type::OP:
@@ -793,6 +870,8 @@ namespace phy_engine
                     ::fast_io::unreachable();
                 }
             }
+            auto const t_stamp1 = clock::now();
+            mna_keep_pattern_ready = true;
 
             if(env.g_min != 0.0)
             {
@@ -809,68 +888,324 @@ namespace phy_engine
                     return true;
                 }
 
-#if defined(__CUDA__) && !defined(__CUDA_ARCH__)
+#if (defined(__CUDA__) || defined(__CUDACC__) || defined(__NVCC__)) && !defined(__CUDA_ARCH__)
                 if(node_counter >= cuda_node_threshold && cuda_solver.is_available())
                 {
                     if(row_size > static_cast<::std::size_t>(::std::numeric_limits<int>::max())) [[unlikely]] { return false; }
 
                     ::std::size_t nnz_size{};
-                    for(auto const& row: mna.A) { nnz_size += row.second.size(); }
+                    for(auto const& row: mna.A) { nnz_size += row.size(); }
                     if(nnz_size > static_cast<::std::size_t>(::std::numeric_limits<int>::max())) [[unlikely]] { return false; }
 
-                    ::std::vector<int> csr_row_ptr(row_size + 1);
-                    ::std::vector<int> csr_col_ind{};
-                    ::std::vector<::std::complex<double>> csr_values{};
-                    csr_col_ind.reserve(nnz_size);
-                    csr_values.reserve(nnz_size);
+                    auto const t_csr0 = clock::now();
+                    static bool const cache_enabled = []() noexcept {
+                        auto const* v = ::std::getenv("PHY_ENGINE_CUDA_CSR_CACHE");
+                        return v == nullptr || (*v != '0');
+                    }();
 
-                    ::std::size_t nnz_counter{};
-                    csr_row_ptr[0] = 0;
+                    auto& cache = cuda_cache;
+                    bool rebuilt_pattern{};
+                    bool all_real{(at == ::phy_engine::analyze_type::DC || at == ::phy_engine::analyze_type::OP)};
 
-                    auto it{mna.A.begin()};
-                    auto const ed{mna.A.end()};
-                    for(::std::size_t r{}; r != row_size; ++r)
+                    if(!cache_enabled || cache.row_size != row_size || cache.nnz_size != nnz_size ||
+                       cache.csr_row_ptr.size() != row_size + 1 || cache.csr_col_ind.size() != nnz_size)
                     {
-                        if(it != ed && it->first == r)
-                        {
-                            for(auto const& [col, v]: it->second)
-                            {
-                                csr_col_ind.push_back(static_cast<int>(col));
-                                csr_values.push_back(v);
-                                ++nnz_counter;
-                            }
-                            ++it;
-                        }
-                        csr_row_ptr[r + 1] = static_cast<int>(nnz_counter);
+                        rebuilt_pattern = true;
+                        cache.row_size = row_size;
+                        cache.nnz_size = nnz_size;
+                        cache.csr_row_ptr.assign(row_size + 1, 0);
+                        cache.csr_col_ind.resize(nnz_size);
                     }
 
-                    ::std::vector<::std::complex<double>> b(row_size);
+                    // Ensure value buffers are allocated (no per-iter push_back/realloc).
+                    if(all_real)
+                    {
+                        cache.csr_values_real.resize(nnz_size);
+                    }
+                    else
+                    {
+                        cache.csr_values.resize(nnz_size);
+                    }
+
+                    auto const fill_values_and_validate = [&]() noexcept -> bool
+                    {
+                        ::std::size_t k{};
+                        cache.csr_row_ptr[0] = 0;
+                        for(::std::size_t r{}; r != row_size; ++r)
+                        {
+                            auto const& row_map = mna.A[r];
+                            for(auto const& [col, v]: row_map)
+                            {
+                                if(k >= nnz_size) [[unlikely]] { return false; }
+
+                                if(cache_enabled && !rebuilt_pattern)
+                                {
+                                    if(cache.csr_col_ind[k] != static_cast<int>(col)) { return false; }
+                                }
+                                else
+                                {
+                                    cache.csr_col_ind[k] = static_cast<int>(col);
+                                }
+
+                                if(all_real)
+                                {
+                                    if(v.imag() != 0.0)
+                                    {
+                                        all_real = false;
+                                        cache.csr_values.resize(nnz_size);
+                                        for(::std::size_t i{}; i < k; ++i) { cache.csr_values[i] = {cache.csr_values_real[i], 0.0}; }
+                                        cache.csr_values_real.clear();
+                                    }
+                                    if(all_real) { cache.csr_values_real[k] = v.real(); }
+                                    else { cache.csr_values[k] = v; }
+                                }
+                                else
+                                {
+                                    cache.csr_values[k] = v;
+                                }
+
+                                ++k;
+                            }
+
+                            // When caching is enabled and the pattern is reused, row nnz must match.
+                            if(cache_enabled && !rebuilt_pattern)
+                            {
+                                if(static_cast<::std::size_t>(cache.csr_row_ptr[r + 1]) != k) { return false; }
+                            }
+                            else
+                            {
+                                cache.csr_row_ptr[r + 1] = static_cast<int>(k);
+                            }
+                        }
+
+                        return k == nnz_size;
+                    };
+
+                    if(cache_enabled && !rebuilt_pattern)
+                    {
+                        if(!fill_values_and_validate())
+                        {
+                            rebuilt_pattern = true;
+                            cache.csr_row_ptr.assign(row_size + 1, 0);
+                            if(all_real) { cache.csr_values_real.resize(nnz_size); }
+                            else { cache.csr_values.resize(nnz_size); }
+                            if(!fill_values_and_validate()) [[unlikely]] { return false; }
+                        }
+                    }
+                    else
+                    {
+                        if(!fill_values_and_validate()) [[unlikely]] { return false; }
+                    }
+
+                    auto const t_rhs0 = clock::now();
+                    if(all_real)
+                    {
+                        if(cache.b_real.size() != row_size)
+                        {
+                            cache.b_real.assign(row_size, 0.0);
+                            cache.b_touched_real.clear();
+                        }
+                        else
+                        {
+                            cache.clear_b_real_touched();
+                        }
+                    }
+                    else
+                    {
+                        if(cache.b.size() != row_size)
+                        {
+                            cache.b.assign(row_size, {});
+                            cache.b_touched.clear();
+                        }
+                        else
+                        {
+                            cache.clear_b_touched();
+                        }
+                    }
                     for(auto const& [idx, v]: mna.Z)
                     {
                         if(idx >= row_size) [[unlikely]] { return false; }
-                        b[idx] = v;
+                        if(all_real)
+                        {
+                            if(v.imag() != 0.0) { all_real = false; }
+                            if(all_real)
+                            {
+                                cache.b_real[idx] = v.real();
+                                cache.b_touched_real.push_back(idx);
+                            }
+                            else
+                            {
+                                if(cache.b.size() != row_size) { cache.b.assign(row_size, {}); }
+                                cache.clear_b_touched();
+                                cache.b_touched.reserve(cache.b_touched_real.size() + 8);
+                                for(auto const j: cache.b_touched_real)
+                                {
+                                    cache.b[j] = {cache.b_real[j], 0.0};
+                                    cache.b_touched.push_back(j);
+                                }
+                                cache.b_touched_real.clear();
+                                cache.b[idx] = v;
+                                cache.b_touched.push_back(idx);
+                            }
+                        }
+                        else
+                        {
+                            cache.b[idx] = v;
+                            cache.b_touched.push_back(idx);
+                        }
                     }
 
-                    ::std::vector<::std::complex<double>> x(row_size);
+                    if(all_real)
+                    {
+                        if(cache.x_real.size() != row_size) { cache.x_real.resize(row_size); }
+                    }
+                    else
+                    {
+                        if(cache.x.size() != row_size) { cache.x.resize(row_size); }
+                    }
+                    auto const t_rhs1 = clock::now();
 
-                    if(!cuda_solver.solve_csr(static_cast<int>(row_size),
-                                              static_cast<int>(nnz_size),
-                                              csr_row_ptr.data(),
-                                              csr_col_ind.data(),
-                                              csr_values.data(),
-                                              b.data(),
-                                              x.data())) [[unlikely]]
+                    ::phy_engine::solver::cuda_sparse_lu::timings cuda_t{};
+                    auto const t_cuda0 = clock::now();
+                    bool ok{};
+                    if(all_real)
+                    {
+                        ok = cuda_solver.solve_csr_real(static_cast<int>(row_size),
+                                                        static_cast<int>(nnz_size),
+                                                        cache.csr_row_ptr.data(),
+                                                        cache.csr_col_ind.data(),
+                                                        cache.csr_values_real.data(),
+                                                        cache.b_real.data(),
+                                                        cache.x_real.data(),
+                                                        cuda_t,
+                                                        rebuilt_pattern);
+                    }
+                    else
+                    {
+                        ok = cuda_solver.solve_csr_timed(static_cast<int>(row_size),
+                                                         static_cast<int>(nnz_size),
+                                                         cache.csr_row_ptr.data(),
+                                                         cache.csr_col_ind.data(),
+                                                         cache.csr_values.data(),
+                                                         cache.b.data(),
+                                                         cache.x.data(),
+                                                         cuda_t,
+                                                         rebuilt_pattern);
+                    }
+                    auto const t_cuda1 = clock::now();
+
+                    if(!ok) [[unlikely]]
                     {
                         return false;
                     }
 
-                    for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = x[n->node_index]; }
-                    nl.ground_node.node_information.an.voltage = {};
-                    for(auto* const b: size_t_to_branch_p)
+                    if(all_real)
                     {
-                        b->current = x[mna.node_size + b->index];
+                        for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = {cache.x_real[n->node_index], 0.0}; }
+                        nl.ground_node.node_information.an.voltage = {};
+                        for(auto* const bptr: size_t_to_branch_p)
+                        {
+                            bptr->current = {cache.x_real[mna.node_size + bptr->index], 0.0};
+                        }
+                    }
+                    else
+                    {
+                        for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = cache.x[n->node_index]; }
+                    nl.ground_node.node_information.an.voltage = {};
+                    for(auto* const bptr: size_t_to_branch_p)
+                    {
+                        bptr->current = cache.x[mna.node_size + bptr->index];
+                    }
                     }
 
+                    if(prof)
+                    {
+                        double resid_max{};
+                        bool has_resid{};
+                        if(details::profile_solve_validate_enabled())
+                        {
+                            constexpr ::std::size_t samples{16};
+                            auto const sample_row = [&](::std::size_t s) noexcept -> ::std::size_t
+                            {
+                                if(row_size <= 1 || samples <= 1) { return 0; }
+                                return (row_size - 1) * s / (samples - 1);
+                            };
+
+                            if(all_real)
+                            {
+                                for(::std::size_t s{}; s < samples; ++s)
+                                {
+                                    auto const r{sample_row(s)};
+                                    double acc{};
+                                    for(int k{cache.csr_row_ptr[r]}; k < cache.csr_row_ptr[r + 1]; ++k)
+                                    {
+                                        acc += cache.csr_values_real[static_cast<::std::size_t>(k)] *
+                                               cache.x_real[static_cast<::std::size_t>(cache.csr_col_ind[static_cast<::std::size_t>(k)])];
+                                    }
+                                    double const resid{acc - cache.b_real[r]};
+                                    double const a{resid < 0.0 ? -resid : resid};
+                                    if(!has_resid || a > resid_max)
+                                    {
+                                        resid_max = a;
+                                        has_resid = true;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                for(::std::size_t s{}; s < samples; ++s)
+                                {
+                                    auto const r{sample_row(s)};
+                                    ::std::complex<double> acc{};
+                                    for(int k{cache.csr_row_ptr[r]}; k < cache.csr_row_ptr[r + 1]; ++k)
+                                    {
+                                        acc += cache.csr_values[static_cast<::std::size_t>(k)] *
+                                               cache.x[static_cast<::std::size_t>(cache.csr_col_ind[static_cast<::std::size_t>(k)])];
+                                    }
+                                    auto const resid{acc - cache.b[r]};
+                                    double const a{::std::abs(resid)};
+                                    if(!has_resid || a > resid_max)
+                                    {
+                                        resid_max = a;
+                                        has_resid = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        auto const t_total1 = clock::now();
+                        if(has_resid)
+                        {
+                            ::fast_io::io::perr("[profile] stamp_ms=", details::ms_since<clock>(t_stamp0, t_stamp1),
+                                                " n=", row_size,
+                                                " nnz=", nnz_size,
+                                                " csr_ms=", details::ms_since<clock>(t_csr0, t_rhs0),
+                                                " rhs_ms=", details::ms_since<clock>(t_rhs0, t_rhs1),
+                                                " cuda_total_ms=", details::ms_since<clock>(t_cuda0, t_cuda1),
+                                                " (h2d_ms=", cuda_t.h2d_ms, " solve_ms=", cuda_t.solve_ms, " d2h_ms=", cuda_t.d2h_ms,
+                                                " solve_host_ms=", cuda_t.solve_host_ms,
+                                                " solve_total_host_ms=", cuda_t.solve_total_host_ms, ")",
+                                                " real=", all_real ? "1" : "0",
+                                                " resid_max=", resid_max,
+                                                " total_ms=", details::ms_since<clock>(t_total0, t_total1),
+                                                "\n");
+                        }
+                        else
+                        {
+                            ::fast_io::io::perr("[profile] stamp_ms=", details::ms_since<clock>(t_stamp0, t_stamp1),
+                                                " n=", row_size,
+                                                " nnz=", nnz_size,
+                                                " csr_ms=", details::ms_since<clock>(t_csr0, t_rhs0),
+                                                " rhs_ms=", details::ms_since<clock>(t_rhs0, t_rhs1),
+                                                " cuda_total_ms=", details::ms_since<clock>(t_cuda0, t_cuda1),
+                                                " (h2d_ms=", cuda_t.h2d_ms, " solve_ms=", cuda_t.solve_ms, " d2h_ms=", cuda_t.d2h_ms,
+                                                " solve_host_ms=", cuda_t.solve_host_ms,
+                                                " solve_total_host_ms=", cuda_t.solve_total_host_ms, ")",
+                                                " real=", all_real ? "1" : "0",
+                                                " total_ms=", details::ms_since<clock>(t_total0, t_total1),
+                                                "\n");
+                        }
+                    }
                     return true;
                 }
 #endif
@@ -879,14 +1214,16 @@ namespace phy_engine
                 smXcd temp_A{static_cast<::Eigen::Index>(row_size), static_cast<::Eigen::Index>(row_size)};
 
                 smXcd::IndexVector wi{temp_A.outerSize()};
-
-                for(auto& i: mna.A) { wi(i.first) = static_cast<::std::remove_cvref_t<decltype(wi(i.first))>>(i.second.size()); }
+                for(::std::size_t r{}; r < row_size; ++r)
+                {
+                    wi(static_cast<::Eigen::Index>(r)) = static_cast<typename smXcd::StorageIndex>(mna.A[r].size());
+                }
 
                 temp_A.reserve(wi);
 
-                for(auto& i: mna.A)
+                for(::std::size_t r{}; r < row_size; ++r)
                 {
-                    for(auto& j: i.second) { temp_A.insertBackUncompressed(i.first, j.first) = j.second; }
+                    for(auto const& [c, v]: mna.A[r]) { temp_A.insertBackUncompressed(static_cast<::Eigen::Index>(r), static_cast<::Eigen::Index>(c)) = v; }
                 }
 
                 temp_A.collapseDuplicates(::Eigen::internal::scalar_sum_op<smXcd::Scalar, smXcd::Scalar>());

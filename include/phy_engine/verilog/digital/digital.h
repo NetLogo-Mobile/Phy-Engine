@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <limits>
 #include <utility>
-#include <vector>
 
 #include <absl/container/btree_map.h>
 
@@ -5350,7 +5349,7 @@ namespace phy_engine::verilog::digital
         module_state state{};
         // For each bit-level port in `mod->ports`, a binding into the parent instance.
         ::fast_io::vector<port_binding> bindings{};
-        ::std::vector<instance_state> children{};
+        ::fast_io::vector<instance_state> children{};
     };
 
     struct compiled_design

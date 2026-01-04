@@ -86,10 +86,24 @@ namespace phy_engine::model
         if(node_0 && node_1) [[likely]]
         {
             auto const m_G{1.0 / r.r};
-            mna.G_ref(node_0->node_index, node_0->node_index) += m_G;
-            mna.G_ref(node_0->node_index, node_1->node_index) -= m_G;
-            mna.G_ref(node_1->node_index, node_0->node_index) -= m_G;
-            mna.G_ref(node_1->node_index, node_1->node_index) += m_G;
+            auto const n0{node_0->node_index};
+            auto const n1{node_1->node_index};
+            if(n0 == SIZE_MAX && n1 == SIZE_MAX) { return true; }
+            if(n0 == SIZE_MAX)
+            {
+                mna.G_ref(n1, n1) += m_G;
+            }
+            else if(n1 == SIZE_MAX)
+            {
+                mna.G_ref(n0, n0) += m_G;
+            }
+            else
+            {
+                mna.G_ref(n0, n0) += m_G;
+                mna.G_ref(n0, n1) -= m_G;
+                mna.G_ref(n1, n0) -= m_G;
+                mna.G_ref(n1, n1) += m_G;
+            }
         }
 
         return true;
