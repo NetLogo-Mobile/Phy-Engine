@@ -5,6 +5,7 @@
 #include <charconv>
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <utility>
 
 #include <absl/container/btree_map.h>
@@ -5349,7 +5350,7 @@ namespace phy_engine::verilog::digital
         module_state state{};
         // For each bit-level port in `mod->ports`, a binding into the parent instance.
         ::fast_io::vector<port_binding> bindings{};
-        ::fast_io::vector<instance_state> children{};
+        ::fast_io::vector<::std::unique_ptr<instance_state>> children{};
     };
 
     struct compiled_design
@@ -5633,8 +5634,10 @@ namespace phy_engine::verilog::digital
             process_due_events(inst.state, tick);
             if(process_sequential) { run_sequential(inst, tick); }
 
-            for(auto& child: inst.children)
+            for(auto& child_ptr: inst.children)
             {
+                if(!child_ptr) [[unlikely]] { continue; }
+                auto& child{*child_ptr};
                 (void)propagate_parent_to_child(inst, child);
                 sequential_pass(child, tick, process_sequential);
             }
@@ -5649,9 +5652,21 @@ namespace phy_engine::verilog::digital
             {
                 bool changed{};
 
-                for(auto& child: inst.children) { changed = propagate_parent_to_child(inst, child) || changed; }
-                for(auto& child: inst.children) { changed = comb_resolve(child, tick) || changed; }
-                for(auto& child: inst.children) { changed = propagate_child_to_parent(child, inst) || changed; }
+                for(auto& child_ptr: inst.children)
+                {
+                    if(!child_ptr) [[unlikely]] { continue; }
+                    changed = propagate_parent_to_child(inst, *child_ptr) || changed;
+                }
+                for(auto& child_ptr: inst.children)
+                {
+                    if(!child_ptr) [[unlikely]] { continue; }
+                    changed = comb_resolve(*child_ptr, tick) || changed;
+                }
+                for(auto& child_ptr: inst.children)
+                {
+                    if(!child_ptr) [[unlikely]] { continue; }
+                    changed = propagate_child_to_parent(*child_ptr, inst) || changed;
+                }
 
                 changed = run_comb_local(inst, tick) || changed;
 
@@ -5665,14 +5680,22 @@ namespace phy_engine::verilog::digital
         inline bool apply_nba_recursive(instance_state& inst) noexcept
         {
             bool changed{apply_nba(inst.state)};
-            for(auto& c: inst.children) { changed = apply_nba_recursive(c) || changed; }
+            for(auto& c: inst.children)
+            {
+                if(!c) [[unlikely]] { continue; }
+                changed = apply_nba_recursive(*c) || changed;
+            }
             return changed;
         }
 
         inline void update_prev_recursive(instance_state& inst) noexcept
         {
             inst.state.prev_values = inst.state.values;
-            for(auto& c: inst.children) { update_prev_recursive(c); }
+            for(auto& c: inst.children)
+            {
+                if(!c) [[unlikely]] { continue; }
+                update_prev_recursive(*c);
+            }
         }
 
         inline void
@@ -5823,11 +5846,11 @@ namespace phy_engine::verilog::digital
                 auto const* cm{find_module(d, idef.module_name)};
                 if(cm == nullptr) { continue; }
 
-                instance_state child{};
-                child.mod = cm;
-                child.instance_name = idef.instance_name;
-                init_state(child.state, *cm);
-                child.bindings.assign(cm->ports.size(), {});
+                auto child{::std::make_unique<instance_state>()};
+                child->mod = cm;
+                child->instance_name = idef.instance_name;
+                init_state(child->state, *cm);
+                child->bindings.assign(cm->ports.size(), {});
 
                 // Apply per-instance parameter overrides by writing constant parameter vectors into the instance state.
                 if(!idef.param_named_values.empty() || !idef.param_positional_values.empty())
@@ -5842,11 +5865,11 @@ namespace phy_engine::verilog::digital
                         {
                             ::std::size_t const pos_from_msb{31 - bit_from_lsb};
                             auto const sig{vd.bits.index_unchecked(pos_from_msb)};
-                            if(sig >= child.state.values.size()) { continue; }
+                            if(sig >= child->state.values.size()) { continue; }
                             bool const b{((value >> bit_from_lsb) & 1u) != 0u};
                             auto const lv{b ? logic_t::true_state : logic_t::false_state};
-                            child.state.values.index_unchecked(sig) = lv;
-                            child.state.prev_values.index_unchecked(sig) = lv;
+                            child->state.values.index_unchecked(sig) = lv;
+                            child->state.prev_values.index_unchecked(sig) = lv;
                         }
                     };
 
@@ -5870,8 +5893,8 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                fill_bindings(pm, *cm, idef, child.bindings);
-                elaborate_children(d, child, depth + 1);
+                fill_bindings(pm, *cm, idef, child->bindings);
+                elaborate_children(d, *child, depth + 1);
 
                 parent.children.push_back(::std::move(child));
             }
