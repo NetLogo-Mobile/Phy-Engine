@@ -789,15 +789,84 @@ namespace phy_engine::verilog::digital
                 continue;
             }
 
+            // unsized based literal: '[s]?[bodh]digits
+            if(c == u8'\'' && p + 1 < e)
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+
+                // Peek base marker.
+                ::std::size_t q{1};
+                if(p + q < e && (p[q] == u8's' || p[q] == u8'S')) { ++q; }
+                if(p + q < e && (p[q] == u8'b' || p[q] == u8'B' || p[q] == u8'o' || p[q] == u8'O' || p[q] == u8'd' || p[q] == u8'D' ||
+                                 p[q] == u8'h' || p[q] == u8'H'))
+                {
+                    char8_t const base{p[q]};
+
+                    // Consume the literal.
+                    bump(*p);
+                    ++p;
+                    char8_t prev{u8'\''};
+                    while(p < e)
+                    {
+                        char8_t const nc{*p};
+                        bool ok{details::is_alpha(nc) || details::is_digit(nc) || nc == u8'_'};
+                        if(!ok && nc == u8'-' && (base == u8'd' || base == u8'D') && prev == base) { ok = true; }
+                        if(!ok) { break; }
+                        prev = nc;
+                        bump(*p);
+                        ++p;
+                    }
+                    make_tok(token_kind::number, b, p, l0, c0);
+                    continue;
+                }
+            }
+
             if(details::is_digit(c))
             {
                 ::std::size_t const l0{line};
                 ::std::size_t const c0{col};
                 char8_t const* const b{p};
+                bool after_apos{};
+                bool after_base{};
+                bool allow_minus{};
+                char8_t base{};
+                char8_t prev{c};
+
                 bump(*p);
                 ++p;
-                while(p < e && (details::is_digit(*p) || details::is_alpha(*p) || *p == u8'\'' || *p == u8'_'))
+
+                while(p < e)
                 {
+                    char8_t const nc{*p};
+                    bool ok{details::is_digit(nc) || details::is_alpha(nc) || nc == u8'\'' || nc == u8'_'};
+                    if(!ok && nc == u8'-' && allow_minus && prev == base) { ok = true; }
+                    if(!ok) { break; }
+
+                    // Update state for allowing "8'sd-1".
+                    if(nc == u8'\'')
+                    {
+                        after_apos = true;
+                        after_base = false;
+                        allow_minus = false;
+                        base = 0;
+                    }
+                    else if(after_apos && !after_base)
+                    {
+                        if(nc == u8's' || nc == u8'S')
+                        {
+                            // keep waiting for base char
+                        }
+                        else
+                        {
+                            base = nc;
+                            after_base = true;
+                            allow_minus = (base == u8'd' || base == u8'D');
+                        }
+                    }
+
+                    prev = nc;
                     bump(*p);
                     ++p;
                 }
@@ -805,7 +874,55 @@ namespace phy_engine::verilog::digital
                 continue;
             }
 
+            // 3-char symbols
+            if(c == u8'=' && p + 2 < e && p[1] == u8'=' && p[2] == u8'=')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                bump(p[2]);
+                p += 3;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+            if(c == u8'!' && p + 2 < e && p[1] == u8'=' && p[2] == u8'=')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                bump(p[2]);
+                p += 3;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+
             // 2-char symbols
+            if(c == u8'*' && p + 1 < e && p[1] == u8'*')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
+            if(c == u8'~' && p + 1 < e && (p[1] == u8'&' || p[1] == u8'|' || p[1] == u8'^'))
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
             if(c == u8'=' && p + 1 < e && p[1] == u8'=')
             {
                 ::std::size_t const l0{line};
@@ -936,12 +1053,14 @@ namespace phy_engine::verilog::digital
     {
         literal,
         signal,
+        is_unknown,   // returns 1 iff input is X/Z (Z treated as X)
         unary_not,
         binary_and,
         binary_or,
         binary_xor,
         binary_eq,
-        binary_neq
+        binary_neq,
+        binary_case_eq  // 4-state case equality for 1-bit: always 0/1 (no X result)
     };
 
     struct expr_node
@@ -1012,6 +1131,7 @@ namespace phy_engine::verilog::digital
         int msb{};
         int lsb{};
         bool is_reg{};
+        bool is_signed{};
     };
 
     struct vector_desc
@@ -1019,6 +1139,7 @@ namespace phy_engine::verilog::digital
         int msb{};
         int lsb{};
         bool is_reg{};
+        bool is_signed{};
         // Bits are stored in *declaration order*: [0] is msb, last is lsb.
         ::fast_io::vector<::std::size_t> bits{};
     };
@@ -1102,6 +1223,7 @@ namespace phy_engine::verilog::digital
 
         ::fast_io::vector<::fast_io::u8string> signal_names{};
         ::fast_io::vector<bool> signal_is_reg{};
+        ::fast_io::vector<bool> signal_is_signed{};
         ::fast_io::vector<::std::uint8_t> signal_is_const{};
         ::fast_io::vector<logic_t> signal_const_value{};
         ::absl::btree_map<::fast_io::u8string, ::std::size_t> signal_index{};
@@ -1169,6 +1291,38 @@ namespace phy_engine::verilog::digital
             return true;
         }
 
+        inline bool parse_dec_int64(::fast_io::u8string_view t, ::std::int64_t& out) noexcept
+        {
+            if(t.empty()) { return false; }
+            bool neg{};
+            ::std::uint64_t v{};
+            ::std::size_t i{};
+            if(t[0] == u8'-')
+            {
+                neg = true;
+                i = 1;
+                if(i >= t.size()) { return false; }
+            }
+            for(; i < t.size(); ++i)
+            {
+                char8_t const c{t[i]};
+                if(c == u8'_') { continue; }
+                if(c < u8'0' || c > u8'9') { return false; }
+                ::std::uint64_t const digit{static_cast<::std::uint64_t>(c - u8'0')};
+                if(v > (::std::numeric_limits<::std::uint64_t>::max() - digit) / 10) { return false; }
+                v = v * 10 + digit;
+            }
+            if(!neg)
+            {
+                if(v > static_cast<::std::uint64_t>(::std::numeric_limits<::std::int64_t>::max())) { return false; }
+                out = static_cast<::std::int64_t>(v);
+                return true;
+            }
+            if(v > static_cast<::std::uint64_t>(::std::numeric_limits<::std::int64_t>::max()) + 1ull) { return false; }
+            out = -static_cast<::std::int64_t>(v);
+            return true;
+        }
+
         inline int hex_digit_value(char8_t c) noexcept
         {
             if(c >= u8'0' && c <= u8'9') { return static_cast<int>(c - u8'0'); }
@@ -1177,9 +1331,10 @@ namespace phy_engine::verilog::digital
             return -1;
         }
 
-        inline bool parse_literal_bits(::fast_io::u8string_view t, ::fast_io::vector<logic_t>& bits_out) noexcept
+        inline bool parse_literal_bits(::fast_io::u8string_view t, ::fast_io::vector<logic_t>& bits_out, bool* is_signed_out = nullptr) noexcept
         {
             bits_out.clear();
+            if(is_signed_out) { *is_signed_out = false; }
 
             if(t.empty()) { return false; }
             if(t == u8"0")
@@ -1206,21 +1361,33 @@ namespace phy_engine::verilog::digital
 
             if(apos != SIZE_MAX)
             {
-                if(apos == 0 || apos + 2 > t.size()) { return false; }
+                if(apos + 2 > t.size()) { return false; }
 
-                ::std::uint64_t width64{};
-                if(!parse_dec_uint64(::fast_io::u8string_view{t.data(), apos}, width64) || width64 == 0 ||
-                   width64 > static_cast<::std::uint64_t>(::std::numeric_limits<int>::max()))
+                int width{};
+                ::std::size_t base_pos{};
+                if(apos == 0)
                 {
-                    return false;
+                    // unsized based literal: '[s]?[bodh]digits (subset rule: treat as 32-bit)
+                    width = 32;
+                    base_pos = 1;
                 }
-                int const width{static_cast<int>(width64)};
+                else
+                {
+                    ::std::uint64_t width64{};
+                    if(!parse_dec_uint64(::fast_io::u8string_view{t.data(), apos}, width64) || width64 == 0 ||
+                       width64 > static_cast<::std::uint64_t>(::std::numeric_limits<int>::max()))
+                    {
+                        return false;
+                    }
+                    width = static_cast<int>(width64);
+                    base_pos = apos + 1;
+                }
 
-                ::std::size_t base_pos{apos + 1};
                 if(base_pos >= t.size()) { return false; }
                 char8_t base{t[base_pos]};
                 if(base == u8's' || base == u8'S')
                 {
+                    if(is_signed_out) { *is_signed_out = true; }
                     ++base_pos;
                     if(base_pos >= t.size()) { return false; }
                     base = t[base_pos];
@@ -1318,6 +1485,24 @@ namespace phy_engine::verilog::digital
                 }
                 if(base == u8'd' || base == u8'D')
                 {
+                    bool const signed_lit{is_signed_out && *is_signed_out};
+                    if(!digits.empty() && digits.front_unchecked() == u8'-')
+                    {
+                        if(!signed_lit) { return false; }
+                        ::std::int64_t iv{};
+                        if(!parse_dec_int64(digits, iv)) { return false; }
+                        ::std::uint64_t const raw{static_cast<::std::uint64_t>(iv)};
+                        bool const neg{iv < 0};
+                        for(::std::size_t i{}; i < bits_out.size(); ++i)
+                        {
+                            ::std::size_t const bit_from_lsb{i};
+                            ::std::size_t const pos_from_msb{bits_out.size() - 1 - bit_from_lsb};
+                            bool const b{bit_from_lsb < 64 ? (((raw >> bit_from_lsb) & 1u) != 0u) : neg};
+                            bits_out.index_unchecked(pos_from_msb) = b ? logic_t::true_state : logic_t::false_state;
+                        }
+                        return true;
+                    }
+
                     ::std::uint64_t value{};
                     if(!parse_dec_uint64(digits, value)) { return false; }
                     for(::std::size_t i{}; i < bits_out.size(); ++i)
@@ -1387,6 +1572,17 @@ namespace phy_engine::verilog::digital
                 return false;
             }
 
+            [[nodiscard]] bool accept_sym3(char8_t a, char8_t b, char8_t c) noexcept
+            {
+                auto const& t{peek()};
+                if(t.kind == token_kind::symbol && t.text.size() == 3 && t.text[0] == a && t.text[1] == b && t.text[2] == c)
+                {
+                    consume();
+                    return true;
+                }
+                return false;
+            }
+
             [[nodiscard]] bool accept_kw(::fast_io::u8string_view kw) noexcept
             {
                 auto const& t{peek()};
@@ -1427,6 +1623,7 @@ namespace phy_engine::verilog::digital
             ::std::size_t const idx{m.signal_names.size()};
             m.signal_names.push_back(::fast_io::u8string{name});
             m.signal_is_reg.push_back(false);
+            m.signal_is_signed.push_back(false);
             m.signal_is_const.push_back(0u);
             m.signal_const_value.push_back(logic_t::indeterminate_state);
             m.signal_index.insert({::fast_io::u8string{name}, idx});
@@ -1545,7 +1742,13 @@ namespace phy_engine::verilog::digital
             return vd.msb + static_cast<int>(pos);
         }
 
-        inline vector_desc& declare_vector_range(parser* p, compiled_module& m, ::fast_io::u8string_view base, int msb, int lsb, bool is_reg) noexcept
+        inline vector_desc& declare_vector_range(parser* p,
+                                                 compiled_module& m,
+                                                 ::fast_io::u8string_view base,
+                                                 int msb,
+                                                 int lsb,
+                                                 bool is_reg,
+                                                 bool is_signed = false) noexcept
         {
             ::fast_io::u8string key{base};
             auto it{m.vectors.find(key)};
@@ -1556,6 +1759,7 @@ namespace phy_engine::verilog::digital
                 {
                     if(p) { p->err(p->peek(), u8"redeclared vector with a different range is not supported"); }
                 }
+                if(is_signed && !vd.is_signed) { vd.is_signed = true; }
                 if(is_reg && !vd.is_reg)
                 {
                     vd.is_reg = true;
@@ -1571,6 +1775,7 @@ namespace phy_engine::verilog::digital
             vd.msb = msb;
             vd.lsb = lsb;
             vd.is_reg = is_reg;
+            vd.is_signed = is_signed;
 
             ::std::size_t const w{vector_width(vd)};
             vd.bits.resize(w);
@@ -1582,6 +1787,7 @@ namespace phy_engine::verilog::digital
                 auto const sig{get_or_create_signal(m, bit_name)};
                 vd.bits.index_unchecked(pos) = sig;
                 if(is_reg) { m.signal_is_reg.index_unchecked(sig) = true; }
+                if(is_signed) { m.signal_is_signed.index_unchecked(sig) = true; }
             }
 
             auto res{m.vectors.insert({::std::move(key), ::std::move(vd)})};
@@ -1665,6 +1871,7 @@ namespace phy_engine::verilog::digital
         struct expr_value
         {
             bool is_vector{};
+            bool is_signed{};
             ::std::size_t scalar_root{SIZE_MAX};
             ::fast_io::vector<::std::size_t> vector_roots{};  // msb->lsb
             int msb{};                                        // index range for bit/part-select mapping
@@ -1687,41 +1894,44 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::std::size_t make_literal(logic_t v) noexcept { return add_node({.kind = expr_kind::literal, .literal = v}); }
 
-            [[nodiscard]] expr_value make_scalar(::std::size_t root, int msb = 0, int lsb = 0) noexcept
+            [[nodiscard]] expr_value make_scalar(::std::size_t root, int msb = 0, int lsb = 0, bool is_signed = false) noexcept
             {
                 expr_value v{};
                 v.is_vector = false;
+                v.is_signed = is_signed;
                 v.scalar_root = root;
                 v.msb = msb;
                 v.lsb = lsb;
                 return v;
             }
 
-            [[nodiscard]] expr_value make_vector_with_range(::fast_io::vector<::std::size_t>&& roots, int msb, int lsb) noexcept
+            [[nodiscard]] expr_value make_vector_with_range(::fast_io::vector<::std::size_t>&& roots, int msb, int lsb, bool is_signed = false) noexcept
             {
                 if(roots.size() <= 1)
                 {
-                    if(roots.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state)); }
-                    return make_scalar(roots.front_unchecked(), msb, lsb);
+                    if(roots.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, is_signed); }
+                    return make_scalar(roots.front_unchecked(), msb, lsb, is_signed);
                 }
                 expr_value v{};
                 v.is_vector = true;
+                v.is_signed = is_signed;
                 v.vector_roots = ::std::move(roots);
                 v.msb = msb;
                 v.lsb = lsb;
                 return v;
             }
 
-            [[nodiscard]] expr_value make_vector(::fast_io::vector<::std::size_t>&& roots) noexcept
+            [[nodiscard]] expr_value make_vector(::fast_io::vector<::std::size_t>&& roots, bool is_signed = false) noexcept
             {
-                if(roots.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state)); }
+                if(roots.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, is_signed); }
                 int const msb{static_cast<int>(roots.size() - 1)};
-                return make_vector_with_range(::std::move(roots), msb, 0);
+                return make_vector_with_range(::std::move(roots), msb, 0, is_signed);
             }
 
             [[nodiscard]] ::std::size_t width(expr_value const& v) const noexcept { return v.is_vector ? v.vector_roots.size() : 1; }
 
-            [[nodiscard]] ::fast_io::vector<::std::size_t> resize_to_vector(expr_value const& v, ::std::size_t w) noexcept
+            [[nodiscard]] ::fast_io::vector<::std::size_t>
+                resize_to_vector(expr_value const& v, ::std::size_t w, bool sign_extend = false) noexcept
             {
                 ::fast_io::vector<::std::size_t> src{};
                 if(v.is_vector) { src = v.vector_roots; }
@@ -1751,19 +1961,21 @@ namespace phy_engine::verilog::digital
 
                 ::std::size_t const pad{w - src.size()};
                 auto const z{make_literal(logic_t::false_state)};
-                for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = z; }
+                auto const s{src.empty() ? z : src.front_unchecked()};  // MSB
+                auto const fill{sign_extend ? s : z};
+                for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = fill; }
                 for(::std::size_t i{}; i < src.size(); ++i) { out.index_unchecked(pad + i) = src.index_unchecked(i); }
                 return out;
             }
 
-            [[nodiscard]] expr_value resize(expr_value const& v, ::std::size_t w) noexcept
+            [[nodiscard]] expr_value resize(expr_value const& v, ::std::size_t w, bool sign_extend = false) noexcept
             {
                 if(w <= 1)
                 {
-                    auto vv{resize_to_vector(v, 1)};
-                    return make_scalar(vv.front_unchecked());
+                    auto vv{resize_to_vector(v, 1, sign_extend)};
+                    return make_scalar(vv.front_unchecked(), 0, 0, v.is_signed);
                 }
-                return make_vector(resize_to_vector(v, w));
+                return make_vector(resize_to_vector(v, w, sign_extend), v.is_signed);
             }
 
             [[nodiscard]] ::std::size_t to_bool_root(expr_value const& v) noexcept
@@ -1781,8 +1993,9 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] ::std::size_t compare_eq(expr_value const& a, expr_value const& b) noexcept
             {
                 ::std::size_t const w{::std::max(width(a), width(b))};
-                auto av{resize_to_vector(a, w)};
-                auto bv{resize_to_vector(b, w)};
+                bool const signed_op{a.is_signed && b.is_signed};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
 
                 ::std::size_t r{add_node({.kind = expr_kind::binary_eq, .a = av.front_unchecked(), .b = bv.front_unchecked()})};
                 for(::std::size_t i{1}; i < w; ++i)
@@ -1793,9 +2006,25 @@ namespace phy_engine::verilog::digital
                 return r;
             }
 
+            [[nodiscard]] ::std::size_t compare_case_eq(expr_value const& a, expr_value const& b) noexcept
+            {
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                bool const signed_op{a.is_signed && b.is_signed};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
+
+                ::std::size_t r{add_node({.kind = expr_kind::binary_case_eq, .a = av.front_unchecked(), .b = bv.front_unchecked()})};
+                for(::std::size_t i{1}; i < w; ++i)
+                {
+                    auto const bi{add_node({.kind = expr_kind::binary_case_eq, .a = av.index_unchecked(i), .b = bv.index_unchecked(i)})};
+                    r = add_node({.kind = expr_kind::binary_and, .a = r, .b = bi});
+                }
+                return r;
+            }
+
             [[nodiscard]] expr_value bitwise_unary(expr_value const& a, expr_kind k) noexcept
             {
-                if(!a.is_vector) { return make_scalar(add_node({.kind = k, .a = a.scalar_root})); }
+                if(!a.is_vector) { return make_scalar(add_node({.kind = k, .a = a.scalar_root}), 0, 0, a.is_signed); }
 
                 ::fast_io::vector<::std::size_t> out{};
                 out.resize(a.vector_roots.size());
@@ -1803,21 +2032,23 @@ namespace phy_engine::verilog::digital
                 {
                     out.index_unchecked(i) = add_node({.kind = k, .a = a.vector_roots.index_unchecked(i)});
                 }
-                return make_vector(::std::move(out));
+                return make_vector(::std::move(out), a.is_signed);
             }
 
             [[nodiscard]] expr_value bitwise_binary(expr_value const& a, expr_value const& b, expr_kind k) noexcept
             {
                 ::std::size_t const w{::std::max(width(a), width(b))};
-                auto av{resize_to_vector(a, w)};
-                auto bv{resize_to_vector(b, w)};
+                bool const signed_op{a.is_signed && b.is_signed};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
 
-                if(w == 1) { return make_scalar(add_node({.kind = k, .a = av.front_unchecked(), .b = bv.front_unchecked()})); }
+                bool const out_signed{signed_op};
+                if(w == 1) { return make_scalar(add_node({.kind = k, .a = av.front_unchecked(), .b = bv.front_unchecked()}), 0, 0, out_signed); }
 
                 ::fast_io::vector<::std::size_t> out{};
                 out.resize(w);
                 for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = add_node({.kind = k, .a = av.index_unchecked(i), .b = bv.index_unchecked(i)}); }
-                return make_vector(::std::move(out));
+                return make_vector(::std::move(out), out_signed);
             }
 
             [[nodiscard]] logic_t eval_const_root(::std::size_t root) noexcept
@@ -1834,6 +2065,11 @@ namespace phy_engine::verilog::digital
                             return m->signal_const_value.index_unchecked(n.signal);
                         }
                         return logic_t::indeterminate_state;
+                    }
+                    case expr_kind::is_unknown:
+                    {
+                        auto const a{normalize_z_to_x(eval_const_root(n.a))};
+                        return is_unknown(a) ? logic_t::true_state : logic_t::false_state;
                     }
                     case expr_kind::unary_not: return logic_not(eval_const_root(n.a));
                     case expr_kind::binary_and: return logic_and(eval_const_root(n.a), eval_const_root(n.b));
@@ -1852,6 +2088,12 @@ namespace phy_engine::verilog::digital
                         auto const b{normalize_z_to_x(eval_const_root(n.b))};
                         if(is_unknown(a) || is_unknown(b)) { return logic_t::indeterminate_state; }
                         return a != b ? logic_t::true_state : logic_t::false_state;
+                    }
+                    case expr_kind::binary_case_eq:
+                    {
+                        auto const a{eval_const_root(n.a)};
+                        auto const b{eval_const_root(n.b)};
+                        return a == b ? logic_t::true_state : logic_t::false_state;
                     }
                     default: return logic_t::indeterminate_state;
                 }
@@ -1889,6 +2131,12 @@ namespace phy_engine::verilog::digital
                         }
                         break;
                     }
+                    case expr_kind::is_unknown:
+                    {
+                        auto const a{normalize_z_to_x(eval_const_root_cached(n.a, cache, ready))};
+                        v = is_unknown(a) ? logic_t::true_state : logic_t::false_state;
+                        break;
+                    }
                     case expr_kind::unary_not: v = logic_not(eval_const_root_cached(n.a, cache, ready)); break;
                     case expr_kind::binary_and: v = logic_and(eval_const_root_cached(n.a, cache, ready), eval_const_root_cached(n.b, cache, ready)); break;
                     case expr_kind::binary_or: v = logic_or(eval_const_root_cached(n.a, cache, ready), eval_const_root_cached(n.b, cache, ready)); break;
@@ -1913,6 +2161,13 @@ namespace phy_engine::verilog::digital
                         {
                             v = a != b ? logic_t::true_state : logic_t::false_state;
                         }
+                        break;
+                    }
+                    case expr_kind::binary_case_eq:
+                    {
+                        auto const a{eval_const_root_cached(n.a, cache, ready)};
+                        auto const b{eval_const_root_cached(n.b, cache, ready)};
+                        v = a == b ? logic_t::true_state : logic_t::false_state;
                         break;
                     }
                     default: v = logic_t::indeterminate_state; break;
@@ -1957,6 +2212,70 @@ namespace phy_engine::verilog::digital
                 return true;
             }
 
+            [[nodiscard]] bool try_eval_const_int64(expr_value const& v, ::std::int64_t& out, bool signed_value) noexcept
+            {
+                ::fast_io::vector<::std::size_t> roots{};
+                if(v.is_vector) { roots = v.vector_roots; }
+                else
+                {
+                    roots.push_back(v.scalar_root);
+                }
+                if(roots.empty()) { return false; }
+
+                ::fast_io::vector<logic_t> cache{};
+                ::fast_io::vector<::std::uint8_t> ready{};
+                cache.resize(m->expr_nodes.size());
+                ready.assign(m->expr_nodes.size(), 0u);
+
+                ::std::size_t const w{roots.size()};
+                auto const msb_raw{normalize_z_to_x(eval_const_root_cached(roots.front_unchecked(), cache, ready))};
+                if(is_unknown(msb_raw)) { return false; }
+                bool const sign_bit{msb_raw == logic_t::true_state};
+
+                // roots: msb->lsb, interpret as 2's complement (if signed_value) or unsigned.
+                ::std::uint64_t value{};
+                for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
+                {
+                    auto const r{roots.index_unchecked(w - 1 - bit_from_lsb)};
+                    auto const b{normalize_z_to_x(eval_const_root_cached(r, cache, ready))};
+                    if(is_unknown(b)) { return false; }
+
+                    bool const bit_is_one{b == logic_t::true_state};
+                    if(bit_from_lsb >= 64)
+                    {
+                        if(signed_value)
+                        {
+                            if(bit_is_one != sign_bit) { return false; }
+                        }
+                        else
+                        {
+                            if(bit_is_one) { return false; }
+                        }
+                        continue;
+                    }
+                    if(bit_is_one) { value |= (1ull << bit_from_lsb); }
+                }
+
+                if(signed_value)
+                {
+                    if(w > 64)
+                    {
+                        bool const bit63{((value >> 63) & 1u) != 0u};
+                        if(bit63 != sign_bit) { return false; }
+                    }
+                    else if(w < 64 && sign_bit)
+                    {
+                        value |= (~0ull) << w;
+                    }
+                    out = static_cast<::std::int64_t>(value);
+                    return true;
+                }
+
+                if(value > static_cast<::std::uint64_t>(::std::numeric_limits<::std::int64_t>::max())) { return false; }
+                out = static_cast<::std::int64_t>(value);
+                return true;
+            }
+
             [[nodiscard]] bool try_eval_const_int(expr_value const& v, int& out) noexcept
             {
                 ::std::uint64_t u{};
@@ -1977,7 +2296,23 @@ namespace phy_engine::verilog::digital
                     bool const b{bit_from_lsb < 64 ? (((value >> bit_from_lsb) & 1u) != 0u) : false};
                     roots.index_unchecked(pos_from_msb) = make_literal(b ? logic_t::true_state : logic_t::false_state);
                 }
-                return make_vector(::std::move(roots));
+                return make_vector(::std::move(roots), false);
+            }
+
+            [[nodiscard]] expr_value make_int_literal(::std::int64_t value, ::std::size_t w) noexcept
+            {
+                if(w <= 1) { return make_scalar(make_literal((static_cast<::std::uint64_t>(value) & 1u) ? logic_t::true_state : logic_t::false_state)); }
+                ::fast_io::vector<::std::size_t> roots{};
+                roots.resize(w);
+                ::std::uint64_t const raw{static_cast<::std::uint64_t>(value)};
+                bool const neg{value < 0};
+                for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
+                {
+                    ::std::size_t const pos_from_msb{w - 1 - bit_from_lsb};
+                    bool const b{bit_from_lsb < 64 ? (((raw >> bit_from_lsb) & 1u) != 0u) : neg};
+                    roots.index_unchecked(pos_from_msb) = make_literal(b ? logic_t::true_state : logic_t::false_state);
+                }
+                return make_vector(::std::move(roots), true);
             }
 
             [[nodiscard]] ::std::size_t make_mux(::std::size_t sel, ::std::size_t t, ::std::size_t f) noexcept
@@ -1988,14 +2323,28 @@ namespace phy_engine::verilog::digital
                 return add_node({.kind = expr_kind::binary_or, .a = a, .b = b});
             }
 
-            [[nodiscard]] expr_value make_unknown_vector(::std::size_t w) noexcept
+            [[nodiscard]] ::std::size_t make_is_unknown(::std::size_t a) noexcept { return add_node({.kind = expr_kind::is_unknown, .a = a}); }
+
+            [[nodiscard]] ::std::size_t any_unknown_root(expr_value const& v) noexcept
             {
-                if(w <= 1) { return make_scalar(make_literal(logic_t::indeterminate_state)); }
+                if(!v.is_vector) { return make_is_unknown(v.scalar_root); }
+                if(v.vector_roots.empty()) { return make_literal(logic_t::true_state); }
+                auto r{make_literal(logic_t::false_state)};
+                for(auto const bit: v.vector_roots)
+                {
+                    r = make_or(r, make_is_unknown(bit));
+                }
+                return r;
+            }
+
+            [[nodiscard]] expr_value make_unknown_vector(::std::size_t w, bool is_signed = false) noexcept
+            {
+                if(w <= 1) { return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, is_signed); }
                 ::fast_io::vector<::std::size_t> roots{};
                 roots.resize(w);
                 auto const x{make_literal(logic_t::indeterminate_state)};
                 for(::std::size_t i{}; i < w; ++i) { roots.index_unchecked(i) = x; }
-                return make_vector(::std::move(roots));
+                return make_vector(::std::move(roots), is_signed);
             }
 
             [[nodiscard]] ::std::size_t make_not(::std::size_t a) noexcept { return add_node({.kind = expr_kind::unary_not, .a = a}); }
@@ -2010,16 +2359,20 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] expr_value arith_add(expr_value const& a, expr_value const& b) noexcept
             {
+                bool const signed_op{a.is_signed && b.is_signed};
                 ::std::size_t const w{::std::max(width(a), width(b))};
+                auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
-                    auto const av{resize_to_vector(a, 1).front_unchecked()};
-                    auto const bv{resize_to_vector(b, 1).front_unchecked()};
-                    return make_scalar(make_xor(av, bv));
+                    auto const av{resize_to_vector(a, 1, signed_op).front_unchecked()};
+                    auto const bv{resize_to_vector(b, 1, signed_op).front_unchecked()};
+                    auto const r{make_xor(av, bv)};
+                    auto const x{make_literal(logic_t::indeterminate_state)};
+                    return make_scalar(make_mux(unknown_sel, x, r), 0, 0, signed_op);
                 }
 
-                auto av{resize_to_vector(a, w)};
-                auto bv{resize_to_vector(b, w)};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
 
                 ::fast_io::vector<::std::size_t> out{};
                 out.resize(w);
@@ -2040,21 +2393,27 @@ namespace phy_engine::verilog::digital
                     carry = make_or(make_or(t1, t2), t3);
                 }
 
-                return make_vector(::std::move(out));
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = make_mux(unknown_sel, x, out.index_unchecked(i)); }
+                return make_vector(::std::move(out), signed_op);
             }
 
             [[nodiscard]] expr_value arith_sub(expr_value const& a, expr_value const& b) noexcept
             {
+                bool const signed_op{a.is_signed && b.is_signed};
                 ::std::size_t const w{::std::max(width(a), width(b))};
+                auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
-                    auto const av{resize_to_vector(a, 1).front_unchecked()};
-                    auto const bv{resize_to_vector(b, 1).front_unchecked()};
-                    return make_scalar(make_xor(av, bv));  // 1-bit subtraction (mod-2)
+                    auto const av{resize_to_vector(a, 1, signed_op).front_unchecked()};
+                    auto const bv{resize_to_vector(b, 1, signed_op).front_unchecked()};
+                    auto const r{make_xor(av, bv)};  // 1-bit subtraction (mod-2)
+                    auto const x{make_literal(logic_t::indeterminate_state)};
+                    return make_scalar(make_mux(unknown_sel, x, r), 0, 0, signed_op);
                 }
 
-                auto av{resize_to_vector(a, w)};
-                auto bv{resize_to_vector(b, w)};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
 
                 ::fast_io::vector<::std::size_t> out{};
                 out.resize(w);
@@ -2075,23 +2434,29 @@ namespace phy_engine::verilog::digital
                     carry = make_or(make_or(t1, t2), t3);
                 }
 
-                return make_vector(::std::move(out));
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = make_mux(unknown_sel, x, out.index_unchecked(i)); }
+                return make_vector(::std::move(out), signed_op);
             }
 
             [[nodiscard]] expr_value arith_mul(expr_value const& a, expr_value const& b) noexcept
             {
+                bool const signed_op{a.is_signed && b.is_signed};
                 ::std::size_t const w{::std::max(width(a), width(b))};
+                auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
-                    auto const av{resize_to_vector(a, 1).front_unchecked()};
-                    auto const bv{resize_to_vector(b, 1).front_unchecked()};
-                    return make_scalar(make_and(av, bv));
+                    auto const av{resize_to_vector(a, 1, signed_op).front_unchecked()};
+                    auto const bv{resize_to_vector(b, 1, signed_op).front_unchecked()};
+                    auto const r{make_and(av, bv)};
+                    auto const x{make_literal(logic_t::indeterminate_state)};
+                    return make_scalar(make_mux(unknown_sel, x, r), 0, 0, signed_op);
                 }
 
-                auto av{resize_to_vector(a, w)};
-                auto bv{resize_to_vector(b, w)};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
 
-                expr_value acc{make_uint_literal(0, w)};
+                expr_value acc{signed_op ? make_int_literal(0, w) : make_uint_literal(0, w)};
                 auto const z{make_literal(logic_t::false_state)};
 
                 for(::std::size_t bit_from_lsb{}; bit_from_lsb < w; ++bit_from_lsb)
@@ -2110,20 +2475,98 @@ namespace phy_engine::verilog::digital
                         }
                     }
 
-                    acc = arith_add(acc, make_vector(::std::move(partial)));
+                    acc = arith_add(acc, make_vector(::std::move(partial), signed_op));
                 }
 
+                if(!acc.is_vector) { return acc; }
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < acc.vector_roots.size(); ++i)
+                {
+                    acc.vector_roots.index_unchecked(i) = make_mux(unknown_sel, x, acc.vector_roots.index_unchecked(i));
+                }
+                acc.is_signed = signed_op;
                 return acc;
             }
 
             [[nodiscard]] expr_value arith_div(expr_value const& a, expr_value const& b) noexcept
             {
+                bool const signed_op{a.is_signed && b.is_signed};
                 ::std::size_t const w{::std::max(width(a), width(b))};
+                auto const avv{resize(a, w, signed_op)};
+                auto const bvv{resize(b, w, signed_op)};
+                if(signed_op)
+                {
+                    ::std::int64_t av{};
+                    ::std::int64_t bv{};
+                    if(!try_eval_const_int64(avv, av, true) || !try_eval_const_int64(bvv, bv, true)) { return make_unknown_vector(w, true); }
+                    if(bv == 0) { return make_unknown_vector(w, true); }
+                    return make_int_literal(av / bv, w);
+                }
+
                 ::std::uint64_t av{};
                 ::std::uint64_t bv{};
-                if(!try_eval_const_uint64(a, av) || !try_eval_const_uint64(b, bv)) { return make_unknown_vector(w); }
-                if(bv == 0) { return make_unknown_vector(w); }
+                if(!try_eval_const_uint64(avv, av) || !try_eval_const_uint64(bvv, bv)) { return make_unknown_vector(w, false); }
+                if(bv == 0) { return make_unknown_vector(w, false); }
                 return make_uint_literal(av / bv, w);
+            }
+
+            [[nodiscard]] expr_value arith_mod(expr_value const& a, expr_value const& b) noexcept
+            {
+                bool const signed_op{a.is_signed && b.is_signed};
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                auto const avv{resize(a, w, signed_op)};
+                auto const bvv{resize(b, w, signed_op)};
+                if(signed_op)
+                {
+                    ::std::int64_t av{};
+                    ::std::int64_t bv{};
+                    if(!try_eval_const_int64(avv, av, true) || !try_eval_const_int64(bvv, bv, true)) { return make_unknown_vector(w, true); }
+                    if(bv == 0) { return make_unknown_vector(w, true); }
+                    return make_int_literal(av % bv, w);
+                }
+
+                ::std::uint64_t av{};
+                ::std::uint64_t bv{};
+                if(!try_eval_const_uint64(avv, av) || !try_eval_const_uint64(bvv, bv)) { return make_unknown_vector(w, false); }
+                if(bv == 0) { return make_unknown_vector(w, false); }
+                return make_uint_literal(av % bv, w);
+            }
+
+            [[nodiscard]] expr_value arith_pow(expr_value const& a, expr_value const& b) noexcept
+            {
+                bool const signed_op{a.is_signed && b.is_signed};
+                ::std::size_t const w{::std::max(width(a), width(b))};
+                if(w > 64) { return make_unknown_vector(w, signed_op); }
+
+                auto const avv{resize(a, w, signed_op)};
+                auto const bvv{resize(b, w, false)};
+
+                ::std::int64_t exp_i{};
+                if(!try_eval_const_int64(bvv, exp_i, b.is_signed)) { return make_unknown_vector(w, signed_op); }
+                if(exp_i < 0) { return make_unknown_vector(w, signed_op); }
+                ::std::uint64_t exp{static_cast<::std::uint64_t>(exp_i)};
+
+                ::std::uint64_t base{};
+                if(!try_eval_const_uint64(avv, base)) { return make_unknown_vector(w, signed_op); }
+                ::std::uint64_t const mask{w == 64 ? ~0ull : ((1ull << w) - 1ull)};
+                base &= mask;
+
+                ::std::uint64_t result{1ull & mask};
+                while(exp != 0u)
+                {
+                    if((exp & 1u) != 0u)
+                    {
+                        if(w == 64) { result = static_cast<::std::uint64_t>(result * base); }
+                        else { result = static_cast<::std::uint64_t>((static_cast<__uint128_t>(result) * base) & mask); }
+                    }
+                    exp >>= 1u;
+                    if(exp == 0u) { break; }
+                    if(w == 64) { base = static_cast<::std::uint64_t>(base * base); }
+                    else { base = static_cast<::std::uint64_t>((static_cast<__uint128_t>(base) * base) & mask); }
+                }
+
+                if(signed_op) { return make_int_literal(static_cast<::std::int64_t>(result), w); }
+                return make_uint_literal(result, w);
             }
 
             [[nodiscard]] expr_value shift_left(expr_value const& v, expr_value const& sh) noexcept
@@ -2131,6 +2574,7 @@ namespace phy_engine::verilog::digital
                 ::std::size_t const w{width(v)};
                 if(w <= 1) { return resize(v, 1); }
 
+                auto const unknown_sel{any_unknown_root(sh)};
                 int sh_const{};
                 if(try_eval_const_int(sh, sh_const) && sh_const >= 0)
                 {
@@ -2140,7 +2584,9 @@ namespace phy_engine::verilog::digital
                     ::fast_io::vector<::std::size_t> out{};
                     out.resize(w);
                     for(::std::size_t pos{}; pos < w; ++pos) { out.index_unchecked(pos) = (pos + s < w) ? cur.index_unchecked(pos + s) : z; }
-                    return make_vector(::std::move(out));
+                    auto const x{make_literal(logic_t::indeterminate_state)};
+                    for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = make_mux(unknown_sel, x, out.index_unchecked(i)); }
+                    return make_vector(::std::move(out), v.is_signed);
                 }
 
                 ::std::size_t nbits{};
@@ -2166,7 +2612,9 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                return make_vector(::std::move(cur));
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < w; ++i) { cur.index_unchecked(i) = make_mux(unknown_sel, x, cur.index_unchecked(i)); }
+                return make_vector(::std::move(cur), v.is_signed);
             }
 
             [[nodiscard]] expr_value shift_right(expr_value const& v, expr_value const& sh) noexcept
@@ -2174,6 +2622,7 @@ namespace phy_engine::verilog::digital
                 ::std::size_t const w{width(v)};
                 if(w <= 1) { return resize(v, 1); }
 
+                auto const unknown_sel{any_unknown_root(sh)};
                 int sh_const{};
                 if(try_eval_const_int(sh, sh_const) && sh_const >= 0)
                 {
@@ -2183,7 +2632,9 @@ namespace phy_engine::verilog::digital
                     ::fast_io::vector<::std::size_t> out{};
                     out.resize(w);
                     for(::std::size_t pos{}; pos < w; ++pos) { out.index_unchecked(pos) = (pos >= s) ? cur.index_unchecked(pos - s) : z; }
-                    return make_vector(::std::move(out));
+                    auto const x{make_literal(logic_t::indeterminate_state)};
+                    for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = make_mux(unknown_sel, x, out.index_unchecked(i)); }
+                    return make_vector(::std::move(out), v.is_signed);
                 }
 
                 ::std::size_t nbits{};
@@ -2209,14 +2660,46 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                return make_vector(::std::move(cur));
+                auto const x{make_literal(logic_t::indeterminate_state)};
+                for(::std::size_t i{}; i < w; ++i) { cur.index_unchecked(i) = make_mux(unknown_sel, x, cur.index_unchecked(i)); }
+                return make_vector(::std::move(cur), v.is_signed);
             }
 
             [[nodiscard]] ::std::size_t compare_lt(expr_value const& a, expr_value const& b) noexcept
             {
                 ::std::size_t const w{::std::max(width(a), width(b))};
-                auto av{resize_to_vector(a, w)};
-                auto bv{resize_to_vector(b, w)};
+                bool const signed_op{a.is_signed && b.is_signed};
+                auto av{resize_to_vector(a, w, signed_op)};
+                auto bv{resize_to_vector(b, w, signed_op)};
+
+                if(signed_op)
+                {
+                    if(w <= 1)
+                    {
+                        // 1-bit signed: 1 means -1.
+                        return make_and(av.front_unchecked(), make_not(bv.front_unchecked()));
+                    }
+
+                    auto const sa{av.front_unchecked()};
+                    auto const sb{bv.front_unchecked()};
+                    auto const diff{make_xor(sa, sb)};
+                    auto const lt_sign{make_and(sa, make_not(sb))};
+
+                    auto eq_prefix{make_literal(logic_t::true_state)};
+                    auto lt_mag{make_literal(logic_t::false_state)};
+                    for(::std::size_t pos{1}; pos < w; ++pos)
+                    {
+                        auto const ai{av.index_unchecked(pos)};
+                        auto const bi{bv.index_unchecked(pos)};
+
+                        auto const eq_bit{add_node({.kind = expr_kind::binary_eq, .a = ai, .b = bi})};
+                        auto const lt_bit{make_and(make_not(ai), bi)};
+                        lt_mag = make_or(lt_mag, make_and(eq_prefix, lt_bit));
+                        eq_prefix = make_and(eq_prefix, eq_bit);
+                    }
+
+                    return make_mux(diff, lt_sign, lt_mag);
+                }
 
                 auto eq_prefix{make_literal(logic_t::true_state)};
                 auto lt{make_literal(logic_t::false_state)};
@@ -2254,21 +2737,22 @@ namespace phy_engine::verilog::digital
             {
                 auto const sel{to_bool_root(cond)};
                 ::std::size_t const w{::std::max(width(t), width(f))};
+                bool const signed_op{t.is_signed && f.is_signed};
 
                 if(w <= 1)
                 {
-                    auto const tv{resize_to_vector(t, 1).front_unchecked()};
-                    auto const fv{resize_to_vector(f, 1).front_unchecked()};
-                    return make_scalar(make_mux(sel, tv, fv));
+                    auto const tv{resize_to_vector(t, 1, signed_op).front_unchecked()};
+                    auto const fv{resize_to_vector(f, 1, signed_op).front_unchecked()};
+                    return make_scalar(make_mux(sel, tv, fv), 0, 0, signed_op);
                 }
 
-                auto tv{resize_to_vector(t, w)};
-                auto fv{resize_to_vector(f, w)};
+                auto tv{resize_to_vector(t, w, signed_op)};
+                auto fv{resize_to_vector(f, w, signed_op)};
 
                 ::fast_io::vector<::std::size_t> out{};
                 out.resize(w);
                 for(::std::size_t pos{}; pos < w; ++pos) { out.index_unchecked(pos) = make_mux(sel, tv.index_unchecked(pos), fv.index_unchecked(pos)); }
-                return make_vector(::std::move(out));
+                return make_vector(::std::move(out), signed_op);
             }
 
             [[nodiscard]] expr_value apply_bit_select(expr_value const& base, expr_value const& idx_expr) noexcept
@@ -2288,8 +2772,8 @@ namespace phy_engine::verilog::digital
                 if(try_eval_const_int(idx_expr, idx_const))
                 {
                     auto const pos{vector_pos(vd, idx_const)};
-                    if(pos == SIZE_MAX) { return make_scalar(make_literal(logic_t::indeterminate_state)); }
-                    return make_scalar(base_bits.index_unchecked(pos), idx_const, idx_const);
+                    if(pos == SIZE_MAX) { return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, base.is_signed); }
+                    return make_scalar(base_bits.index_unchecked(pos), idx_const, idx_const, base.is_signed);
                 }
 
                 ::std::size_t const base_max{static_cast<::std::size_t>(vd.msb >= vd.lsb ? vd.msb : vd.lsb)};
@@ -2308,7 +2792,7 @@ namespace phy_engine::verilog::digital
                     out = make_mux(cond, base_bits.index_unchecked(pos), out);
                 }
 
-                return make_scalar(out);
+                return make_scalar(out, 0, 0, base.is_signed);
             }
 
             [[nodiscard]] expr_value apply_part_select(expr_value const& base, expr_value const& msb_expr, expr_value const& lsb_expr) noexcept
@@ -2318,7 +2802,7 @@ namespace phy_engine::verilog::digital
                 if(!try_eval_const_int(msb_expr, sel_msb) || !try_eval_const_int(lsb_expr, sel_lsb))
                 {
                     p->err(p->peek(), u8"part-select indices must be constant integer expressions in this subset");
-                    return make_scalar(make_literal(logic_t::indeterminate_state));
+                    return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, base.is_signed);
                 }
 
                 vector_desc vd{};
@@ -2353,7 +2837,7 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                return make_vector_with_range(::std::move(bits), sel_msb, sel_lsb);
+                return make_vector_with_range(::std::move(bits), sel_msb, sel_lsb, base.is_signed);
             }
 
             [[nodiscard]] expr_value
@@ -2363,7 +2847,7 @@ namespace phy_engine::verilog::digital
                 if(!try_eval_const_int(width_expr, w) || w <= 0)
                 {
                     p->err(p->peek(), u8"indexed part-select width must be a positive constant integer expression in this subset");
-                    return make_scalar(make_literal(logic_t::indeterminate_state));
+                    return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, base.is_signed);
                 }
 
                 vector_desc vd{};
@@ -2421,7 +2905,7 @@ namespace phy_engine::verilog::digital
                     ::fast_io::vector<::std::size_t> bits{};
                     slice_bits_for_start(start_const, bits);
                     auto const [sel_msb, sel_lsb]{compute_bounds(start_const)};
-                    return make_vector_with_range(::std::move(bits), sel_msb, sel_lsb);
+                    return make_vector_with_range(::std::move(bits), sel_msb, sel_lsb, base.is_signed);
                 }
 
                 int const min_idx{vd.msb < vd.lsb ? vd.msb : vd.lsb};
@@ -2456,7 +2940,7 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                return make_vector(::std::move(out));
+                return make_vector(::std::move(out), base.is_signed);
             }
 
             [[nodiscard]] expr_value parse_primary() noexcept
@@ -2495,9 +2979,10 @@ namespace phy_engine::verilog::digital
 
                                 if(ref.kind == connection_kind::scalar)
                                 {
-                                    base = make_scalar(add_node({.kind = expr_kind::signal, .signal = ref.scalar_signal}));
+                                    bool const sgn{ref.scalar_signal < m->signal_is_signed.size() && m->signal_is_signed.index_unchecked(ref.scalar_signal)};
+                                    base = make_scalar(add_node({.kind = expr_kind::signal, .signal = ref.scalar_signal}), 0, 0, sgn);
                                 }
-                                else if(ref.kind == connection_kind::literal) { base = make_scalar(make_literal(ref.literal)); }
+                                else if(ref.kind == connection_kind::literal) { base = make_scalar(make_literal(ref.literal), 0, 0, false); }
                                 else if(ref.kind == connection_kind::literal_vector)
                                 {
                                     ::fast_io::vector<::std::size_t> roots{};
@@ -2506,7 +2991,7 @@ namespace phy_engine::verilog::digital
                                     {
                                         roots.index_unchecked(i) = make_literal(ref.literal_bits.index_unchecked(i));
                                     }
-                                    base = make_vector(::std::move(roots));
+                                    base = make_vector(::std::move(roots), false);
                                 }
                                 else if(ref.kind == connection_kind::vector)
                                 {
@@ -2517,7 +3002,8 @@ namespace phy_engine::verilog::digital
                                         {
                                             base = make_scalar(add_node({.kind = expr_kind::signal, .signal = itv->second.bits.front_unchecked()}),
                                                                itv->second.msb,
-                                                               itv->second.lsb);
+                                                               itv->second.lsb,
+                                                               itv->second.is_signed);
                                         }
                                         else
                                         {
@@ -2527,7 +3013,7 @@ namespace phy_engine::verilog::digital
                                             {
                                                 bits.index_unchecked(i) = add_node({.kind = expr_kind::signal, .signal = itv->second.bits.index_unchecked(i)});
                                             }
-                                            base = make_vector_with_range(::std::move(bits), itv->second.msb, itv->second.lsb);
+                                            base = make_vector_with_range(::std::move(bits), itv->second.msb, itv->second.lsb, itv->second.is_signed);
                                         }
                                     }
                                     else
@@ -2545,7 +3031,7 @@ namespace phy_engine::verilog::digital
                                         bits.index_unchecked(i) =
                                             b.is_literal ? make_literal(b.literal) : add_node({.kind = expr_kind::signal, .signal = b.signal});
                                     }
-                                    base = make_vector(::std::move(bits));
+                                    base = make_vector(::std::move(bits), false);
                                 }
                                 else
                                 {
@@ -2628,7 +3114,8 @@ namespace phy_engine::verilog::digital
                                 {
                                     base = make_scalar(add_node({.kind = expr_kind::signal, .signal = it->second.bits.front_unchecked()}),
                                                        it->second.msb,
-                                                       it->second.lsb);
+                                                       it->second.lsb,
+                                                       it->second.is_signed);
                                 }
                                 else
                                 {
@@ -2638,12 +3125,14 @@ namespace phy_engine::verilog::digital
                                     {
                                         bits.index_unchecked(i) = add_node({.kind = expr_kind::signal, .signal = it->second.bits.index_unchecked(i)});
                                     }
-                                    base = make_vector_with_range(::std::move(bits), it->second.msb, it->second.lsb);
+                                    base = make_vector_with_range(::std::move(bits), it->second.msb, it->second.lsb, it->second.is_signed);
                                 }
                             }
                             else
                             {
-                                base = make_scalar(add_node({.kind = expr_kind::signal, .signal = get_or_create_signal(*m, name)}));
+                                auto const sig{get_or_create_signal(*m, name)};
+                                bool const sgn{sig < m->signal_is_signed.size() && m->signal_is_signed.index_unchecked(sig)};
+                                base = make_scalar(add_node({.kind = expr_kind::signal, .signal = sig}), 0, 0, sgn);
                             }
                         }
                     }
@@ -2651,20 +3140,24 @@ namespace phy_engine::verilog::digital
                 else if(t0.kind == token_kind::number)
                 {
                     ::fast_io::vector<logic_t> lit_bits{};
-                    if(!parse_literal_bits(t0.text, lit_bits))
+                    bool lit_signed{};
+                    if(!parse_literal_bits(t0.text, lit_bits, __builtin_addressof(lit_signed)))
                     {
                         p->err(t0, u8"invalid number literal");
                         p->consume();
                         return make_scalar(make_literal(logic_t::indeterminate_state));
                     }
                     p->consume();
-                    if(lit_bits.size() <= 1) { base = make_scalar(make_literal(lit_bits.empty() ? logic_t::indeterminate_state : lit_bits.front_unchecked())); }
+                    if(lit_bits.size() <= 1)
+                    {
+                        base = make_scalar(make_literal(lit_bits.empty() ? logic_t::indeterminate_state : lit_bits.front_unchecked()), 0, 0, lit_signed);
+                    }
                     else
                     {
                         ::fast_io::vector<::std::size_t> roots{};
                         roots.resize(lit_bits.size());
                         for(::std::size_t i{}; i < lit_bits.size(); ++i) { roots.index_unchecked(i) = make_literal(lit_bits.index_unchecked(i)); }
-                        base = make_vector(::std::move(roots));
+                        base = make_vector(::std::move(roots), lit_signed);
                     }
                 }
                 else if(t0.kind == token_kind::symbol && is_sym(t0.text, u8'{'))
@@ -2798,6 +3291,41 @@ namespace phy_engine::verilog::digital
                 return base;
             }
 
+            [[nodiscard]] ::std::size_t reduce_and_root(expr_value const& a) noexcept
+            {
+                if(!a.is_vector) { return a.scalar_root; }
+                auto r{make_literal(logic_t::true_state)};
+                for(auto const bit: a.vector_roots) { r = make_and(r, bit); }
+                return r;
+            }
+
+            [[nodiscard]] ::std::size_t reduce_or_root(expr_value const& a) noexcept
+            {
+                if(!a.is_vector) { return a.scalar_root; }
+                auto r{make_literal(logic_t::false_state)};
+                for(auto const bit: a.vector_roots) { r = make_or(r, bit); }
+                return r;
+            }
+
+            [[nodiscard]] ::std::size_t reduce_xor_root(expr_value const& a) noexcept
+            {
+                if(!a.is_vector) { return a.scalar_root; }
+                auto r{make_literal(logic_t::false_state)};
+                for(auto const bit: a.vector_roots) { r = make_xor(r, bit); }
+                return r;
+            }
+
+            [[nodiscard]] expr_value parse_power() noexcept
+            {
+                auto lhs{parse_primary()};
+                if(p->accept_sym2(u8'*', u8'*'))
+                {
+                    auto const rhs{parse_power()};  // right-associative
+                    lhs = arith_pow(lhs, rhs);
+                }
+                return lhs;
+            }
+
             [[nodiscard]] expr_value parse_unary() noexcept
             {
                 if(p->accept_sym(u8'!'))
@@ -2805,18 +3333,49 @@ namespace phy_engine::verilog::digital
                     auto const a{parse_unary()};
                     return make_scalar(make_not(to_bool_root(a)));
                 }
+                if(p->accept_sym2(u8'~', u8'&'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(make_not(reduce_and_root(a)));
+                }
+                if(p->accept_sym2(u8'~', u8'|'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(make_not(reduce_or_root(a)));
+                }
+                if(p->accept_sym2(u8'~', u8'^'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(make_not(reduce_xor_root(a)));
+                }
+                if(p->accept_sym(u8'&'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(reduce_and_root(a));
+                }
+                if(p->accept_sym(u8'|'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(reduce_or_root(a));
+                }
+                if(p->accept_sym(u8'^'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(reduce_xor_root(a));
+                }
                 if(p->accept_sym(u8'+')) { return parse_unary(); }
                 if(p->accept_sym(u8'-'))
                 {
                     auto const a{parse_unary()};
-                    return arith_sub(make_uint_literal(0, width(a)), a);
+                    expr_value const z{a.is_signed ? make_int_literal(0, width(a)) : make_uint_literal(0, width(a))};
+                    return arith_sub(z, a);
                 }
                 if(p->accept_sym(u8'~'))
                 {
                     auto const a{parse_unary()};
                     return bitwise_unary(a, expr_kind::unary_not);
                 }
-                return parse_primary();
+                return parse_power();
             }
 
             [[nodiscard]] expr_value parse_mul() noexcept
@@ -2834,6 +3393,12 @@ namespace phy_engine::verilog::digital
                     {
                         auto const rhs{parse_unary()};
                         lhs = arith_div(lhs, rhs);
+                        continue;
+                    }
+                    if(p->accept_sym(u8'%'))
+                    {
+                        auto const rhs{parse_unary()};
+                        lhs = arith_mod(lhs, rhs);
                         continue;
                     }
                     return lhs;
@@ -2965,6 +3530,18 @@ namespace phy_engine::verilog::digital
                 auto lhs{parse_rel()};
                 for(;;)
                 {
+                    if(p->accept_sym3(u8'=', u8'=', u8'='))
+                    {
+                        auto const rhs{parse_rel()};
+                        lhs = make_scalar(compare_case_eq(lhs, rhs));
+                        continue;
+                    }
+                    if(p->accept_sym3(u8'!', u8'=', u8'='))
+                    {
+                        auto const rhs{parse_rel()};
+                        lhs = make_scalar(make_not(compare_case_eq(lhs, rhs)));
+                        continue;
+                    }
                     if(p->accept_sym2(u8'=', u8'='))
                     {
                         auto const rhs{parse_rel()};
@@ -4408,7 +4985,7 @@ namespace phy_engine::verilog::digital
 
                         if(out_lv.k == lvalue_ref::kind::vector)
                         {
-                            auto rhs_bits{ep_tmp.resize_to_vector(rhs_v, out_lv.vector_signals.size())};
+                            auto rhs_bits{ep_tmp.resize_to_vector(rhs_v, out_lv.vector_signals.size(), rhs_v.is_signed)};
                             stmt_node blk{};
                             blk.k = stmt_node::kind::block;
                             blk.stmts.reserve(out_lv.vector_signals.size());
@@ -4469,7 +5046,7 @@ namespace phy_engine::verilog::digital
 
             if(lhs.k == lvalue_ref::kind::vector)
             {
-                auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size())};
+                auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
 
                 stmt_node blk{};
                 blk.k = stmt_node::kind::block;
@@ -4547,7 +5124,7 @@ namespace phy_engine::verilog::digital
                     return add_stmt(arena, {});
                 }
 
-                auto rhs_bits{ep.resize_to_vector(rhs, lhs.indexed_width)};
+                auto rhs_bits{ep.resize_to_vector(rhs, lhs.indexed_width, rhs.is_signed)};
                 vector_desc vd{};
                 vd.msb = lhs.base_desc.msb;
                 vd.lsb = lhs.base_desc.lsb;
@@ -4670,6 +5247,7 @@ namespace phy_engine::verilog::digital
         inline void parse_decl_list(parser& p, compiled_module& m, port_dir d) noexcept
         {
             bool is_reg{};
+            bool is_signed{};
             if(d == port_dir::output)
             {
                 if(p.accept_kw(u8"reg")) { is_reg = true; }
@@ -4678,6 +5256,9 @@ namespace phy_engine::verilog::digital
                     // ignored
                 }
             }
+
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
 
             range_desc r{};
             accept_range(p, r);
@@ -4690,17 +5271,19 @@ namespace phy_engine::verilog::digital
                 auto& pd{ensure_port_decl(m, ::fast_io::u8string_view{name.data(), name.size()})};
                 pd.dir = d;
                 if(is_reg) { pd.is_reg = true; }
+                pd.is_signed = is_signed;
                 if(r.has_range)
                 {
                     pd.has_range = true;
                     pd.msb = r.msb;
                     pd.lsb = r.lsb;
-                    (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg);
+                    (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg, is_signed);
                 }
                 else
                 {
                     auto const sig{get_or_create_signal(m, name)};
                     if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    if(is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
                 }
 
                 if(!p.accept_sym(u8',')) { break; }
@@ -4715,6 +5298,10 @@ namespace phy_engine::verilog::digital
 
         inline void parse_wire_list(parser& p, compiled_module& m, bool is_reg) noexcept
         {
+            bool is_signed{};
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
             range_desc r{};
             accept_range(p, r);
 
@@ -4723,11 +5310,12 @@ namespace phy_engine::verilog::digital
                 auto const name{p.expect_ident(u8"expected identifier in declaration")};
                 if(name.empty()) { return; }
 
-                if(r.has_range) { (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg); }
+                if(r.has_range) { (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg, is_signed); }
                 else
                 {
                     auto const sig{get_or_create_signal(m, name)};
                     if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    if(is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
                 }
 
                 if(!p.accept_sym(u8',')) { break; }
@@ -4772,7 +5360,7 @@ namespace phy_engine::verilog::digital
 
             if(lhs.k == lvalue_ref::kind::vector)
             {
-                auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size())};
+                auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
                 for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
                 {
                     m.assigns.push_back({lhs.vector_signals.index_unchecked(i), rhs_bits.index_unchecked(i)});
@@ -4956,6 +5544,7 @@ namespace phy_engine::verilog::digital
             {
                 port_dir current_dir{port_dir::unknown};
                 bool current_is_reg{};
+                bool current_is_signed{};
                 range_desc current_range{};
 
                 for(;;)
@@ -4964,26 +5553,35 @@ namespace phy_engine::verilog::digital
                     {
                         current_dir = port_dir::input;
                         current_is_reg = false;
+                        current_is_signed = false;
                         current_range = {};
+                        if(p.accept_kw(u8"signed")) { current_is_signed = true; }
+                        else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
                     }
                     else if(p.accept_kw(u8"output"))
                     {
                         current_dir = port_dir::output;
                         current_is_reg = false;
+                        current_is_signed = false;
                         current_range = {};
                         if(p.accept_kw(u8"reg")) { current_is_reg = true; }
                         else if(p.accept_kw(u8"wire"))
                         {
                             // ignored
                         }
+                        if(p.accept_kw(u8"signed")) { current_is_signed = true; }
+                        else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
                     }
                     else if(p.accept_kw(u8"inout"))
                     {
                         current_dir = port_dir::inout;
                         current_is_reg = false;
+                        current_is_signed = false;
                         current_range = {};
+                        if(p.accept_kw(u8"signed")) { current_is_signed = true; }
+                        else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
                     }
 
@@ -4993,6 +5591,7 @@ namespace phy_engine::verilog::digital
                         auto& pd{ensure_port_decl(m, ::fast_io::u8string_view{port_name.data(), port_name.size()})};
                         if(current_dir != port_dir::unknown) { pd.dir = current_dir; }
                         if(current_is_reg) { pd.is_reg = true; }
+                        if(current_dir != port_dir::unknown) { pd.is_signed = current_is_signed; }
                         if(current_range.has_range)
                         {
                             pd.has_range = true;
@@ -5003,7 +5602,8 @@ namespace phy_engine::verilog::digital
                                                        ::fast_io::u8string_view{port_name.data(), port_name.size()},
                                                        current_range.msb,
                                                        current_range.lsb,
-                                                       current_is_reg);
+                                                       current_is_reg,
+                                                       current_is_signed);
                         }
                     }
 
@@ -5131,7 +5731,8 @@ namespace phy_engine::verilog::digital
 
                 if(pd.has_range)
                 {
-                    auto& vd{declare_vector_range(nullptr, m, ::fast_io::u8string_view{base.data(), base.size()}, pd.msb, pd.lsb, pd.is_reg)};
+                    auto& vd{
+                        declare_vector_range(nullptr, m, ::fast_io::u8string_view{base.data(), base.size()}, pd.msb, pd.lsb, pd.is_reg, pd.is_signed)};
                     ::std::size_t const w{vector_width(vd)};
                     for(::std::size_t pos{}; pos < w; ++pos)
                     {
@@ -5144,6 +5745,7 @@ namespace phy_engine::verilog::digital
                 {
                     auto const sig{get_or_create_signal(m, base)};
                     if(pd.is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    if(pd.is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
                     m.ports.push_back({base, pd.dir, sig});
                 }
             }
@@ -5188,6 +5790,11 @@ namespace phy_engine::verilog::digital
                 if(n.signal >= values.size()) { return logic_t::indeterminate_state; }
                 return values.index_unchecked(n.signal);
             }
+            case expr_kind::is_unknown:
+            {
+                auto const a{normalize_z_to_x(eval_expr(m, n.a, values))};
+                return is_unknown(a) ? logic_t::true_state : logic_t::false_state;
+            }
             case expr_kind::unary_not: return logic_not(eval_expr(m, n.a, values));
             case expr_kind::binary_and: return logic_and(eval_expr(m, n.a, values), eval_expr(m, n.b, values));
             case expr_kind::binary_or: return logic_or(eval_expr(m, n.a, values), eval_expr(m, n.b, values));
@@ -5205,6 +5812,12 @@ namespace phy_engine::verilog::digital
                 auto const b{normalize_z_to_x(eval_expr(m, n.b, values))};
                 if(is_unknown(a) || is_unknown(b)) { return logic_t::indeterminate_state; }
                 return a != b ? logic_t::true_state : logic_t::false_state;
+            }
+            case expr_kind::binary_case_eq:
+            {
+                auto const a{eval_expr(m, n.a, values)};
+                auto const b{eval_expr(m, n.b, values)};
+                return a == b ? logic_t::true_state : logic_t::false_state;
             }
             default: return logic_t::indeterminate_state;
         }
@@ -5293,6 +5906,12 @@ namespace phy_engine::verilog::digital
                     }
                     break;
                 }
+                case expr_kind::is_unknown:
+                {
+                    auto const a{normalize_z_to_x(self(self, n.a))};
+                    v = is_unknown(a) ? logic_t::true_state : logic_t::false_state;
+                    break;
+                }
                 case expr_kind::unary_not: v = logic_not(self(self, n.a)); break;
                 case expr_kind::binary_and: v = logic_and(self(self, n.a), self(self, n.b)); break;
                 case expr_kind::binary_or: v = logic_or(self(self, n.a), self(self, n.b)); break;
@@ -5317,6 +5936,13 @@ namespace phy_engine::verilog::digital
                     {
                         v = a != b ? logic_t::true_state : logic_t::false_state;
                     }
+                    break;
+                }
+                case expr_kind::binary_case_eq:
+                {
+                    auto const a{self(self, n.a)};
+                    auto const b{self(self, n.b)};
+                    v = a == b ? logic_t::true_state : logic_t::false_state;
                     break;
                 }
                 default: v = logic_t::indeterminate_state; break;

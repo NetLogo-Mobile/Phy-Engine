@@ -41,13 +41,13 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - [x] `function` / `task` definitions and calls (subset: single-expression functions + single-assignment tasks)
 
 ### Expressions (coverage & semantics)
-- [ ] Modulo `%`
-- [ ] Power `**`
-- [ ] Case equality `===` / `!==`
-- [ ] Reduction operators (`&a`, `|a`, `^a`, `~&a`, `~|a`, `~^a`)
-- [ ] Signed arithmetic rules (`signed` / `unsigned`, sign extension)
-- [ ] Better 4-state semantics for arithmetic (full Verilog rules for `x/z`)
-- [ ] More numeric literal formats (unsized based literals, underscores everywhere, etc.)
+- [x] Modulo `%`
+- [x] Power `**`
+- [x] Case equality `===` / `!==`
+- [x] Reduction operators (`&a`, `|a`, `^a`, `~&a`, `~|a`, `~^a`)
+- [x] Signed arithmetic rules (`signed` / `unsigned`, sign extension)
+- [x] Better 4-state semantics for arithmetic (full Verilog rules for `x/z`)
+- [x] More numeric literal formats (unsized based literals, underscores everywhere, etc.)
 
 ### LHS / Assignments
 - [ ] Continuous assignment with dynamic LHS selects (e.g. `assign a[idx] = ...;`)
