@@ -67,9 +67,9 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - [x] Width coercion rules (sign/zero extension, truncation)
 
 ### Performance / Robustness
-- [ ] More aggressive expression DAG sharing and simplification (constant folding, common subexpr)
-- [ ] Explicit compile-time limits and better error messages for huge expressions
-- [ ] More tests for edge cases (out-of-range selects, X/Z propagation, width corner cases)
+- [x] More aggressive expression DAG sharing and simplification (constant folding, common subexpr)
+- [x] Explicit compile-time limits and better error messages for huge expressions
+- [x] More tests for edge cases (out-of-range selects, X/Z propagation, width corner cases)
 
 ## Notes
 
