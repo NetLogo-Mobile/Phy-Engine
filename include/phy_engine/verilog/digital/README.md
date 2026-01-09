@@ -63,8 +63,8 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - [x] Improved blocking/nonblocking timing (delta-cycle + NBA ordering)
 
 ### Port Connections
-- [ ] General expression connections (e.g. `.a(a + b)`), not just name/literal/concat/slice
-- [ ] Width coercion rules matching real Verilog (sign/zero extension, truncation details)
+- [x] General expression connections (e.g. `.a(a + b)`), not just name/literal/concat/slice
+- [x] Width coercion rules (sign/zero extension, truncation)
 
 ### Performance / Robustness
 - [ ] More aggressive expression DAG sharing and simplification (constant folding, common subexpr)

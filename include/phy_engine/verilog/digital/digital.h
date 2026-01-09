@@ -30,11 +30,11 @@ namespace phy_engine::verilog::digital
     //   - `always @(a or b or c)` / `always @(a, b, c)` as combinational (sensitivity list drives scheduling)
     //   - `always @(posedge/negedge clk)` / `always_ff @(posedge clk or negedge rst_n)` as sequential (nonblocking assignment `<=`)
     // - Bit/part-select on any expression: `expr[idx]`, `expr[msb:lsb]` (expression part-select indices must be constant in this subset)
-    // - Concatenation: `{a, b, c}`, `{N{...}}` (replication count must be constant in this subset)
-    // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
-    // - Module instantiation: named/positional port connections; vector connections require matching widths
-    //
-    // Not supported: `include`, drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
+	    // - Concatenation: `{a, b, c}`, `{N{...}}` (replication count must be constant in this subset)
+	    // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
+	    // - Module instantiation: named/positional port connections (including general expressions) + width coercion (truncation, sign/zero extension)
+	    //
+	    // Not supported: `include`, drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
 
@@ -1175,15 +1175,16 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<::std::size_t> bits{};
     };
 
-    enum class connection_kind : ::std::uint_fast8_t
-    {
-        unconnected,
-        scalar,
-        vector,
-        literal,
-        literal_vector,
-        bit_list  // msb->lsb list of parent signals and/or literals (e.g. concat/slice)
-    };
+	    enum class connection_kind : ::std::uint_fast8_t
+	    {
+	        unconnected,
+	        scalar,
+	        vector,
+	        literal,
+	        literal_vector,
+	        bit_list,  // msb->lsb list of parent signals and/or literals (e.g. concat/slice)
+	        expr       // general expression (msb->lsb expr roots into the parent module's expr_nodes)
+	    };
 
     struct connection_bit
     {
@@ -1192,15 +1193,17 @@ namespace phy_engine::verilog::digital
         logic_t literal{logic_t::indeterminate_state};
     };
 
-    struct connection_ref
-    {
-        connection_kind kind{connection_kind::unconnected};
-        ::std::size_t scalar_signal{SIZE_MAX};
-        ::fast_io::u8string vector_base{};
-        logic_t literal{logic_t::indeterminate_state};
-        ::fast_io::vector<logic_t> literal_bits{};     // msb->lsb (only for literal_vector)
-        ::fast_io::vector<connection_bit> bit_list{};  // msb->lsb (only for bit_list)
-    };
+	    struct connection_ref
+	    {
+	        connection_kind kind{connection_kind::unconnected};
+	        bool is_signed{};
+	        ::std::size_t scalar_signal{SIZE_MAX};
+	        ::fast_io::u8string vector_base{};
+	        logic_t literal{logic_t::indeterminate_state};
+	        ::fast_io::vector<logic_t> literal_bits{};     // msb->lsb (only for literal_vector)
+	        ::fast_io::vector<connection_bit> bit_list{};  // msb->lsb (only for bit_list)
+	        ::fast_io::vector<::std::size_t> expr_roots{}; // msb->lsb (only for expr)
+	    };
 
     struct instance_connection
     {
@@ -3014,21 +3017,36 @@ namespace phy_engine::verilog::digital
                                     base = make_scalar(add_node({.kind = expr_kind::signal, .signal = ref.scalar_signal}), 0, 0, sgn);
                                 }
                                 else if(ref.kind == connection_kind::literal) { base = make_scalar(make_literal(ref.literal), 0, 0, false); }
-                                else if(ref.kind == connection_kind::literal_vector)
-                                {
-                                    ::fast_io::vector<::std::size_t> roots{};
-                                    roots.resize(ref.literal_bits.size());
-                                    for(::std::size_t i{}; i < ref.literal_bits.size(); ++i)
-                                    {
-                                        roots.index_unchecked(i) = make_literal(ref.literal_bits.index_unchecked(i));
-                                    }
-                                    base = make_vector(::std::move(roots), false);
-                                }
-                                else if(ref.kind == connection_kind::vector)
-                                {
-                                    auto itv{m->vectors.find(ref.vector_base)};
-                                    if(itv != m->vectors.end() && !itv->second.bits.empty())
-                                    {
+	                                else if(ref.kind == connection_kind::literal_vector)
+	                                {
+	                                    ::fast_io::vector<::std::size_t> roots{};
+	                                    roots.resize(ref.literal_bits.size());
+	                                    for(::std::size_t i{}; i < ref.literal_bits.size(); ++i)
+	                                    {
+	                                        roots.index_unchecked(i) = make_literal(ref.literal_bits.index_unchecked(i));
+	                                    }
+	                                    base = make_vector(::std::move(roots), ref.is_signed);
+	                                }
+	                                else if(ref.kind == connection_kind::expr)
+	                                {
+	                                    if(ref.expr_roots.size() <= 1)
+	                                    {
+	                                        base = make_scalar(ref.expr_roots.empty() ? make_literal(logic_t::indeterminate_state) : ref.expr_roots.front_unchecked(),
+	                                                           0,
+	                                                           0,
+	                                                           ref.is_signed);
+	                                    }
+	                                    else
+	                                    {
+	                                        ::fast_io::vector<::std::size_t> roots{ref.expr_roots};
+	                                        base = make_vector(::std::move(roots), ref.is_signed);
+	                                    }
+	                                }
+	                                else if(ref.kind == connection_kind::vector)
+	                                {
+	                                    auto itv{m->vectors.find(ref.vector_base)};
+	                                    if(itv != m->vectors.end() && !itv->second.bits.empty())
+	                                    {
                                         if(details::vector_width(itv->second) <= 1)
                                         {
                                             base = make_scalar(add_node({.kind = expr_kind::signal, .signal = itv->second.bits.front_unchecked()}),
@@ -3052,18 +3070,18 @@ namespace phy_engine::verilog::digital
                                         base = make_scalar(make_literal(logic_t::indeterminate_state));
                                     }
                                 }
-                                else if(ref.kind == connection_kind::bit_list)
-                                {
-                                    ::fast_io::vector<::std::size_t> bits{};
-                                    bits.resize(ref.bit_list.size());
-                                    for(::std::size_t i{}; i < ref.bit_list.size(); ++i)
-                                    {
-                                        auto const& b{ref.bit_list.index_unchecked(i)};
-                                        bits.index_unchecked(i) =
-                                            b.is_literal ? make_literal(b.literal) : add_node({.kind = expr_kind::signal, .signal = b.signal});
-                                    }
-                                    base = make_vector(::std::move(bits), false);
-                                }
+	                                else if(ref.kind == connection_kind::bit_list)
+	                                {
+	                                    ::fast_io::vector<::std::size_t> bits{};
+	                                    bits.resize(ref.bit_list.size());
+	                                    for(::std::size_t i{}; i < ref.bit_list.size(); ++i)
+	                                    {
+	                                        auto const& b{ref.bit_list.index_unchecked(i)};
+	                                        bits.index_unchecked(i) =
+	                                            b.is_literal ? make_literal(b.literal) : add_node({.kind = expr_kind::signal, .signal = b.signal});
+	                                    }
+	                                    base = make_vector(::std::move(bits), ref.is_signed);
+	                                }
                                 else
                                 {
                                     base = make_scalar(make_literal(logic_t::indeterminate_state));
@@ -3955,7 +3973,7 @@ namespace phy_engine::verilog::digital
         }
 
         inline connection_ref
-            parse_connection_ref(parser& p, compiled_module& m, ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents = nullptr) noexcept
+            parse_connection_ref_legacy(parser& p, compiled_module& m, ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents = nullptr) noexcept
         {
             connection_ref r{};
             auto const& t{p.peek()};
@@ -4061,7 +4079,7 @@ namespace phy_engine::verilog::digital
             if(t.kind == token_kind::symbol && is_sym(t.text, u8'('))
             {
                 p.consume();
-                r = parse_connection_ref(p, m, const_idents);
+	                r = parse_connection_ref_legacy(p, m, const_idents);
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after connection expression"); }
                 return r;
             }
@@ -4090,7 +4108,7 @@ namespace phy_engine::verilog::digital
 
                     for(;;)
                     {
-                        auto const item{parse_connection_ref(p, m, const_idents)};
+	                        auto const item{parse_connection_ref_legacy(p, m, const_idents)};
                         append_ref_bits(bits, item);
                         if(p.accept_sym(u8',')) { continue; }
                         break;
@@ -4100,7 +4118,7 @@ namespace phy_engine::verilog::digital
                     return bits;
                 };
 
-                auto const first_item{parse_connection_ref(p, m, const_idents)};
+	                auto const first_item{parse_connection_ref_legacy(p, m, const_idents)};
                 if(p.accept_sym(u8'{'))
                 {
                     int rep_count{};
@@ -4133,7 +4151,7 @@ namespace phy_engine::verilog::digital
                 append_ref_bits(bits, first_item);
                 while(p.accept_sym(u8','))
                 {
-                    auto const item{parse_connection_ref(p, m, const_idents)};
+	                    auto const item{parse_connection_ref_legacy(p, m, const_idents)};
                     append_ref_bits(bits, item);
                 }
                 if(!p.accept_sym(u8'}')) { p.err(p.peek(), u8"expected '}'"); }
@@ -4333,6 +4351,109 @@ namespace phy_engine::verilog::digital
 
             p.err(t, u8"expected connection expression");
             p.consume();
+            return r;
+        }
+
+        inline connection_ref
+            parse_connection_ref(parser& p, compiled_module& m, ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents = nullptr) noexcept
+        {
+            connection_ref r{};
+            auto const& t{p.peek()};
+            if(t.kind == token_kind::symbol && (is_sym(t.text, u8')') || is_sym(t.text, u8',') || is_sym(t.text, u8'}'))) { return r; }
+
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m), const_idents};
+            auto const v{ep.parse_expr()};
+            r.is_signed = v.is_signed;
+
+            ::fast_io::vector<::std::size_t> roots{};
+            if(v.is_vector) { roots = v.vector_roots; }
+            else { roots.push_back(v.scalar_root); }
+            if(roots.empty()) { return r; }
+
+            auto const root_node = [&](::std::size_t root) noexcept -> expr_node const*
+            {
+                if(root >= m.expr_nodes.size()) { return nullptr; }
+                return __builtin_addressof(m.expr_nodes.index_unchecked(root));
+            };
+
+            auto const classify_root = [&](::std::size_t root) noexcept -> expr_kind
+            {
+                auto const* n{root_node(root)};
+                if(n == nullptr) { return expr_kind::is_unknown; }
+                return n->kind;
+            };
+
+            if(roots.size() == 1)
+            {
+                auto const root{roots.front_unchecked()};
+                auto const* n{root_node(root)};
+                auto const k{classify_root(root)};
+                if(k == expr_kind::signal && n != nullptr)
+                {
+                    r.kind = connection_kind::scalar;
+                    r.scalar_signal = n->signal;
+                    return r;
+                }
+                if(k == expr_kind::literal && n != nullptr)
+                {
+                    r.kind = connection_kind::literal;
+                    r.literal = n->literal;
+                    return r;
+                }
+                r.kind = connection_kind::expr;
+                r.expr_roots = ::std::move(roots);
+                return r;
+            }
+
+            bool all_literal{true};
+            bool all_simple{true};  // literal or signal only
+            for(auto const root: roots)
+            {
+                auto const k{classify_root(root)};
+                if(k != expr_kind::literal) { all_literal = false; }
+                if(k != expr_kind::literal && k != expr_kind::signal) { all_simple = false; }
+            }
+
+            if(all_literal)
+            {
+                r.kind = connection_kind::literal_vector;
+                r.literal_bits.resize(roots.size());
+                for(::std::size_t i{}; i < roots.size(); ++i)
+                {
+                    auto const* n{root_node(roots.index_unchecked(i))};
+                    r.literal_bits.index_unchecked(i) = (n != nullptr) ? n->literal : logic_t::indeterminate_state;
+                }
+                return r;
+            }
+
+            if(all_simple)
+            {
+                r.kind = connection_kind::bit_list;
+                r.bit_list.resize(roots.size());
+                for(::std::size_t i{}; i < roots.size(); ++i)
+                {
+                    auto const root{roots.index_unchecked(i)};
+                    auto const* n{root_node(root)};
+                    auto const k{classify_root(root)};
+                    if(n == nullptr)
+                    {
+                        r.bit_list.index_unchecked(i) = {.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state};
+                        continue;
+                    }
+                    if(k == expr_kind::signal)
+                    {
+                        r.bit_list.index_unchecked(i) = {.is_literal = false, .signal = n->signal, .literal = {}};
+                    }
+                    else
+                    {
+                        r.bit_list.index_unchecked(i) = {.is_literal = true, .signal = SIZE_MAX, .literal = n->literal};
+                    }
+                }
+                return r;
+            }
+
+            r.kind = connection_kind::expr;
+            r.expr_roots = ::std::move(roots);
             return r;
         }
 
@@ -6497,31 +6618,43 @@ namespace phy_engine::verilog::digital
         return eval(eval, root);
     }
 
-    struct port_binding
-    {
-        enum class kind : ::std::uint_fast8_t
-        {
-            unconnected,
-            parent_signal,
-            literal
-        };
+	    struct port_binding
+	    {
+	        enum class kind : ::std::uint_fast8_t
+	        {
+	            unconnected,
+	            parent_signal,
+	            literal,
+	            parent_expr_root
+	        };
 
-        kind k{kind::unconnected};
-        ::std::size_t parent_signal{SIZE_MAX};
-        logic_t literal{logic_t::indeterminate_state};
-    };
+	        kind k{kind::unconnected};
+	        ::std::size_t parent_signal{SIZE_MAX};
+	        ::std::size_t parent_expr_root{SIZE_MAX};
+	        logic_t literal{logic_t::indeterminate_state};
+	    };
 
-    struct instance_state
-    {
-        compiled_module const* mod{};
-        ::fast_io::u8string instance_name{};
-        module_state state{};
+	    struct port_drive
+	    {
+	        ::std::size_t parent_signal{SIZE_MAX};
+	        bool src_is_literal{};
+	        ::std::size_t child_signal{SIZE_MAX};
+	        logic_t literal{logic_t::indeterminate_state};
+	    };
+
+	    struct instance_state
+	    {
+	        compiled_module const* mod{};
+	        ::fast_io::u8string instance_name{};
+	        module_state state{};
         // Bitmask over `state.values` indices: 1 => net has internal driver(s) and is re-resolved each comb delta.
         ::fast_io::vector<::std::uint8_t> driven_nets{};
-        // For each bit-level port in `mod->ports`, a binding into the parent instance.
-        ::fast_io::vector<port_binding> bindings{};
-        ::fast_io::vector<::std::unique_ptr<instance_state>> children{};
-    };
+	        // For each bit-level port in `mod->ports`, a binding into the parent instance.
+	        ::fast_io::vector<port_binding> bindings{};
+	        // For output/inout ports: drives into the parent (post-width-coercion mapping).
+	        ::fast_io::vector<port_drive> output_drives{};
+	        ::fast_io::vector<::std::unique_ptr<instance_state>> children{};
+	    };
 
     struct compiled_design
     {
@@ -6955,49 +7088,52 @@ namespace phy_engine::verilog::digital
             ::std::size_t const nports{cm.ports.size()};
             if(child.bindings.size() < nports) { return false; }
 
-            for(::std::size_t i{}; i < nports; ++i)
-            {
-                auto const& p{cm.ports.index_unchecked(i)};
-                if(p.dir == port_dir::output) { continue; }
+	            for(::std::size_t i{}; i < nports; ++i)
+	            {
+	                auto const& p{cm.ports.index_unchecked(i)};
+	                if(p.dir == port_dir::output) { continue; }
 
-                logic_t v{logic_t::indeterminate_state};
-                auto const& b{child.bindings.index_unchecked(i)};
-                if(b.k == port_binding::kind::parent_signal)
-                {
-                    if(b.parent_signal < parent.state.values.size()) { v = parent.state.values.index_unchecked(b.parent_signal); }
-                }
-                else if(b.k == port_binding::kind::literal) { v = b.literal; }
+	                logic_t v{logic_t::indeterminate_state};
+	                auto const& b{child.bindings.index_unchecked(i)};
+	                if(b.k == port_binding::kind::parent_signal)
+	                {
+	                    if(b.parent_signal < parent.state.values.size()) { v = parent.state.values.index_unchecked(b.parent_signal); }
+	                }
+	                else if(b.k == port_binding::kind::literal) { v = b.literal; }
+	                else if(b.k == port_binding::kind::parent_expr_root)
+	                {
+	                    if(parent.mod != nullptr && b.parent_expr_root != SIZE_MAX)
+	                    {
+	                        v = eval_expr_cached(*parent.mod, b.parent_expr_root, parent.state);
+	                    }
+	                }
 
-                changed = assign_signal(cst, p.signal, v) || changed;
-            }
+	                changed = assign_signal(cst, p.signal, v) || changed;
+	            }
 
             return changed;
         }
 
-        inline bool propagate_child_to_parent(instance_state& child, instance_state& parent) noexcept
-        {
-            if(child.mod == nullptr) { return false; }
+	        inline bool propagate_child_to_parent(instance_state& child, instance_state& parent) noexcept
+	        {
+	            if(child.mod == nullptr) { return false; }
+	            auto& cst{child.state};
 
-            auto const& cm{*child.mod};
-            auto& cst{child.state};
+	            for(auto const& d: child.output_drives)
+	            {
+	                if(d.parent_signal == SIZE_MAX) { continue; }
+	                logic_t v{logic_t::indeterminate_state};
+	                if(d.src_is_literal) { v = d.literal; }
+	                else
+	                {
+	                    if(d.child_signal >= cst.values.size()) { continue; }
+	                    v = cst.values.index_unchecked(d.child_signal);
+	                }
+	                drive_signal_next(parent, d.parent_signal, v);
+	            }
 
-            ::std::size_t const nports{cm.ports.size()};
-            if(child.bindings.size() < nports) { return false; }
-
-            for(::std::size_t i{}; i < nports; ++i)
-            {
-                auto const& p{cm.ports.index_unchecked(i)};
-                if(p.dir == port_dir::input) { continue; }
-
-                auto const& b{child.bindings.index_unchecked(i)};
-                if(b.k != port_binding::kind::parent_signal) { continue; }
-                if(b.parent_signal >= parent.state.values.size() || p.signal >= cst.values.size()) { continue; }
-
-                drive_signal_next(parent, b.parent_signal, cst.values.index_unchecked(p.signal));
-            }
-
-            return false;
-        }
+	            return false;
+	        }
 
         inline void sequential_pass(instance_state& inst, ::std::uint64_t tick, bool process_sequential) noexcept
         {
@@ -7093,23 +7229,201 @@ namespace phy_engine::verilog::digital
             }
         }
 
-        inline void
-            fill_bindings(compiled_module const& pm, compiled_module const& cm, instance const& idef, ::fast_io::vector<port_binding>& bindings) noexcept
+        inline void fill_bindings(compiled_module const& pm,
+                                  compiled_module const& cm,
+                                  instance const& idef,
+                                  ::fast_io::vector<port_binding>& bindings,
+                                  ::fast_io::vector<port_drive>& output_drives) noexcept
         {
+            output_drives.clear();
+
             // Map child base ports (cm.port_order) to connection_ref
             ::absl::btree_map<::fast_io::u8string, connection_ref> named{};
             bool any_named{};
             for(auto const& c: idef.connections)
             {
-                if(!c.port_name.empty())
-                {
-                    any_named = true;
-                    named.insert_or_assign(c.port_name, c.ref);
-                }
+                if(c.port_name.empty()) { continue; }
+                any_named = true;
+                named.insert_or_assign(c.port_name, c.ref);
             }
+
+            auto make_parent_signal = [&](::std::size_t sig) noexcept -> port_binding
+            { return port_binding{.k = port_binding::kind::parent_signal, .parent_signal = sig, .parent_expr_root = SIZE_MAX, .literal = {}}; };
+
+            auto make_literal = [&](logic_t v) noexcept -> port_binding
+            { return port_binding{.k = port_binding::kind::literal, .parent_signal = SIZE_MAX, .parent_expr_root = SIZE_MAX, .literal = v}; };
+
+            auto make_expr_root = [&](::std::size_t root) noexcept -> port_binding
+            { return port_binding{.k = port_binding::kind::parent_expr_root, .parent_signal = SIZE_MAX, .parent_expr_root = root, .literal = {}}; };
+
+            auto connection_bits = [&](connection_ref const& ref, ::fast_io::vector<port_binding>& bits_out, bool& signed_out) noexcept
+            {
+                bits_out.clear();
+                signed_out = ref.is_signed;
+
+                switch(ref.kind)
+                {
+                    case connection_kind::unconnected: return;
+                    case connection_kind::scalar:
+                    {
+                        if(ref.scalar_signal == SIZE_MAX) { return; }
+                        signed_out = (ref.scalar_signal < pm.signal_is_signed.size() && pm.signal_is_signed.index_unchecked(ref.scalar_signal));
+                        bits_out.push_back(make_parent_signal(ref.scalar_signal));
+                        return;
+                    }
+                    case connection_kind::vector:
+                    {
+                        auto itv{pm.vectors.find(ref.vector_base)};
+                        if(itv == pm.vectors.end()) { return; }
+                        signed_out = itv->second.is_signed;
+                        bits_out.reserve(itv->second.bits.size());
+                        for(auto const sig: itv->second.bits) { bits_out.push_back(make_parent_signal(sig)); }
+                        return;
+                    }
+                    case connection_kind::literal:
+                    {
+                        bits_out.push_back(make_literal(ref.literal));
+                        return;
+                    }
+                    case connection_kind::literal_vector:
+                    {
+                        bits_out.reserve(ref.literal_bits.size());
+                        for(auto const b: ref.literal_bits) { bits_out.push_back(make_literal(b)); }
+                        return;
+                    }
+                    case connection_kind::bit_list:
+                    {
+                        bits_out.reserve(ref.bit_list.size());
+                        for(auto const& b: ref.bit_list)
+                        {
+                            bits_out.push_back(b.is_literal ? make_literal(b.literal) : make_parent_signal(b.signal));
+                        }
+                        return;
+                    }
+                    case connection_kind::expr:
+                    {
+                        bits_out.reserve(ref.expr_roots.size());
+                        for(auto const root: ref.expr_roots) { bits_out.push_back(make_expr_root(root)); }
+                        return;
+                    }
+                    default: return;
+                }
+            };
+
+            auto resize_bits = [&](::fast_io::vector<port_binding> const& src, ::std::size_t w, bool sign_extend) noexcept
+                -> ::fast_io::vector<port_binding>
+            {
+                ::fast_io::vector<port_binding> out{};
+                if(w == 0) { return out; }
+
+                if(src.empty())
+                {
+                    out.resize(w);  // unconnected => X
+                    return out;
+                }
+
+                if(w == 1)
+                {
+                    out.push_back(src.back_unchecked());  // LSB
+                    return out;
+                }
+
+                if(src.size() == w) { return src; }
+
+                out.resize(w);
+                if(src.size() > w)
+                {
+                    ::std::size_t const off{src.size() - w};
+                    for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = src.index_unchecked(off + i); }
+                    return out;
+                }
+
+                ::std::size_t const pad{w - src.size()};
+                port_binding const fill{sign_extend ? src.front_unchecked() : make_literal(logic_t::false_state)};
+                for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = fill; }
+                for(::std::size_t i{}; i < src.size(); ++i) { out.index_unchecked(pad + i) = src.index_unchecked(i); }
+                return out;
+            };
+
+            auto connection_dest_bits = [&](connection_ref const& ref, ::fast_io::vector<::std::size_t>& dst_out) noexcept
+            {
+                dst_out.clear();
+                switch(ref.kind)
+                {
+                    case connection_kind::scalar:
+                    {
+                        if(ref.scalar_signal != SIZE_MAX) { dst_out.push_back(ref.scalar_signal); }
+                        return;
+                    }
+                    case connection_kind::vector:
+                    {
+                        auto itv{pm.vectors.find(ref.vector_base)};
+                        if(itv == pm.vectors.end()) { return; }
+                        dst_out = itv->second.bits;
+                        return;
+                    }
+                    case connection_kind::bit_list:
+                    {
+                        dst_out.resize(ref.bit_list.size());
+                        for(::std::size_t i{}; i < ref.bit_list.size(); ++i)
+                        {
+                            auto const& b{ref.bit_list.index_unchecked(i)};
+                            dst_out.index_unchecked(i) = b.is_literal ? SIZE_MAX : b.signal;
+                        }
+                        return;
+                    }
+                    default: return;
+                }
+            };
+
+            struct rhs_bit
+            {
+                bool is_literal{};
+                ::std::size_t child_signal{SIZE_MAX};
+                logic_t literal{logic_t::indeterminate_state};
+            };
+
+            auto resize_rhs = [&](::fast_io::vector<rhs_bit> const& src, ::std::size_t w, bool sign_extend) noexcept
+                -> ::fast_io::vector<rhs_bit>
+            {
+                ::fast_io::vector<rhs_bit> out{};
+                if(w == 0) { return out; }
+
+                if(src.empty())
+                {
+                    out.resize(w);
+                    for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = {.is_literal = true, .child_signal = SIZE_MAX, .literal = logic_t::indeterminate_state}; }
+                    return out;
+                }
+
+                if(w == 1)
+                {
+                    out.push_back(src.back_unchecked());  // LSB
+                    return out;
+                }
+
+                if(src.size() == w) { return src; }
+
+                out.resize(w);
+                if(src.size() > w)
+                {
+                    ::std::size_t const off{src.size() - w};
+                    for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = src.index_unchecked(off + i); }
+                    return out;
+                }
+
+                ::std::size_t const pad{w - src.size()};
+                rhs_bit const fill{sign_extend ? src.front_unchecked() : rhs_bit{.is_literal = true, .child_signal = SIZE_MAX, .literal = logic_t::false_state}};
+                for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = fill; }
+                for(::std::size_t i{}; i < src.size(); ++i) { out.index_unchecked(pad + i) = src.index_unchecked(i); }
+                return out;
+            };
 
             ::std::size_t positional_idx{};
             ::std::size_t port_offset{};
+
+            ::fast_io::vector<port_binding> src_bits{};
+            ::fast_io::vector<::std::size_t> dst_bits{};
 
             for(auto const& base: cm.port_order)
             {
@@ -7132,96 +7446,41 @@ namespace phy_engine::verilog::digital
                 ::std::size_t width{1};
                 if(pd.has_range) { width = static_cast<::std::size_t>((pd.msb - pd.lsb) >= 0 ? (pd.msb - pd.lsb + 1) : (pd.lsb - pd.msb + 1)); }
 
-                // helper to bind one bit
-                auto bind_bit = [&](::std::size_t port_bit, port_binding b) noexcept
+                if(pd.dir == port_dir::unknown || pd.dir == port_dir::input || pd.dir == port_dir::inout)
                 {
-                    if(port_bit < bindings.size()) { bindings.index_unchecked(port_bit) = b; }
-                };
-
-                if(width == 1)
-                {
-                    if(ref.kind == connection_kind::scalar) { bind_bit(port_offset, {port_binding::kind::parent_signal, ref.scalar_signal, {}}); }
-                    else if(ref.kind == connection_kind::literal) { bind_bit(port_offset, {port_binding::kind::literal, SIZE_MAX, ref.literal}); }
-                    else if(ref.kind == connection_kind::literal_vector)
+                    bool signed_src{};
+                    connection_bits(ref, src_bits, signed_src);
+                    auto const resized{resize_bits(src_bits, width, signed_src)};
+                    for(::std::size_t pos{}; pos < width && (port_offset + pos) < bindings.size(); ++pos)
                     {
-                        if(!ref.literal_bits.empty()) { bind_bit(port_offset, {port_binding::kind::literal, SIZE_MAX, ref.literal_bits.back_unchecked()}); }
-                    }
-                    else if(ref.kind == connection_kind::vector)
-                    {
-                        auto itv{pm.vectors.find(ref.vector_base)};
-                        if(itv != pm.vectors.end() && details::vector_width(itv->second) == 1)
-                        {
-                            bind_bit(port_offset, {port_binding::kind::parent_signal, itv->second.bits.front_unchecked(), {}});
-                        }
-                    }
-                    else if(ref.kind == connection_kind::bit_list)
-                    {
-                        if(!ref.bit_list.empty())
-                        {
-                            auto const& b{ref.bit_list.back_unchecked()};  // LSB
-                            if(b.is_literal) { bind_bit(port_offset, {port_binding::kind::literal, SIZE_MAX, b.literal}); }
-                            else
-                            {
-                                bind_bit(port_offset, {port_binding::kind::parent_signal, b.signal, {}});
-                            }
-                        }
+                        bindings.index_unchecked(port_offset + pos) = resized.index_unchecked(pos);
                     }
                 }
-                else
+
+                if(pd.dir == port_dir::output || pd.dir == port_dir::inout)
                 {
-                    if(ref.kind == connection_kind::vector)
+                    connection_dest_bits(ref, dst_bits);
+                    ::std::size_t const dw{dst_bits.size()};
+                    if(dw != 0 && (port_offset + width) <= cm.ports.size())
                     {
-                        auto itv{pm.vectors.find(ref.vector_base)};
-                        if(itv != pm.vectors.end() && details::vector_width(itv->second) == width)
-                        {
-                            for(::std::size_t pos{}; pos < width; ++pos)
-                            {
-                                bind_bit(port_offset + pos, {port_binding::kind::parent_signal, itv->second.bits.index_unchecked(pos), {}});
-                            }
-                        }
-                    }
-                    else if(ref.kind == connection_kind::bit_list)
-                    {
-                        if(ref.bit_list.size() == width)
-                        {
-                            for(::std::size_t pos{}; pos < width; ++pos)
-                            {
-                                auto const& b{ref.bit_list.index_unchecked(pos)};
-                                if(b.is_literal) { bind_bit(port_offset + pos, {port_binding::kind::literal, SIZE_MAX, b.literal}); }
-                                else
-                                {
-                                    bind_bit(port_offset + pos, {port_binding::kind::parent_signal, b.signal, {}});
-                                }
-                            }
-                        }
-                    }
-                    else if(ref.kind == connection_kind::literal || ref.kind == connection_kind::literal_vector)
-                    {
-                        ::fast_io::vector<logic_t> src_bits{};
-                        if(ref.kind == connection_kind::literal) { src_bits.push_back(ref.literal); }
-                        else
-                        {
-                            src_bits = ref.literal_bits;
-                        }
-
-                        ::fast_io::vector<logic_t> resized{};
-                        resized.resize(width);
-
-                        if(src_bits.size() >= width)
-                        {
-                            ::std::size_t const off{src_bits.size() - width};
-                            for(::std::size_t pos{}; pos < width; ++pos) { resized.index_unchecked(pos) = src_bits.index_unchecked(off + pos); }
-                        }
-                        else
-                        {
-                            ::std::size_t const pad{width - src_bits.size()};
-                            for(::std::size_t pos{}; pos < pad; ++pos) { resized.index_unchecked(pos) = logic_t::false_state; }
-                            for(::std::size_t pos{}; pos < src_bits.size(); ++pos) { resized.index_unchecked(pad + pos) = src_bits.index_unchecked(pos); }
-                        }
-
+                        ::fast_io::vector<rhs_bit> rhs{};
+                        rhs.resize(width);
                         for(::std::size_t pos{}; pos < width; ++pos)
                         {
-                            bind_bit(port_offset + pos, {port_binding::kind::literal, SIZE_MAX, resized.index_unchecked(pos)});
+                            rhs.index_unchecked(pos) = {.is_literal = false, .child_signal = cm.ports.index_unchecked(port_offset + pos).signal, .literal = {}};
+                        }
+
+                        auto const rhs_resized{resize_rhs(rhs, dw, pd.is_signed)};
+                        for(::std::size_t pos{}; pos < dw; ++pos)
+                        {
+                            auto const dst{dst_bits.index_unchecked(pos)};
+                            if(dst == SIZE_MAX) { continue; }
+                            auto const& src{rhs_resized.index_unchecked(pos)};
+                            if(!src.is_literal && src.child_signal == SIZE_MAX) { continue; }
+                            output_drives.push_back(port_drive{.parent_signal = dst,
+                                                               .src_is_literal = src.is_literal,
+                                                               .child_signal = src.child_signal,
+                                                               .literal = src.literal});
                         }
                     }
                 }
@@ -7244,9 +7503,10 @@ namespace phy_engine::verilog::digital
                 auto child{::std::make_unique<instance_state>()};
                 child->mod = cm;
                 child->instance_name = idef.instance_name;
-                init_state(child->state, *cm);
-                init_driven_nets_from_assigns(*child);
-                child->bindings.assign(cm->ports.size(), {});
+	                init_state(child->state, *cm);
+	                init_driven_nets_from_assigns(*child);
+	                child->bindings.assign(cm->ports.size(), {});
+	                child->output_drives.clear();
 
                 // Apply per-instance parameter overrides by writing constant parameter vectors into the instance state.
                 if(!idef.param_named_values.empty() || !idef.param_positional_values.empty())
@@ -7289,21 +7549,17 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                fill_bindings(pm, *cm, idef, child->bindings);
+	                fill_bindings(pm, *cm, idef, child->bindings, child->output_drives);
 
                 // Child outputs drive parent nets (potentially multiple drivers): mark as internally-driven in the parent.
                 if(parent.driven_nets.empty()) { init_driven_nets_from_assigns(parent); }
-                for(::std::size_t i{}; i < cm->ports.size() && i < child->bindings.size(); ++i)
-                {
-                    auto const& p{cm->ports.index_unchecked(i)};
-                    if(p.dir == port_dir::input) { continue; }
-
-                    auto const& b{child->bindings.index_unchecked(i)};
-                    if(b.k != port_binding::kind::parent_signal) { continue; }
-                    if(b.parent_signal >= parent.driven_nets.size()) { continue; }
-                    if(b.parent_signal < pm.signal_is_reg.size() && pm.signal_is_reg.index_unchecked(b.parent_signal)) { continue; }
-                    parent.driven_nets.index_unchecked(b.parent_signal) = 1u;
-                }
+	                for(auto const& d: child->output_drives)
+	                {
+	                    if(d.parent_signal == SIZE_MAX) { continue; }
+	                    if(d.parent_signal >= parent.driven_nets.size()) { continue; }
+	                    if(d.parent_signal < pm.signal_is_reg.size() && pm.signal_is_reg.index_unchecked(d.parent_signal)) { continue; }
+	                    parent.driven_nets.index_unchecked(d.parent_signal) = 1u;
+	                }
 
                 elaborate_children(d, *child, depth + 1);
 
