@@ -10,7 +10,7 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - Modules: `module` / `endmodule`
 - Simple preprocessor: `define`/`undef`/`ifdef`/`ifndef`/`else`/`endif` + macro expansion
 - Decls: `input`/`output`/`inout`, `wire`/`reg`, vectors `[msb:lsb]`, `output reg`
-- Continuous assign: `assign lhs = expr;` (lhs must be static)
+- Continuous assign: `assign lhs = expr;` (lhs may include dynamic selects)
 - Always blocks:
   - `always @*` / `always @(*)` combinational (`if`/`case`/begin-end; blocking `=`)
   - `always @(posedge/negedge clk)` sequential (nonblocking `<=`)
@@ -50,9 +50,9 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - [x] More numeric literal formats (unsized based literals, underscores everywhere, etc.)
 
 ### LHS / Assignments
-- [ ] Continuous assignment with dynamic LHS selects (e.g. `assign a[idx] = ...;`)
-- [ ] Dynamic part-select `[msb:lsb]` where `msb/lsb` are expressions (not constants)
-- [ ] Multiple drivers / proper net resolution (wire strength, etc.)
+- [x] Continuous assignment with dynamic LHS selects (e.g. `assign a[idx] = ...;`)
+- [x] Dynamic part-select `[msb:lsb]` where `msb/lsb` are expressions (not constants)
+- [x] Multiple drivers / net resolution (basic 0/1/X/Z; no strength modeling)
 
 ### Statements / Procedural Features
 - [ ] `for` / `while` / `repeat`
