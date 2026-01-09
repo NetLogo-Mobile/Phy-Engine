@@ -26,15 +26,15 @@ namespace phy_engine::verilog::digital
     // - `wire` / `reg` declarations (scalar or vectors)
     // - Continuous assignment: `assign lhs = expr;`
     // - always blocks:
-    //   - `always @*` / `always @(*)` as combinational (`if`/`case`/begin-end; blocking assignment `=`)
-    //   - `always @(a or b or c)` / `always @(a, b, c)` accepted as combinational (sensitivity list is parsed but currently not used for scheduling)
-    //   - `always @(posedge/negedge clk)` as sequential (nonblocking assignment `<=`)
+    //   - `always @*` / `always @(*)` / `always_comb` as combinational (`if`/`case`/begin-end; blocking `=` or nonblocking `<=`)
+    //   - `always @(a or b or c)` / `always @(a, b, c)` as combinational (sensitivity list drives scheduling)
+    //   - `always @(posedge/negedge clk)` / `always_ff @(posedge clk or negedge rst_n)` as sequential (nonblocking assignment `<=`)
     // - Bit/part-select on any expression: `expr[idx]`, `expr[msb:lsb]` (expression part-select indices must be constant in this subset)
     // - Concatenation: `{a, b, c}`, `{N{...}}` (replication count must be constant in this subset)
     // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
     // - Module instantiation: named/positional port connections; vector connections require matching widths
     //
-    // Not supported: hierarchical name references, generate, tasks/functions, `include`, full event lists, strength (drive strengths).
+    // Not supported: `include`, drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
 
@@ -1082,8 +1082,8 @@ namespace phy_engine::verilog::digital
     struct case_item
     {
         bool is_default{};
-        logic_t match{logic_t::indeterminate_state};  // 1-bit only for now
-        ::fast_io::vector<::std::size_t> stmts{};     // indices into stmt_node arena
+        ::fast_io::vector<::std::size_t> match_roots{};  // msb->lsb (resized to case expression width)
+        ::fast_io::vector<::std::size_t> stmts{}; // indices into stmt_node arena
     };
 
     struct stmt_node
@@ -1095,10 +1095,20 @@ namespace phy_engine::verilog::digital
             blocking_assign,
             nonblocking_assign,
             if_stmt,
-            case_stmt
+            case_stmt,
+            for_stmt,
+            while_stmt
+        };
+
+        enum class case_kind : ::std::uint_fast8_t
+        {
+            normal,
+            casez,
+            casex
         };
 
         kind k{kind::empty};
+        case_kind ck{case_kind::normal};  // only meaningful for case_stmt
         ::std::uint64_t delay_ticks{};
 
         ::std::size_t lhs_signal{SIZE_MAX};
@@ -1107,20 +1117,40 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<::std::size_t> stmts{};       // then-branch (or block list)
         ::fast_io::vector<::std::size_t> else_stmts{};  // else-branch
 
-        ::std::size_t case_expr_root{SIZE_MAX};
+        // case:
+        ::fast_io::vector<::std::size_t> case_expr_roots{};  // msb->lsb
         ::fast_io::vector<case_item> case_items{};
+
+        // loops:
+        ::std::size_t init_stmt{SIZE_MAX};  // for_stmt only
+        ::std::size_t step_stmt{SIZE_MAX};  // for_stmt only
+        ::std::size_t body_stmt{SIZE_MAX};  // for_stmt/while_stmt only
+    };
+
+    struct sensitivity_event
+    {
+        enum class kind : ::std::uint_fast8_t
+        {
+            level,  // any value change
+            posedge,
+            negedge
+        };
+
+        kind k{kind::level};
+        ::std::size_t signal{SIZE_MAX};
     };
 
     struct always_ff
     {
-        ::std::size_t clk_signal{};
-        bool posedge{true};
+        ::fast_io::vector<sensitivity_event> events{};
         ::fast_io::vector<stmt_node> stmt_nodes{};
         ::fast_io::vector<::std::size_t> roots{};
     };
 
     struct always_comb
     {
+        bool is_star{true};                                  // @* / always_comb (implicit sensitivity)
+        ::fast_io::vector<::std::size_t> sens_signals{};     // when !is_star: explicit sensitivity signals
         ::fast_io::vector<stmt_node> stmt_nodes{};
         ::fast_io::vector<::std::size_t> roots{};
     };
@@ -4858,28 +4888,167 @@ namespace phy_engine::verilog::digital
                 return add_stmt(arena, ::std::move(st));
             }
 
+            if(p.accept_kw(u8"repeat"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before repeat is not supported"); }
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after repeat"); }
+                expr_parser ep{&p, &m};
+                auto const count_v{ep.parse_expr()};
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after repeat count"); }
+
+                ::std::uint64_t count{};
+                if(!ep.try_eval_const_uint64(count_v, count))
+                {
+                    p.err(p.peek(), u8"repeat count must be a constant integer expression in this subset");
+                    count = 0;
+                }
+                if(count > 4096ull) { count = 4096ull; }
+
+                ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking)};
+                if(count == 0) { return add_stmt(arena, {}); }
+
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                blk.stmts.reserve(static_cast<::std::size_t>(count));
+                for(::std::uint64_t i{}; i < count; ++i) { blk.stmts.push_back(body); }
+                return add_stmt(arena, ::std::move(blk));
+            }
+
+            if(p.accept_kw(u8"while"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before while is not supported"); }
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after while"); }
+                expr_parser ep{&p, &m};
+                auto const cond_v{ep.parse_expr()};
+                ::std::size_t const cond{ep.to_bool_root(cond_v)};
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after while condition"); }
+
+                stmt_node st{};
+                st.k = stmt_node::kind::while_stmt;
+                st.expr_root = cond;
+                st.body_stmt = parse_proc_stmt(p, m, arena, allow_nonblocking);
+                return add_stmt(arena, ::std::move(st));
+            }
+
+            if(p.accept_kw(u8"for"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before for is not supported"); }
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after for"); }
+
+                auto parse_for_assign = [&](char8_t terminator) noexcept -> ::std::size_t
+                {
+                    if(p.accept_sym(terminator)) { return SIZE_MAX; }
+
+                    lvalue_ref lhs{};
+                    if(!parse_lvalue_ref(p, m, lhs, true, true)) { return SIZE_MAX; }
+                    if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '=' in for-loop assignment"); }
+
+                    expr_parser ep{&p, &m};
+                    auto const rhs{ep.parse_expr()};
+
+                    if(!p.accept_sym(terminator)) { p.err(p.peek(), u8"expected terminator in for-loop header"); }
+
+                    if(lhs.k != lvalue_ref::kind::scalar && lhs.k != lvalue_ref::kind::vector)
+                    {
+                        p.err(p.peek(), u8"for-loop init/step must assign a scalar or whole vector in this subset");
+                        return add_stmt(arena, {});
+                    }
+
+                    if(lhs.k == lvalue_ref::kind::vector)
+                    {
+                        auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
+                        stmt_node blk{};
+                        blk.k = stmt_node::kind::block;
+                        blk.stmts.reserve(lhs.vector_signals.size());
+                        for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
+                        {
+                            stmt_node st{};
+                            st.k = stmt_node::kind::blocking_assign;
+                            st.delay_ticks = 0;
+                            st.lhs_signal = lhs.vector_signals.index_unchecked(i);
+                            st.expr_root = rhs_bits.index_unchecked(i);
+                            blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
+                            if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                        }
+                        return add_stmt(arena, ::std::move(blk));
+                    }
+
+                    auto const rhs1{ep.resize(rhs, 1)};
+                    stmt_node st{};
+                    st.k = stmt_node::kind::blocking_assign;
+                    st.delay_ticks = 0;
+                    st.lhs_signal = lhs.scalar_signal;
+                    st.expr_root = rhs1.scalar_root;
+                    if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                    return add_stmt(arena, ::std::move(st));
+                };
+
+                ::std::size_t init_stmt{SIZE_MAX};
+                if(p.accept_sym(u8';')) { init_stmt = SIZE_MAX; }
+                else { init_stmt = parse_for_assign(u8';'); }
+
+                ::std::size_t cond_root{SIZE_MAX};
+                if(p.accept_sym(u8';'))
+                {
+                    expr_parser ep{&p, &m};
+                    cond_root = ep.make_literal(logic_t::true_state);
+                }
+                else
+                {
+                    expr_parser ep{&p, &m};
+                    auto const cond_v{ep.parse_expr()};
+                    cond_root = ep.to_bool_root(cond_v);
+                    if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after for-loop condition"); }
+                }
+
+                ::std::size_t step_stmt{SIZE_MAX};
+                if(p.accept_sym(u8')')) { step_stmt = SIZE_MAX; }
+                else { step_stmt = parse_for_assign(u8')'); }
+
+                stmt_node st{};
+                st.k = stmt_node::kind::for_stmt;
+                st.init_stmt = init_stmt;
+                st.expr_root = cond_root;
+                st.step_stmt = step_stmt;
+                st.body_stmt = parse_proc_stmt(p, m, arena, allow_nonblocking);
+                return add_stmt(arena, ::std::move(st));
+            }
+
+            bool do_case{};
+            stmt_node::case_kind ck{stmt_node::case_kind::normal};
             if(p.accept_kw(u8"case"))
+            {
+                do_case = true;
+                ck = stmt_node::case_kind::normal;
+            }
+            else if(p.accept_kw(u8"casez"))
+            {
+                do_case = true;
+                ck = stmt_node::case_kind::casez;
+            }
+            else if(p.accept_kw(u8"casex"))
+            {
+                do_case = true;
+                ck = stmt_node::case_kind::casex;
+            }
+
+            if(do_case)
             {
                 if(delay != 0) { p.err(p.peek(), u8"delay before case is not supported"); }
 
                 if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after case"); }
                 expr_parser ep{&p, &m};
-                auto const cexpr_v{ep.parse_expr()};
-                ::std::size_t cexpr{SIZE_MAX};
-                if(cexpr_v.is_vector)
-                {
-                    p.err(p.peek(), u8"case expression must be 1-bit in this subset");
-                    cexpr = ep.make_literal(logic_t::indeterminate_state);
-                }
-                else
-                {
-                    cexpr = cexpr_v.scalar_root;
-                }
+                auto const key_v{ep.parse_expr()};
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after case expression"); }
 
                 stmt_node st{};
                 st.k = stmt_node::kind::case_stmt;
-                st.case_expr_root = cexpr;
+                st.ck = ck;
+                if(key_v.is_vector) { st.case_expr_roots = key_v.vector_roots; }
+                else { st.case_expr_roots.push_back(key_v.scalar_root); }
+                if(st.case_expr_roots.empty()) { st.case_expr_roots.push_back(ep.make_literal(logic_t::indeterminate_state)); }
+
+                ::std::size_t const w{st.case_expr_roots.size()};
 
                 while(!p.eof())
                 {
@@ -4895,28 +5064,21 @@ namespace phy_engine::verilog::digital
                         continue;
                     }
 
-                    ::fast_io::vector<logic_t> matches{};
+                    ::fast_io::vector<expr_value> matches{};
                     for(;;)
                     {
-                        auto const& mt{p.peek()};
-                        if(mt.kind != token_kind::number)
-                        {
-                            p.err(mt, u8"expected 1-bit literal in case item");
-                            break;
-                        }
-                        matches.push_back(parse_1bit_literal(mt.text));
-                        p.consume();
+                        matches.push_back(ep.parse_expr());
                         if(!p.accept_sym(u8',')) { break; }
                     }
 
                     if(!p.accept_sym(u8':')) { p.err(p.peek(), u8"expected ':' after case item"); }
                     ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking)};
 
-                    for(auto const mv: matches)
+                    for(auto const& mv: matches)
                     {
                         case_item ci{};
                         ci.is_default = false;
-                        ci.match = mv;
+                        ci.match_roots = ep.resize_to_vector(mv, w, mv.is_signed);
                         ci.stmts.push_back(body);
                         st.case_items.push_back(::std::move(ci));
                     }
@@ -5686,7 +5848,7 @@ namespace phy_engine::verilog::digital
             }
         }
 
-        inline void parse_always(parser& p, compiled_module& m) noexcept
+        inline void parse_always_event(parser& p, compiled_module& m, bool require_edge) noexcept
         {
             if(!p.accept_sym(u8'@'))
             {
@@ -5695,22 +5857,58 @@ namespace phy_engine::verilog::digital
                 return;
             }
 
-            bool comb{};
-            bool sequential{};
-            bool posedge{true};
-            bool need_parse_senslist{};
+            bool is_star{};
+            bool any_edge{};
+            ::fast_io::vector<::std::size_t> comb_sens{};
+            ::fast_io::vector<sensitivity_event> events{};
 
-            auto parse_sensitivity_item = [&]() noexcept -> bool
+            auto add_level_signals = [&](::fast_io::vector<::std::size_t> const& sigs) noexcept
             {
+                for(auto const sig: sigs)
+                {
+                    comb_sens.push_back(sig);
+                    events.push_back({sensitivity_event::kind::level, sig});
+                }
+            };
+
+            auto resolve_signal_list = [&](::fast_io::u8string const& base, bool has_bit, int bit_idx) noexcept -> ::fast_io::vector<::std::size_t>
+            {
+                ::fast_io::vector<::std::size_t> out{};
+                if(has_bit)
+                {
+                    out.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{base.data(), base.size()}, bit_idx, false));
+                    return out;
+                }
+                auto itv{m.vectors.find(base)};
+                if(itv != m.vectors.end() && !itv->second.bits.empty()) { return itv->second.bits; }
+                out.push_back(get_or_create_signal(m, base));
+                return out;
+            };
+
+            auto parse_one_item = [&]() noexcept -> bool
+            {
+                sensitivity_event::kind ek{sensitivity_event::kind::level};
+                if(p.accept_kw(u8"posedge"))
+                {
+                    ek = sensitivity_event::kind::posedge;
+                    any_edge = true;
+                }
+                else if(p.accept_kw(u8"negedge"))
+                {
+                    ek = sensitivity_event::kind::negedge;
+                    any_edge = true;
+                }
+
                 auto const name{p.expect_ident(u8"expected identifier in sensitivity list")};
                 if(name.empty()) { return false; }
 
-                // bit-select: a[3]
+                bool has_bit{};
+                int bit_idx{};
                 if(p.accept_sym(u8'['))
                 {
-                    int idx{};
+                    has_bit = true;
                     auto const& ti{p.peek()};
-                    if(ti.kind != token_kind::number || !parse_dec_int(ti.text, idx)) { p.err(ti, u8"expected constant integer bit-select index"); }
+                    if(ti.kind != token_kind::number || !parse_dec_int(ti.text, bit_idx)) { p.err(ti, u8"expected constant integer bit-select index"); }
                     else
                     {
                         p.consume();
@@ -5718,11 +5916,19 @@ namespace phy_engine::verilog::digital
                     if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
                 }
 
-                // vector base without bit-select is allowed here (treated like "any bit changed"), but ignored by this runtime.
+                auto const sigs{resolve_signal_list(name, has_bit, bit_idx)};
+                if((ek == sensitivity_event::kind::posedge || ek == sensitivity_event::kind::negedge) && sigs.size() != 1)
+                {
+                    p.err(p.peek(), u8"posedge/negedge event must reference a single bit in this subset");
+                    return true;
+                }
+
+                if(ek == sensitivity_event::kind::level) { add_level_signals(sigs); }
+                else { events.push_back({ek, sigs.front_unchecked()}); }
                 return true;
             };
 
-            if(p.accept_sym(u8'*')) { comb = true; }
+            if(p.accept_sym(u8'*')) { is_star = true; }
             else
             {
                 if(!p.accept_sym(u8'('))
@@ -5731,41 +5937,23 @@ namespace phy_engine::verilog::digital
                     p.skip_until_semicolon();
                     return;
                 }
+
                 if(p.accept_sym(u8'*'))
                 {
-                    comb = true;
+                    is_star = true;
                     if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after @*"); }
-                }
-                else if(p.accept_kw(u8"posedge"))
-                {
-                    sequential = true;
-                    posedge = true;
-                }
-                else if(p.accept_kw(u8"negedge"))
-                {
-                    sequential = true;
-                    posedge = false;
                 }
                 else
                 {
-                    comb = true;
-                    need_parse_senslist = true;
-                }
-            }
-
-            if(comb && !sequential)
-            {
-                if(need_parse_senslist)
-                {
                     if(!p.accept_sym(u8')'))
                     {
-                        (void)parse_sensitivity_item();
+                        (void)parse_one_item();
                         while(!p.eof())
                         {
                             if(p.accept_sym(u8')')) { break; }
                             if(p.accept_kw(u8"or") || p.accept_sym(u8','))
                             {
-                                (void)parse_sensitivity_item();
+                                (void)parse_one_item();
                                 continue;
                             }
                             p.err(p.peek(), u8"expected 'or', ',' or ')' in sensitivity list");
@@ -5773,31 +5961,48 @@ namespace phy_engine::verilog::digital
                         }
                     }
                 }
+            }
 
+            if(is_star)
+            {
                 always_comb ac{};
+                ac.is_star = true;
                 ac.stmt_nodes.reserve(64);
-                ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, false));
+                ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true));
                 m.always_combs.push_back(::std::move(ac));
                 return;
             }
 
-            if(!sequential) { p.err(p.peek(), u8"expected posedge/negedge or '*'"); }
-
-            auto const clk_name{p.expect_ident(u8"expected clock identifier")};
-            if(clk_name.empty())
+            if(any_edge || require_edge)
             {
-                while(!p.eof() && !p.accept_sym(u8')')) { p.consume(); }
+                if(require_edge && !any_edge) { p.err(p.peek(), u8"always_ff requires at least one posedge/negedge event"); }
+                always_ff ff{};
+                ff.events = ::std::move(events);
+                ff.stmt_nodes.reserve(64);
+                ff.roots.push_back(parse_proc_stmt(p, m, ff.stmt_nodes, true));
+                m.always_ffs.push_back(::std::move(ff));
                 return;
             }
 
-            while(!p.eof() && !p.accept_sym(u8')')) { p.consume(); }
+            always_comb ac{};
+            ac.is_star = false;
+            ac.sens_signals = ::std::move(comb_sens);
+            ac.stmt_nodes.reserve(64);
+            ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true));
+            m.always_combs.push_back(::std::move(ac));
+        }
 
-            always_ff ff{};
-            ff.clk_signal = get_or_create_signal(m, clk_name);
-            ff.posedge = posedge;
-            ff.stmt_nodes.reserve(64);
-            ff.roots.push_back(parse_proc_stmt(p, m, ff.stmt_nodes, true));
-            m.always_ffs.push_back(::std::move(ff));
+        inline void parse_always(parser& p, compiled_module& m) noexcept { parse_always_event(p, m, false); }
+
+        inline void parse_always_ff(parser& p, compiled_module& m) noexcept { parse_always_event(p, m, true); }
+
+        inline void parse_always_comb(parser& p, compiled_module& m) noexcept
+        {
+            always_comb ac{};
+            ac.is_star = true;
+            ac.stmt_nodes.reserve(64);
+            ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true));
+            m.always_combs.push_back(::std::move(ac));
         }
 
         inline compiled_module parse_module(parser& p) noexcept
@@ -6027,6 +6232,16 @@ namespace phy_engine::verilog::digital
                     parse_always(p, m);
                     continue;
                 }
+                if(p.accept_kw(u8"always_comb"))
+                {
+                    parse_always_comb(p, m);
+                    continue;
+                }
+                if(p.accept_kw(u8"always_ff"))
+                {
+                    parse_always_ff(p, m);
+                    continue;
+                }
 
                 if(try_parse_instance(p, m, nullptr)) { continue; }
 
@@ -6149,10 +6364,16 @@ namespace phy_engine::verilog::digital
         compiled_module const* mod{};
         ::fast_io::vector<logic_t> values{};
         ::fast_io::vector<logic_t> prev_values{};
+        // Last values seen by the combinational/event scheduler (used for `always @(...)` triggering).
+        ::fast_io::vector<logic_t> comb_prev_values{};
         ::fast_io::vector<scheduled_event> events{};
         ::fast_io::vector<::std::pair<::std::size_t, logic_t>> nba_queue{};
         // Next-delta resolved net values for signals marked as "internally driven" (multi-driver net resolution).
         ::fast_io::vector<logic_t> next_net_values{};
+        // Per-delta signal change tracking (for event control scheduling).
+        ::fast_io::vector<::std::uint32_t> change_mark{};
+        ::fast_io::vector<::std::size_t> changed_signals{};
+        ::std::uint32_t change_token{1};
 
         // Per-evaluation memoization to avoid exponential recursion on shared DAGs (e.g. adders).
         ::fast_io::vector<logic_t> expr_eval_cache{};
@@ -6165,17 +6386,22 @@ namespace phy_engine::verilog::digital
         st.mod = __builtin_addressof(m);
         st.values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         st.prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
+        st.comb_prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         for(::std::size_t i{}; i < st.values.size() && i < m.signal_is_const.size() && i < m.signal_const_value.size(); ++i)
         {
             if(m.signal_is_const.index_unchecked(i) != 0u)
             {
                 st.values.index_unchecked(i) = m.signal_const_value.index_unchecked(i);
                 st.prev_values.index_unchecked(i) = m.signal_const_value.index_unchecked(i);
+                st.comb_prev_values.index_unchecked(i) = m.signal_const_value.index_unchecked(i);
             }
         }
         st.events.clear();
         st.nba_queue.clear();
         st.next_net_values.clear();
+        st.change_mark.clear();
+        st.changed_signals.clear();
+        st.change_token = 1;
         st.expr_eval_cache.clear();
         st.expr_eval_mark.clear();
         st.expr_eval_token = 1;
@@ -6327,6 +6553,19 @@ namespace phy_engine::verilog::digital
 
     namespace runtime_details
     {
+        inline ::std::uint32_t begin_change_epoch(module_state& st) noexcept
+        {
+            st.changed_signals.clear();
+            ++st.change_token;
+            if(st.change_token == 0)
+            {
+                st.change_token = 1;
+                ::std::fill(st.change_mark.begin(), st.change_mark.end(), 0u);
+            }
+            if(st.change_mark.size() < st.values.size()) { st.change_mark.resize(st.values.size()); }
+            return st.change_token;
+        }
+
         inline bool assign_signal(module_state& st, ::std::size_t sig, logic_t v) noexcept
         {
             if(sig >= st.values.size()) { return false; }
@@ -6334,6 +6573,12 @@ namespace phy_engine::verilog::digital
             if(dst != v)
             {
                 dst = v;
+                if(st.change_mark.size() < st.values.size()) { st.change_mark.resize(st.values.size()); }
+                if(st.change_mark.index_unchecked(sig) != st.change_token)
+                {
+                    st.change_mark.index_unchecked(sig) = st.change_token;
+                    st.changed_signals.push_back(sig);
+                }
                 return true;
             }
             return false;
@@ -6485,7 +6730,33 @@ namespace phy_engine::verilog::digital
                 }
                 case stmt_node::kind::case_stmt:
                 {
-                    auto const key{normalize_z_to_x(eval_expr_cached(m, n.case_expr_root, st))};
+                    ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
+                    ::fast_io::vector<logic_t> key_bits{};
+                    key_bits.resize(w);
+                    if(n.case_expr_roots.empty())
+                    {
+                        key_bits.index_unchecked(0) = logic_t::indeterminate_state;
+                    }
+                    else
+                    {
+                        for(::std::size_t i{}; i < w; ++i) { key_bits.index_unchecked(i) = eval_expr_cached(m, n.case_expr_roots.index_unchecked(i), st); }
+                    }
+
+                    auto bit_matches = [&](logic_t a, logic_t b) noexcept -> bool
+                    {
+                        switch(n.ck)
+                        {
+                            case stmt_node::case_kind::normal: return a == b;
+                            case stmt_node::case_kind::casez:
+                                if(a == logic_t::high_impedence_state || b == logic_t::high_impedence_state) { return true; }
+                                return a == b;
+                            case stmt_node::case_kind::casex:
+                                if(is_unknown(normalize_z_to_x(a)) || is_unknown(normalize_z_to_x(b))) { return true; }
+                                return a == b;
+                            default: return a == b;
+                        }
+                    };
+
                     case_item const* def{};
                     case_item const* match{};
 
@@ -6496,11 +6767,20 @@ namespace phy_engine::verilog::digital
                             def = __builtin_addressof(ci);
                             continue;
                         }
-                        if(normalize_z_to_x(ci.match) == key)
+                        if(ci.match_roots.size() != w) { continue; }
+                        bool ok{true};
+                        for(::std::size_t i{}; i < w; ++i)
                         {
-                            match = __builtin_addressof(ci);
-                            break;
+                            auto const mb{eval_expr_cached(m, ci.match_roots.index_unchecked(i), st)};
+                            if(!bit_matches(key_bits.index_unchecked(i), mb))
+                            {
+                                ok = false;
+                                break;
+                            }
                         }
+                        if(!ok) { continue; }
+                        match = __builtin_addressof(ci);
+                        break;
                     }
 
                     auto const* chosen{match ? match : def};
@@ -6508,6 +6788,36 @@ namespace phy_engine::verilog::digital
 
                     bool changed{};
                     for(auto const sub: chosen->stmts) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    return changed;
+                }
+                case stmt_node::kind::for_stmt:
+                {
+                    constexpr ::std::size_t max_iter{4096};
+                    bool changed{};
+
+                    if(n.init_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.init_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        auto const c{normalize_z_to_x(eval_expr_cached(m, n.expr_root, st))};
+                        if(c != logic_t::true_state) { break; }
+
+                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+                        if(n.step_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.step_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    }
+
+                    return changed;
+                }
+                case stmt_node::kind::while_stmt:
+                {
+                    constexpr ::std::size_t max_iter{4096};
+                    bool changed{};
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        auto const c{normalize_z_to_x(eval_expr_cached(m, n.expr_root, st))};
+                        if(c != logic_t::true_state) { break; }
+                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    }
                     return changed;
                 }
                 default: return false;
@@ -6558,16 +6868,33 @@ namespace phy_engine::verilog::digital
 
             for(auto const& ff: m.always_ffs)
             {
-                if(ff.clk_signal >= st.values.size() || ff.clk_signal >= st.prev_values.size()) { continue; }
-
-                auto const clk_prev{normalize_z_to_x(st.prev_values.index_unchecked(ff.clk_signal))};
-                auto const clk_now{normalize_z_to_x(st.values.index_unchecked(ff.clk_signal))};
-
                 bool fire{};
-                if(ff.posedge) { fire = (clk_prev == logic_t::false_state) && (clk_now == logic_t::true_state); }
-                else
+                for(auto const& ev: ff.events)
                 {
-                    fire = (clk_prev == logic_t::true_state) && (clk_now == logic_t::false_state);
+                    if(ev.signal >= st.values.size() || ev.signal >= st.prev_values.size()) { continue; }
+                    auto const prev{st.prev_values.index_unchecked(ev.signal)};
+                    auto const now{st.values.index_unchecked(ev.signal)};
+
+                    switch(ev.k)
+                    {
+                        case sensitivity_event::kind::posedge:
+                        {
+                            auto const a{normalize_z_to_x(prev)};
+                            auto const b{normalize_z_to_x(now)};
+                            fire = fire || ((a == logic_t::false_state) && (b == logic_t::true_state));
+                            break;
+                        }
+                        case sensitivity_event::kind::negedge:
+                        {
+                            auto const a{normalize_z_to_x(prev)};
+                            auto const b{normalize_z_to_x(now)};
+                            fire = fire || ((a == logic_t::true_state) && (b == logic_t::false_state));
+                            break;
+                        }
+                        case sensitivity_event::kind::level:
+                        default: fire = fire || (prev != now); break;
+                    }
+                    if(fire) { break; }
                 }
 
                 if(!fire) { continue; }
@@ -6576,7 +6903,7 @@ namespace phy_engine::verilog::digital
             }
         }
 
-        inline bool run_comb_local(instance_state& inst, ::std::uint64_t tick) noexcept
+        inline bool run_comb_local(instance_state& inst, ::std::uint64_t tick, ::std::uint32_t trigger_token, bool any_triggered) noexcept
         {
             if(inst.mod == nullptr) { return false; }
             auto const& m{*inst.mod};
@@ -6585,7 +6912,22 @@ namespace phy_engine::verilog::digital
             bool changed{};
             for(auto const& ac: m.always_combs)
             {
-                for(auto const root: ac.roots) { changed = exec_stmt(m, ac.stmt_nodes, root, st, tick, true) || changed; }
+                bool run{};
+                if(ac.is_star) { run = any_triggered; }
+                else
+                {
+                    for(auto const sig: ac.sens_signals)
+                    {
+                        if(sig < st.change_mark.size() && st.change_mark.index_unchecked(sig) == trigger_token)
+                        {
+                            run = true;
+                            break;
+                        }
+                    }
+                }
+
+                if(!run) { continue; }
+                for(auto const root: ac.roots) { changed = exec_stmt(m, ac.stmt_nodes, root, st, tick, false) || changed; }
             }
 
             for(auto const& a: m.assigns)
@@ -6675,10 +7017,26 @@ namespace phy_engine::verilog::digital
         inline bool comb_resolve(instance_state& inst, ::std::uint64_t tick) noexcept
         {
             constexpr ::std::size_t max_iter{64};
-            bool any_changed{};
+            if(inst.mod == nullptr) { return false; }
+            auto& st{inst.state};
 
+            if(st.comb_prev_values.size() != st.values.size()) { st.comb_prev_values = st.prev_values; }
+            if(st.change_mark.size() < st.values.size()) { st.change_mark.resize(st.values.size()); }
+
+            // Initial trigger set: signals that changed since the last combinational resolution.
+            ::std::uint32_t trigger_token{begin_change_epoch(st)};
+            bool any_triggered{};
+            for(::std::size_t i{}; i < st.values.size() && i < st.comb_prev_values.size(); ++i)
+            {
+                if(st.values.index_unchecked(i) == st.comb_prev_values.index_unchecked(i)) { continue; }
+                st.change_mark.index_unchecked(i) = trigger_token;
+                any_triggered = true;
+            }
+
+            bool any_changed{};
             for(::std::size_t iter{}; iter < max_iter; ++iter)
             {
+                ::std::uint32_t const record_token{begin_change_epoch(st)};
                 prepare_net_drives(inst);
                 bool changed{};
 
@@ -6698,13 +7056,18 @@ namespace phy_engine::verilog::digital
                     (void)propagate_child_to_parent(*child_ptr, inst);
                 }
 
-                changed = run_comb_local(inst, tick) || changed;
+                changed = run_comb_local(inst, tick, trigger_token, any_triggered) || changed;
                 changed = apply_net_drives(inst) || changed;
+                changed = apply_nba(inst.state) || changed;
 
                 if(!changed) { break; }
                 any_changed = true;
+                trigger_token = record_token;
+                any_triggered = !st.changed_signals.empty();
             }
 
+            // Update the "last resolved" snapshot for event scheduling.
+            st.comb_prev_values = st.values;
             return any_changed;
         }
 
@@ -6722,6 +7085,7 @@ namespace phy_engine::verilog::digital
         inline void update_prev_recursive(instance_state& inst) noexcept
         {
             inst.state.prev_values = inst.state.values;
+            inst.state.comb_prev_values = inst.state.values;
             for(auto& c: inst.children)
             {
                 if(!c) [[unlikely]] { continue; }
@@ -6962,8 +7326,6 @@ namespace phy_engine::verilog::digital
     inline void simulate(instance_state& top, ::std::uint64_t tick, bool process_sequential) noexcept
     {
         runtime_details::sequential_pass(top, tick, process_sequential);
-        (void)runtime_details::comb_resolve(top, tick);
-        (void)runtime_details::apply_nba_recursive(top);
         (void)runtime_details::comb_resolve(top, tick);
         runtime_details::update_prev_recursive(top);
     }

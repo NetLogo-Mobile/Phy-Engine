@@ -12,8 +12,9 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - Decls: `input`/`output`/`inout`, `wire`/`reg`, vectors `[msb:lsb]`, `output reg`
 - Continuous assign: `assign lhs = expr;` (lhs may include dynamic selects)
 - Always blocks:
-  - `always @*` / `always @(*)` combinational (`if`/`case`/begin-end; blocking `=`)
-  - `always @(posedge/negedge clk)` sequential (nonblocking `<=`)
+  - `always @*` / `always @(*)` / `always_comb` combinational (`if`/`case`/begin-end; blocking `=` or nonblocking `<=`)
+  - `always @(a or b or c)` event control lists (level-sensitive) for scheduling
+  - `always @(posedge/negedge clk)` / `always_ff @(posedge clk or negedge rst_n)` sequential (nonblocking `<=`)
 - Expressions:
   - Bitwise: `~ & ^ |`
   - Logical: `&& || !`
@@ -55,11 +56,11 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - [x] Multiple drivers / net resolution (basic 0/1/X/Z; no strength modeling)
 
 ### Statements / Procedural Features
-- [ ] `for` / `while` / `repeat`
-- [ ] `casez` / `casex`
-- [ ] `always_comb` / `always_ff` keywords (current parser uses `always`)
-- [ ] Full event control support (more complex sensitivity/event expressions)
-- [ ] Blocking/nonblocking timing semantics beyond the current simplified scheduler
+- [x] `for` / `while` / `repeat` (repeat count must be constant in this subset)
+- [x] `casez` / `casex`
+- [x] `always_comb` / `always_ff` keywords
+- [x] Event control support (multi-item `@( ... or ... )`, posedge/negedge + level-sensitive lists)
+- [x] Improved blocking/nonblocking timing (delta-cycle + NBA ordering)
 
 ### Port Connections
 - [ ] General expression connections (e.g. `.a(a + b)`), not just name/literal/concat/slice
