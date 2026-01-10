@@ -1196,20 +1196,20 @@ namespace phy_engine::solver
                 }();
                 if(boost_enable)
                 {
-                    double const boost_tol = []() noexcept
+                    double boost_tol = []() noexcept
                     {
                         auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ILU_BOOST_TOL");
                         if(v == nullptr) { return 0.0; }
                         return std::strtod(v, nullptr);
                     }();
-                    double const boost_val = []() noexcept
+                    double boost_val = []() noexcept
                     {
                         auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ILU_BOOST_VAL");
                         if(v == nullptr) { return 1e-12; }
                         return std::strtod(v, nullptr);
                     }();
                     // API is deprecated in CUDA 12+, but still present; ignore return if unavailable at runtime.
-                    (void)cusparseDcsrilu02_numericBoost(cusparse_handle, ilu_info_d, boost_enable, boost_tol, boost_val);
+                    (void)cusparseDcsrilu02_numericBoost(cusparse_handle, ilu_info_d, boost_enable, __builtin_addressof(boost_tol), __builtin_addressof(boost_val));
                 }
             }
 
