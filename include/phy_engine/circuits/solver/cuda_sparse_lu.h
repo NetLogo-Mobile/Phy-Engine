@@ -1465,6 +1465,18 @@ namespace phy_engine::solver
                 rho_old = rho_new;
             }
 
+            // Compute true residual r = b - A*x and its norm for correctness reporting.
+            {
+                // r := b
+                if(cublasDcopy(cublas_handle, n, d_b_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                // v := A*x
+                if(!spmv(d_x_d, d_v_d)) { destroy_events(); return false; }
+                // r := r - v
+                double const minus_one{-1.0};
+                if(cublasDaxpy(cublas_handle, n, &minus_one, d_v_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(cublasDnrm2(cublas_handle, n, d_r_d, 1, &r_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+            }
+
             if(pinned && h_x_d)
             {
                 if(cudaMemcpyAsync(h_x_d, d_x_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost, stream) != cudaSuccess)
@@ -1509,7 +1521,7 @@ namespace phy_engine::solver
             if(debug)
             {
                 std::fprintf(stderr,
-                             "[phy_engine][cuda][ilu0_bicgstab] n=%d nnz=%d it=%d it_max=%d r_rel=%.3e tol=%.3e\n",
+                             "[phy_engine][cuda][ilu0_bicgstab] n=%d nnz=%d it=%d it_max=%d r_rel=%.3e tol=%.3e (true_resid)\n",
                              n,
                              nnz,
                              it,
