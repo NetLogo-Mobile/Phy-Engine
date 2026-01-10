@@ -92,4 +92,23 @@ if(PHY_ENGINE_CUDA_CLANG_TEST)
 
     add_test(NAME cuda_smoke_clang COMMAND "${CMAKE_BINARY_DIR}/cuda/cuda_smoke_clang")
     set_tests_properties(cuda_smoke_clang PROPERTIES SKIP_RETURN_CODE 77)
+
+    set(_phy_cuda_correctness_src "${CMAKE_SOURCE_DIR}/0013.cuda/cuda_random_links_correctness.cu")
+    set_source_files_properties("${_phy_cuda_correctness_src}" PROPERTIES LANGUAGE CXX)
+    add_executable(cuda_random_links_correctness "${_phy_cuda_correctness_src}")
+    set_target_properties(cuda_random_links_correctness PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/cuda")
+
+    target_include_directories(cuda_random_links_correctness PRIVATE "${CMAKE_SOURCE_DIR}/../include" "${PHY_ENGINE_CUDA_PATH}/include")
+    target_compile_options(cuda_random_links_correctness PRIVATE -x cuda "--cuda-path=${PHY_ENGINE_CUDA_PATH}" "--cuda-gpu-arch=${PHY_ENGINE_CUDA_SMOKE_ARCH}")
+    target_link_options(cuda_random_links_correctness PRIVATE "--cuda-path=${PHY_ENGINE_CUDA_PATH}" "--cuda-gpu-arch=${PHY_ENGINE_CUDA_SMOKE_ARCH}")
+    target_link_libraries(cuda_random_links_correctness PRIVATE ${PHY_ENGINE_CUDART_LIBRARY} ${PHY_ENGINE_CUSOLVER_LIBRARY} ${PHY_ENGINE_CUSPARSE_LIBRARY})
+
+    foreach(_dir IN LISTS _phy_cuda_lib_dirs)
+        if(EXISTS "${_dir}")
+            target_link_options(cuda_random_links_correctness PRIVATE "-Wl,-rpath,${_dir}")
+        endif()
+    endforeach()
+
+    add_test(NAME cuda_random_links_correctness COMMAND "${CMAKE_BINARY_DIR}/cuda/cuda_random_links_correctness")
+    set_tests_properties(cuda_random_links_correctness PROPERTIES SKIP_RETURN_CODE 77)
 endif()

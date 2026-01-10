@@ -60,6 +60,13 @@ namespace phy_engine
     struct circult
     {
     public:
+        enum class cuda_solve_policy : ::std::uint_fast8_t
+        {
+            auto_select,
+            force_cpu,
+            force_cuda
+        };
+
         // setting
         ::phy_engine::environment env{};
         ::phy_engine::netlist::netlist nl{};
@@ -105,7 +112,13 @@ namespace phy_engine
         ::Eigen::SparseLU<smXcd> solver{};
 #endif
 
-        inline static constexpr ::std::size_t cuda_node_threshold{100000};
+        inline static constexpr ::std::size_t default_cuda_node_threshold{100000};
+        cuda_solve_policy cuda_policy{cuda_solve_policy::auto_select};
+        ::std::size_t cuda_node_threshold{default_cuda_node_threshold};
+
+        constexpr void set_cuda_policy(cuda_solve_policy p) noexcept { cuda_policy = p; }
+        constexpr void set_cuda_node_threshold(::std::size_t n) noexcept { cuda_node_threshold = n; }
+
 #if (defined(__CUDA__) || defined(__CUDACC__) || defined(__NVCC__)) && !defined(__CUDA_ARCH__)
         ::phy_engine::solver::cuda_sparse_lu cuda_solver{};
 
@@ -887,7 +900,18 @@ namespace phy_engine
                 }
 
 #if (defined(__CUDA__) || defined(__CUDACC__) || defined(__NVCC__)) && !defined(__CUDA_ARCH__)
-                if(node_counter >= cuda_node_threshold && cuda_solver.is_available())
+                bool const want_cuda = [&]() noexcept
+                {
+                    switch(cuda_policy)
+                    {
+                        case cuda_solve_policy::force_cpu: return false;
+                        case cuda_solve_policy::force_cuda: return true;
+                        case cuda_solve_policy::auto_select: [[fallthrough]];
+                        default: return node_counter >= cuda_node_threshold;
+                    }
+                }();
+
+                if(want_cuda && cuda_solver.is_available())
                 {
                     if(row_size > static_cast<::std::size_t>(::std::numeric_limits<int>::max())) [[unlikely]] { return false; }
 
@@ -904,7 +928,8 @@ namespace phy_engine
 
                     auto& cache = cuda_cache;
                     bool rebuilt_pattern{};
-                    bool all_real{(at == ::phy_engine::analyze_type::DC || at == ::phy_engine::analyze_type::OP)};
+                    bool all_real{(at == ::phy_engine::analyze_type::DC || at == ::phy_engine::analyze_type::OP || at == ::phy_engine::analyze_type::TR ||
+                                   at == ::phy_engine::analyze_type::TROP)};
 
                     if(!cache_enabled || cache.row_size != row_size || cache.nnz_size != nnz_size || cache.csr_row_ptr.size() != row_size + 1 ||
                        cache.csr_col_ind.size() != nnz_size)
