@@ -73,7 +73,7 @@ if(PHY_ENGINE_CUDA_CLANG_TEST)
     find_library(PHY_ENGINE_CUSOLVER_LIBRARY cusolver HINTS ${_phy_cuda_lib_dirs} REQUIRED)
     find_library(PHY_ENGINE_CUSPARSE_LIBRARY cusparse HINTS ${_phy_cuda_lib_dirs} REQUIRED)
 
-    set(_phy_cuda_smoke_src "${CMAKE_SOURCE_DIR}/cuda/cuda_smoke_clang.cu")
+    set(_phy_cuda_smoke_src "${CMAKE_SOURCE_DIR}/0013.cuda/cuda_smoke_clang.cu")
     set_source_files_properties("${_phy_cuda_smoke_src}" PROPERTIES LANGUAGE CXX)
     add_executable(cuda_smoke_clang "${_phy_cuda_smoke_src}")
     set_target_properties(cuda_smoke_clang PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/cuda")
