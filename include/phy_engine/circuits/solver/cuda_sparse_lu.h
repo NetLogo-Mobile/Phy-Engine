@@ -292,7 +292,12 @@ namespace phy_engine::solver
 
             if(cudaEventRecord(t_solve_start, stream) != cudaSuccess) { destroy_events(); return false; }
             auto const host_solve0 = ::std::chrono::steady_clock::now();
-            auto const st{cusolverSpZcsrlsvqr(cusolver_handle, n, nnz, descrA, d_values_z, d_row_ptr, d_col_ind, d_b_z, tol, reorder, d_x_z, &singularity)};
+            // Prefer LU for general sparse systems; fallback to QR when LU is unavailable/unsupported.
+            auto st{cusolverSpZcsrlsvlu(cusolver_handle, n, nnz, descrA, d_values_z, d_row_ptr, d_col_ind, d_b_z, tol, reorder, d_x_z, &singularity)};
+            if(st != CUSOLVER_STATUS_SUCCESS)
+            {
+                st = cusolverSpZcsrlsvqr(cusolver_handle, n, nnz, descrA, d_values_z, d_row_ptr, d_col_ind, d_b_z, tol, reorder, d_x_z, &singularity);
+            }
             auto const host_solve1 = ::std::chrono::steady_clock::now();
 
             if(cudaEventRecord(t_solve_end, stream) != cudaSuccess) { destroy_events(); return false; }
@@ -455,6 +460,8 @@ namespace phy_engine::solver
             cusolverStatus_t st{};
             auto const host_solve0 = ::std::chrono::steady_clock::now();
             if(cudaEventRecord(t_solve_start, stream) != cudaSuccess) { destroy_events(); return false; }
+            // Prefer LU for general sparse systems; fallback to QR when LU is unavailable/unsupported.
+            st = cusolverSpDcsrlsvlu(cusolver_handle, n, nnz, descrA, d_values_d, d_row_ptr, d_col_ind, d_b_d, tol, reorder, d_x_d, &singularity);
             if(use_batched_qr)
             {
                 st = prepare_csrqr_real(n, nnz);
