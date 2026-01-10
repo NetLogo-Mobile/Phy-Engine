@@ -1335,9 +1335,9 @@ namespace phy_engine::verilog::digital
     struct task_def
     {
         ::fast_io::vector<::fast_io::u8string> params{};
-        ::fast_io::vector<::std::uint8_t> param_is_output{};  // 1 => output, 0 => input
-        ::fast_io::u8string lhs_param{};                      // which output param is assigned
-        ::fast_io::u8string rhs_expr_text{};                  // expression text for the single assignment body
+        ::fast_io::vector<bool> param_is_output{};  // true => output, false => input
+        ::fast_io::u8string lhs_param{};            // which output param is assigned
+        ::fast_io::u8string rhs_expr_text{};        // expression text for the single assignment body
     };
 
     struct compiled_module
@@ -1354,10 +1354,10 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<::fast_io::u8string> signal_names{};
         ::fast_io::vector<bool> signal_is_reg{};
         ::fast_io::vector<bool> signal_is_signed{};
-        ::fast_io::vector<::std::uint8_t> signal_is_const{};
+        ::fast_io::vector<bool> signal_is_const{};
         // Whether a const signal can be constant-propagated into literals during expression parsing.
         // Parameters must remain overrideable per-instance, so only localparams are foldable.
-        ::fast_io::vector<::std::uint8_t> signal_is_const_foldable{};
+        ::fast_io::vector<bool> signal_is_const_foldable{};
         ::fast_io::vector<logic_t> signal_const_value{};
         ::absl::btree_map<::fast_io::u8string, ::std::size_t> signal_index{};
 
@@ -1759,8 +1759,8 @@ namespace phy_engine::verilog::digital
             m.signal_names.push_back(::fast_io::u8string{name});
             m.signal_is_reg.push_back(false);
             m.signal_is_signed.push_back(false);
-            m.signal_is_const.push_back(0u);
-            m.signal_is_const_foldable.push_back(0u);
+            m.signal_is_const.push_back(false);
+            m.signal_is_const_foldable.push_back(false);
             m.signal_const_value.push_back(logic_t::indeterminate_state);
             m.signal_index.insert({::fast_io::u8string{name}, idx});
             return idx;
@@ -1960,7 +1960,7 @@ namespace phy_engine::verilog::digital
                 m.signal_is_const_foldable.resize(m.signal_names.size());
                 m.signal_const_value.resize(m.signal_names.size());
             }
-            m.signal_is_const.index_unchecked(sig) = 1u;
+            m.signal_is_const.index_unchecked(sig) = true;
             m.signal_const_value.index_unchecked(sig) = v;
         }
 
@@ -1987,7 +1987,7 @@ namespace phy_engine::verilog::digital
                     auto const sig{vd.bits.index_unchecked(pos_from_msb)};
                     bool const b{((value >> bit_from_lsb) & 1u) != 0u};
                     set_const_signal(m, sig, b ? logic_t::true_state : logic_t::false_state);
-                    if(sig < m.signal_is_const_foldable.size()) { m.signal_is_const_foldable.index_unchecked(sig) = is_local ? 1u : 0u; }
+                    if(sig < m.signal_is_const_foldable.size()) { m.signal_is_const_foldable.index_unchecked(sig) = is_local; }
                 }
             }
             else
@@ -1996,7 +1996,7 @@ namespace phy_engine::verilog::digital
                 for(auto const sig: vd.bits)
                 {
                     set_const_signal(m, sig, logic_t::indeterminate_state);
-                    if(sig < m.signal_is_const_foldable.size()) { m.signal_is_const_foldable.index_unchecked(sig) = is_local ? 1u : 0u; }
+                    if(sig < m.signal_is_const_foldable.size()) { m.signal_is_const_foldable.index_unchecked(sig) = is_local; }
                 }
             }
 
@@ -2031,8 +2031,8 @@ namespace phy_engine::verilog::digital
 
                 // Constant-propagate constant signals into literals.
                 if(n.kind == expr_kind::signal && n.signal != SIZE_MAX && n.signal < m->signal_is_const.size() && n.signal < m->signal_const_value.size() &&
-                   m->signal_is_const.index_unchecked(n.signal) != 0u && n.signal < m->signal_is_const_foldable.size() &&
-                   m->signal_is_const_foldable.index_unchecked(n.signal) != 0u)
+                   m->signal_is_const.index_unchecked(n.signal) && n.signal < m->signal_is_const_foldable.size() &&
+                   m->signal_is_const_foldable.index_unchecked(n.signal))
                 {
                     n.kind = expr_kind::literal;
                     n.literal = m->signal_const_value.index_unchecked(n.signal);
@@ -2295,8 +2295,7 @@ namespace phy_engine::verilog::digital
                     case expr_kind::literal: return n.literal;
                     case expr_kind::signal:
                     {
-                        if(n.signal < m->signal_is_const.size() && m->signal_is_const.index_unchecked(n.signal) != 0u &&
-                           n.signal < m->signal_const_value.size())
+                        if(n.signal < m->signal_is_const.size() && m->signal_is_const.index_unchecked(n.signal) && n.signal < m->signal_const_value.size())
                         {
                             return m->signal_const_value.index_unchecked(n.signal);
                         }
@@ -2335,11 +2334,10 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            [[nodiscard]] logic_t
-                eval_const_root_cached(::std::size_t root, ::fast_io::vector<logic_t>& cache, ::fast_io::vector<::std::uint8_t>& ready) noexcept
+            [[nodiscard]] logic_t eval_const_root_cached(::std::size_t root, ::fast_io::vector<logic_t>& cache, ::fast_io::vector<bool>& ready) noexcept
             {
                 if(root >= m->expr_nodes.size()) { return logic_t::indeterminate_state; }
-                if(root < ready.size() && ready.index_unchecked(root) != 0u) { return cache.index_unchecked(root); }
+                if(root < ready.size() && ready.index_unchecked(root)) { return cache.index_unchecked(root); }
 
                 if(ready.size() < m->expr_nodes.size())
                 {
@@ -2347,7 +2345,7 @@ namespace phy_engine::verilog::digital
                     cache.resize(m->expr_nodes.size());
                 }
 
-                ready.index_unchecked(root) = 1u;
+                ready.index_unchecked(root) = true;
 
                 auto const& n{m->expr_nodes.index_unchecked(root)};
                 logic_t v{logic_t::indeterminate_state};
@@ -2356,8 +2354,7 @@ namespace phy_engine::verilog::digital
                     case expr_kind::literal: v = n.literal; break;
                     case expr_kind::signal:
                     {
-                        if(n.signal < m->signal_is_const.size() && m->signal_is_const.index_unchecked(n.signal) != 0u &&
-                           n.signal < m->signal_const_value.size())
+                        if(n.signal < m->signal_is_const.size() && m->signal_is_const.index_unchecked(n.signal) && n.signal < m->signal_const_value.size())
                         {
                             v = m->signal_const_value.index_unchecked(n.signal);
                         }
@@ -2425,9 +2422,9 @@ namespace phy_engine::verilog::digital
                 if(roots.empty()) { return false; }
 
                 ::fast_io::vector<logic_t> cache{};
-                ::fast_io::vector<::std::uint8_t> ready{};
+                ::fast_io::vector<bool> ready{};
                 cache.resize(m->expr_nodes.size());
-                ready.assign(m->expr_nodes.size(), 0u);
+                ready.assign(m->expr_nodes.size(), false);
 
                 // roots: msb->lsb, interpret as unsigned integer
                 ::std::uint64_t value{};
@@ -2459,9 +2456,9 @@ namespace phy_engine::verilog::digital
                 if(roots.empty()) { return false; }
 
                 ::fast_io::vector<logic_t> cache{};
-                ::fast_io::vector<::std::uint8_t> ready{};
+                ::fast_io::vector<bool> ready{};
                 cache.resize(m->expr_nodes.size());
-                ready.assign(m->expr_nodes.size(), 0u);
+                ready.assign(m->expr_nodes.size(), false);
 
                 ::std::size_t const w{roots.size()};
                 auto const msb_raw{normalize_z_to_x(eval_const_root_cached(roots.front_unchecked(), cache, ready))};
@@ -5104,7 +5101,7 @@ namespace phy_engine::verilog::digital
                         if(!pn.empty())
                         {
                             td.params.push_back(pn);
-                            td.param_is_output.push_back(is_output ? 1u : 0u);
+                            td.param_is_output.push_back(is_output);
                         }
 
                         if(p.accept_sym(u8')')) { break; }
@@ -5461,7 +5458,7 @@ namespace phy_engine::verilog::digital
                                 }
                             }
 
-                            bool const is_out{pi < td.param_is_output.size() && td.param_is_output.index_unchecked(pi) != 0u};
+                            bool const is_out{pi < td.param_is_output.size() && td.param_is_output.index_unchecked(pi)};
                             if(is_out)
                             {
                                 lvalue_ref lv{};
@@ -6745,7 +6742,7 @@ namespace phy_engine::verilog::digital
         st.comb_prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         for(::std::size_t i{}; i < st.values.size() && i < m.signal_is_const.size() && i < m.signal_const_value.size(); ++i)
         {
-            if(m.signal_is_const.index_unchecked(i) != 0u)
+            if(m.signal_is_const.index_unchecked(i))
             {
                 st.values.index_unchecked(i) = m.signal_const_value.index_unchecked(i);
                 st.prev_values.index_unchecked(i) = m.signal_const_value.index_unchecked(i);
@@ -6883,7 +6880,7 @@ namespace phy_engine::verilog::digital
         ::fast_io::u8string instance_name{};
         module_state state{};
         // Bitmask over `state.values` indices: 1 => net has internal driver(s) and is re-resolved each comb delta.
-        ::fast_io::vector<::std::uint8_t> driven_nets{};
+        ::fast_io::vector<bool> driven_nets{};
         // For each bit-level port in `mod->ports`, a binding into the parent instance.
         ::fast_io::vector<port_binding> bindings{};
         // For output/inout ports: drives into the parent (post-width-coercion mapping).
@@ -6966,12 +6963,12 @@ namespace phy_engine::verilog::digital
         {
             if(inst.mod == nullptr) { return; }
             auto const& m{*inst.mod};
-            inst.driven_nets.assign(m.signal_names.size(), 0u);
+            inst.driven_nets.assign(m.signal_names.size(), false);
             for(auto const& a: m.assigns)
             {
                 if(a.lhs_signal >= inst.driven_nets.size()) { continue; }
                 if(a.lhs_signal < m.signal_is_reg.size() && m.signal_is_reg.index_unchecked(a.lhs_signal)) { continue; }
-                inst.driven_nets.index_unchecked(a.lhs_signal) = 1u;
+                inst.driven_nets.index_unchecked(a.lhs_signal) = true;
             }
         }
 
@@ -6981,10 +6978,10 @@ namespace phy_engine::verilog::digital
             auto& st{inst.state};
             ::std::size_t const n{st.values.size()};
             if(st.next_net_values.size() < n) { st.next_net_values.resize(n, logic_t::high_impedence_state); }
-            if(inst.driven_nets.size() < n) { inst.driven_nets.resize(n, 0u); }
+            if(inst.driven_nets.size() < n) { inst.driven_nets.resize(n, false); }
             for(::std::size_t i{}; i < n; ++i)
             {
-                if(inst.driven_nets.index_unchecked(i) == 0u) { continue; }
+                if(!inst.driven_nets.index_unchecked(i)) { continue; }
                 st.next_net_values.index_unchecked(i) = logic_t::high_impedence_state;
             }
         }
@@ -7004,7 +7001,7 @@ namespace phy_engine::verilog::digital
 
             // If it's not marked as internally-driven, preserve the existing single-driver behavior
             // (e.g., top-level inputs set by the embedding engine/tests).
-            if(sig >= inst.driven_nets.size() || inst.driven_nets.index_unchecked(sig) == 0u)
+            if(sig >= inst.driven_nets.size() || !inst.driven_nets.index_unchecked(sig))
             {
                 (void)assign_signal(st, sig, v);
                 return;
@@ -7026,7 +7023,7 @@ namespace phy_engine::verilog::digital
             bool changed{};
             for(::std::size_t i{}; i < n; ++i)
             {
-                if(inst.driven_nets.index_unchecked(i) == 0u) { continue; }
+                if(!inst.driven_nets.index_unchecked(i)) { continue; }
                 if(i < m.signal_is_reg.size() && m.signal_is_reg.index_unchecked(i)) { continue; }
                 changed = assign_signal(st, i, st.next_net_values.index_unchecked(i)) || changed;
             }
@@ -7785,7 +7782,7 @@ namespace phy_engine::verilog::digital
                     if(d.parent_signal == SIZE_MAX) { continue; }
                     if(d.parent_signal >= parent.driven_nets.size()) { continue; }
                     if(d.parent_signal < pm.signal_is_reg.size() && pm.signal_is_reg.index_unchecked(d.parent_signal)) { continue; }
-                    parent.driven_nets.index_unchecked(d.parent_signal) = 1u;
+                    parent.driven_nets.index_unchecked(d.parent_signal) = true;
                 }
 
                 elaborate_children(d, *child, depth + 1);
