@@ -1048,6 +1048,10 @@ namespace phy_engine::solver
                                                         bool copy_pattern) noexcept
         {
             if(!ensure_ilu_workspace_real(n, nnz)) { return false; }
+            bool const debug = []() noexcept {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
+                return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+            }();
 
             auto t_h2d_start = cudaEvent_t{};
             auto t_h2d_end = cudaEvent_t{};
@@ -1502,6 +1506,17 @@ namespace phy_engine::solver
             out.solve_total_host_ms = out.h2d_ms + out.solve_host_ms + out.d2h_ms;
 
             destroy_events();
+            if(debug)
+            {
+                std::fprintf(stderr,
+                             "[phy_engine][cuda][ilu0_bicgstab] n=%d nnz=%d it=%d it_max=%d r_rel=%.3e tol=%.3e\n",
+                             n,
+                             nnz,
+                             it,
+                             it_max,
+                             (b_norm != 0.0) ? (r_norm / b_norm) : 0.0,
+                             tol);
+            }
             return (r_norm / b_norm) < tol * 10;
         }
 
