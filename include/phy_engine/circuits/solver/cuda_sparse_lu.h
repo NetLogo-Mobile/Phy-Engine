@@ -10,6 +10,7 @@
     #include <cstdlib>
     #include <memory>
     #include <utility>
+    #include <vector>
 
     #include <cuda_runtime.h>
     #include <cuComplex.h>
@@ -188,6 +189,20 @@ namespace phy_engine::solver
             d_t_d = other.d_t_d;
             d_y_d = other.d_y_d;
             d_z_d = other.d_z_d;
+            jacobi_n_d = other.jacobi_n_d;
+            d_jacobi_row_ptr = other.d_jacobi_row_ptr;
+            d_jacobi_col_ind = other.d_jacobi_col_ind;
+            d_jacobi_inv_diag = other.d_jacobi_inv_diag;
+            spmatDinv_d = other.spmatDinv_d;
+            spmvD_buffer_d = other.spmvD_buffer_d;
+            spmvD_buffer_bytes_d = other.spmvD_buffer_bytes_d;
+            csrqr_info_d = other.csrqr_info_d;
+            csrqr_buffer_d = other.csrqr_buffer_d;
+            csrqr_buffer_bytes_d = other.csrqr_buffer_bytes_d;
+            csrqr_n_d = other.csrqr_n_d;
+            csrqr_nnz_d = other.csrqr_nnz_d;
+            last_csrqr_internal_bytes_d = other.last_csrqr_internal_bytes_d;
+            last_csrqr_workspace_bytes_d = other.last_csrqr_workspace_bytes_d;
 
             other.available = false;
             other.cublas_handle = nullptr;
@@ -241,6 +256,20 @@ namespace phy_engine::solver
             other.spsvL_buffer_bytes_d = 0;
             other.spsvU_buffer_d = nullptr;
             other.spsvU_buffer_bytes_d = 0;
+            other.jacobi_n_d = 0;
+            other.d_jacobi_row_ptr = nullptr;
+            other.d_jacobi_col_ind = nullptr;
+            other.d_jacobi_inv_diag = nullptr;
+            other.spmatDinv_d = nullptr;
+            other.spmvD_buffer_d = nullptr;
+            other.spmvD_buffer_bytes_d = 0;
+            other.csrqr_info_d = nullptr;
+            other.csrqr_buffer_d = nullptr;
+            other.csrqr_buffer_bytes_d = 0;
+            other.csrqr_n_d = 0;
+            other.csrqr_nnz_d = 0;
+            other.last_csrqr_internal_bytes_d = 0;
+            other.last_csrqr_workspace_bytes_d = 0;
             other.d_ilu_vals_d = nullptr;
             other.d_r_d = nullptr;
             other.d_rhat_d = nullptr;
@@ -451,10 +480,11 @@ namespace phy_engine::solver
 
             static int const solver_mode = []() noexcept
             {
-                // 0: QR (default), 1: ILU0+BiCGSTAB
+                // 0: QR (default), 1: ILU0+BiCGSTAB, 2: CG+Jacobi (SPD/nodal systems)
                 auto const* v = ::std::getenv("PHY_ENGINE_CUDA_SOLVER");
                 if(v == nullptr) { return 0; }
                 if(*v == 'i' || *v == 'I') { return 1; }
+                if(*v == 'c' || *v == 'C') { return 2; }
                 return 0;
             }();
 
@@ -468,6 +498,18 @@ namespace phy_engine::solver
                 if(debug)
                 {
                     std::fprintf(stderr, "[phy_engine][cuda] ilu0_bicgstab failed, falling back to QR solver\n");
+                }
+            }
+            else if(solver_mode == 2)
+            {
+                if(solve_csr_real_cg_jacobi(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern)) { return true; }
+                static bool const debug = []() noexcept {
+                    auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
+                    return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+                }();
+                if(debug)
+                {
+                    std::fprintf(stderr, "[phy_engine][cuda] cg_jacobi failed, falling back to QR solver\n");
                 }
             }
 
@@ -725,6 +767,15 @@ namespace phy_engine::solver
         void* spsvU_buffer_d{};
         size_t spsvU_buffer_bytes_d{};
 
+        // Jacobi preconditioner as diagonal SpMV: z = D^{-1} r (real-only CG path)
+        int jacobi_n_d{};
+        int* d_jacobi_row_ptr{};
+        int* d_jacobi_col_ind{};
+        double* d_jacobi_inv_diag{};
+        cusparseSpMatDescr_t spmatDinv_d{};
+        void* spmvD_buffer_d{};
+        size_t spmvD_buffer_bytes_d{};
+
         double* d_ilu_vals_d{};
         double* d_r_d{};
         double* d_rhat_d{};
@@ -794,6 +845,19 @@ namespace phy_engine::solver
             spmv_buffer_bytes_d = 0;
             spsvL_buffer_bytes_d = 0;
             spsvU_buffer_bytes_d = 0;
+
+            if(spmatDinv_d) { cusparseDestroySpMat(spmatDinv_d); }
+            spmatDinv_d = nullptr;
+            if(spmvD_buffer_d) { cudaFree(spmvD_buffer_d); }
+            spmvD_buffer_d = nullptr;
+            spmvD_buffer_bytes_d = 0;
+            if(d_jacobi_row_ptr) { cudaFree(d_jacobi_row_ptr); }
+            if(d_jacobi_col_ind) { cudaFree(d_jacobi_col_ind); }
+            if(d_jacobi_inv_diag) { cudaFree(d_jacobi_inv_diag); }
+            d_jacobi_row_ptr = nullptr;
+            d_jacobi_col_ind = nullptr;
+            d_jacobi_inv_diag = nullptr;
+            jacobi_n_d = 0;
 
             if(d_row_ptr) { cudaFree(d_row_ptr); }
             if(d_col_ind) { cudaFree(d_col_ind); }
@@ -1045,6 +1109,357 @@ namespace phy_engine::solver
             return true;
         }
 
+        [[nodiscard]] bool ensure_jacobi_workspace_real(int n) noexcept
+        {
+            if(n <= 0) { return false; }
+            if(jacobi_n_d == n && d_jacobi_row_ptr && d_jacobi_col_ind && d_jacobi_inv_diag && spmatDinv_d) { return true; }
+
+            if(spmatDinv_d) { cusparseDestroySpMat(spmatDinv_d); spmatDinv_d = nullptr; }
+            if(spmvD_buffer_d) { cudaFree(spmvD_buffer_d); spmvD_buffer_d = nullptr; spmvD_buffer_bytes_d = 0; }
+            if(d_jacobi_row_ptr) { cudaFree(d_jacobi_row_ptr); d_jacobi_row_ptr = nullptr; }
+            if(d_jacobi_col_ind) { cudaFree(d_jacobi_col_ind); d_jacobi_col_ind = nullptr; }
+            if(d_jacobi_inv_diag) { cudaFree(d_jacobi_inv_diag); d_jacobi_inv_diag = nullptr; }
+            jacobi_n_d = 0;
+
+            if(cudaMalloc(reinterpret_cast<void**>(&d_jacobi_row_ptr), static_cast<::std::size_t>(n + 1) * sizeof(int)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_jacobi_col_ind), static_cast<::std::size_t>(n) * sizeof(int)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_jacobi_inv_diag), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+
+            // Fill row_ptr=[0..n], col_ind=[0..n-1] on host and copy.
+            ::std::vector<int> h_rp{};
+            ::std::vector<int> h_ci{};
+            h_rp.resize(static_cast<::std::size_t>(n + 1));
+            h_ci.resize(static_cast<::std::size_t>(n));
+            for(int i{}; i <= n; ++i) { h_rp[static_cast<::std::size_t>(i)] = i; }
+            for(int i{}; i < n; ++i) { h_ci[static_cast<::std::size_t>(i)] = i; }
+            if(cudaMemcpyAsync(d_jacobi_row_ptr, h_rp.data(), static_cast<::std::size_t>(n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                return false;
+            }
+            if(cudaMemcpyAsync(d_jacobi_col_ind, h_ci.data(), static_cast<::std::size_t>(n) * sizeof(int), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                return false;
+            }
+            if(cudaStreamSynchronize(stream) != cudaSuccess) { return false; }
+
+            if(cusparseCreateCsr(&spmatDinv_d,
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(n),
+                                d_jacobi_row_ptr,
+                                d_jacobi_col_ind,
+                                d_jacobi_inv_diag,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_BASE_ZERO,
+                                CUDA_R_64F) != CUSPARSE_STATUS_SUCCESS)
+            {
+                return false;
+            }
+
+            jacobi_n_d = n;
+            return true;
+        }
+
+        [[nodiscard]] bool solve_csr_real_cg_jacobi(int n,
+                                                    int nnz,
+                                                    int const* row_ptr_host,
+                                                    int const* col_ind_host,
+                                                    double const* values_host,
+                                                    double const* b_host,
+                                                    double* x_host,
+                                                    timings& out,
+                                                    bool copy_pattern) noexcept
+        {
+            bool const debug = []() noexcept {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
+                return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+            }();
+            // Reuse existing allocator to ensure Krylov vectors and SpMV descriptors are available.
+            if(!ensure_ilu_workspace_real(n, nnz)) { return false; }
+            if(!ensure_jacobi_workspace_real(n)) { return false; }
+
+            auto t_h2d_start = cudaEvent_t{};
+            auto t_h2d_end = cudaEvent_t{};
+            auto t_solve_start = cudaEvent_t{};
+            auto t_solve_end = cudaEvent_t{};
+            auto t_d2h_end = cudaEvent_t{};
+            if(cudaEventCreate(&t_h2d_start) != cudaSuccess) { return false; }
+            if(cudaEventCreate(&t_h2d_end) != cudaSuccess) { cudaEventDestroy(t_h2d_start); return false; }
+            if(cudaEventCreate(&t_solve_start) != cudaSuccess)
+            {
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+                return false;
+            }
+            if(cudaEventCreate(&t_solve_end) != cudaSuccess)
+            {
+                cudaEventDestroy(t_solve_start);
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+                return false;
+            }
+            if(cudaEventCreate(&t_d2h_end) != cudaSuccess)
+            {
+                cudaEventDestroy(t_solve_end);
+                cudaEventDestroy(t_solve_start);
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+                return false;
+            }
+
+            auto const destroy_events = [&]() noexcept {
+                cudaEventDestroy(t_d2h_end);
+                cudaEventDestroy(t_solve_end);
+                cudaEventDestroy(t_solve_start);
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+            };
+
+            if(cudaEventRecord(t_h2d_start, stream) != cudaSuccess) { destroy_events(); return false; }
+
+            bool const must_copy_pattern{copy_pattern || !pattern_uploaded || pattern_n != n || pattern_nnz != nnz};
+            if(must_copy_pattern)
+            {
+                if(cudaMemcpyAsync(d_row_ptr, row_ptr_host, static_cast<::std::size_t>(n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(cudaMemcpyAsync(d_col_ind, col_ind_host, static_cast<::std::size_t>(nnz) * sizeof(int), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+                pattern_uploaded = true;
+                pattern_n = n;
+                pattern_nnz = nnz;
+            }
+
+            double const* values_src{values_host};
+            double const* b_src{b_host};
+            if(pinned && h_values_d && h_b_d)
+            {
+                std::memcpy(h_values_d, values_host, static_cast<::std::size_t>(nnz) * sizeof(double));
+                std::memcpy(h_b_d, b_host, static_cast<::std::size_t>(n) * sizeof(double));
+                values_src = h_values_d;
+                b_src = h_b_d;
+            }
+            if(cudaMemcpyAsync(d_values_d, values_src, static_cast<::std::size_t>(nnz) * sizeof(double), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cudaMemcpyAsync(d_b_d, b_src, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+
+            // Build/update Jacobi inverse diagonal on host and upload.
+            ::std::vector<double> invd{};
+            invd.resize(static_cast<::std::size_t>(n));
+            for(int i{}; i < n; ++i) { invd[static_cast<::std::size_t>(i)] = 1.0; }
+            for(int r{}; r < n; ++r)
+            {
+                double diag{};
+                for(int k = row_ptr_host[r]; k < row_ptr_host[r + 1]; ++k)
+                {
+                    if(col_ind_host[k] == r)
+                    {
+                        diag = values_host[k];
+                        break;
+                    }
+                }
+                double const ad = diag < 0.0 ? -diag : diag;
+                if(ad < 1e-30) { invd[static_cast<::std::size_t>(r)] = 1.0; }
+                else { invd[static_cast<::std::size_t>(r)] = 1.0 / diag; }
+            }
+            if(cudaMemcpyAsync(d_jacobi_inv_diag, invd.data(), static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+
+            if(cudaEventRecord(t_h2d_end, stream) != cudaSuccess) { destroy_events(); return false; }
+
+            auto const it_max = []() noexcept -> int
+            {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ITER_MAX");
+                if(v == nullptr) { return 500; }
+                return static_cast<int>(std::strtol(v, nullptr, 10));
+            }();
+            auto const tol = []() noexcept -> double
+            {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ITER_TOL");
+                if(v == nullptr) { return 1e-10; }
+                return std::strtod(v, nullptr);
+            }();
+
+            auto const host_solve0 = ::std::chrono::steady_clock::now();
+            if(cudaEventRecord(t_solve_start, stream) != cudaSuccess) { destroy_events(); return false; }
+
+            // Ensure SpMV buffers for A and Dinv exist.
+            {
+                double const one{1.0};
+                double const zero{0.0};
+                (void)cusparseDnVecSetValues(vec_in_d, d_p_d);
+                (void)cusparseDnVecSetValues(vec_out_d, d_v_d);
+                size_t bufA{};
+                if(cusparseSpMV_bufferSize(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, spmatA_d, vec_in_d, &zero, vec_out_d,
+                                           CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &bufA) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(bufA > spmv_buffer_bytes_d)
+                {
+                    if(spmv_buffer_d) { cudaFree(spmv_buffer_d); }
+                    spmv_buffer_d = nullptr;
+                    if(cudaMalloc(&spmv_buffer_d, bufA) != cudaSuccess)
+                    {
+                        destroy_events();
+                        return false;
+                    }
+                    spmv_buffer_bytes_d = bufA;
+                }
+
+                (void)cusparseDnVecSetValues(vec_in_d, d_r_d);
+                (void)cusparseDnVecSetValues(vec_out_d, d_z_d);
+                size_t bufD{};
+                if(cusparseSpMV_bufferSize(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, spmatDinv_d, vec_in_d, &zero, vec_out_d,
+                                           CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, &bufD) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(bufD > spmvD_buffer_bytes_d)
+                {
+                    if(spmvD_buffer_d) { cudaFree(spmvD_buffer_d); }
+                    spmvD_buffer_d = nullptr;
+                    if(cudaMalloc(&spmvD_buffer_d, bufD) != cudaSuccess)
+                    {
+                        destroy_events();
+                        return false;
+                    }
+                    spmvD_buffer_bytes_d = bufD;
+                }
+            }
+
+            auto const spmvA = [&](double const* xin, double* yout) noexcept -> bool
+            {
+                double const one{1.0};
+                double const zero{0.0};
+                (void)cusparseDnVecSetValues(vec_in_d, const_cast<double*>(xin));
+                (void)cusparseDnVecSetValues(vec_out_d, yout);
+                return cusparseSpMV(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, spmatA_d, vec_in_d, &zero, vec_out_d,
+                                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, spmv_buffer_d) == CUSPARSE_STATUS_SUCCESS;
+            };
+            auto const apply_jacobi = [&](double const* rin, double* zout) noexcept -> bool
+            {
+                double const one{1.0};
+                double const zero{0.0};
+                (void)cusparseDnVecSetValues(vec_in_d, const_cast<double*>(rin));
+                (void)cusparseDnVecSetValues(vec_out_d, zout);
+                return cusparseSpMV(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &one, spmatDinv_d, vec_in_d, &zero, vec_out_d,
+                                    CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, spmvD_buffer_d) == CUSPARSE_STATUS_SUCCESS;
+            };
+
+            double b_norm{};
+            if(cublasDnrm2(cublas_handle, n, d_b_d, 1, &b_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+            if(b_norm == 0.0) { b_norm = 1.0; }
+
+            // x=0, r=b, z=D^{-1}r, p=z
+            if(cudaMemsetAsync(d_x_d, 0, static_cast<::std::size_t>(n) * sizeof(double), stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cublasDcopy(cublas_handle, n, d_b_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+            if(!apply_jacobi(d_r_d, d_z_d)) { destroy_events(); return false; }
+            if(cublasDcopy(cublas_handle, n, d_z_d, 1, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+
+            double rz{};
+            if(cublasDdot(cublas_handle, n, d_r_d, 1, d_z_d, 1, &rz) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+
+            int it{};
+            double r_norm{};
+            for(; it < it_max; ++it)
+            {
+                if(!spmvA(d_p_d, d_v_d)) { destroy_events(); return false; } // v = A*p
+                double pAp{};
+                if(cublasDdot(cublas_handle, n, d_p_d, 1, d_v_d, 1, &pAp) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(pAp == 0.0) { break; }
+                double const alpha = rz / pAp;
+                if(cublasDaxpy(cublas_handle, n, &alpha, d_p_d, 1, d_x_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                double const neg_alpha = -alpha;
+                if(cublasDaxpy(cublas_handle, n, &neg_alpha, d_v_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(cublasDnrm2(cublas_handle, n, d_r_d, 1, &r_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if((r_norm / b_norm) < tol) { break; }
+
+                if(!apply_jacobi(d_r_d, d_z_d)) { destroy_events(); return false; }
+                double rz_new{};
+                if(cublasDdot(cublas_handle, n, d_r_d, 1, d_z_d, 1, &rz_new) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                double const beta = rz_new / rz;
+                rz = rz_new;
+                if(cublasDscal(cublas_handle, n, &beta, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                double const one{1.0};
+                if(cublasDaxpy(cublas_handle, n, &one, d_z_d, 1, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+            }
+
+            // Compute true residual norm (already r is b-Ax).
+            // If loop ended without updating r, recompute r=b-Ax.
+            if(!(r_norm >= 0.0))
+            {
+                if(cublasDcopy(cublas_handle, n, d_b_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(!spmvA(d_x_d, d_v_d)) { destroy_events(); return false; }
+                double const minus_one{-1.0};
+                if(cublasDaxpy(cublas_handle, n, &minus_one, d_v_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(cublasDnrm2(cublas_handle, n, d_r_d, 1, &r_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+            }
+
+            if(pinned && h_x_d)
+            {
+                if(cudaMemcpyAsync(h_x_d, d_x_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+            }
+            else
+            {
+                if(cudaMemcpyAsync(x_host, d_x_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+            }
+
+            if(cudaEventRecord(t_solve_end, stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cudaEventRecord(t_d2h_end, stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cudaEventSynchronize(t_d2h_end) != cudaSuccess) { destroy_events(); return false; }
+
+            if(pinned && h_x_d) { std::memcpy(x_host, h_x_d, static_cast<::std::size_t>(n) * sizeof(double)); }
+
+            auto const host_solve1 = ::std::chrono::steady_clock::now();
+            float ms_h2d{};
+            float ms_solve{};
+            float ms_d2h{};
+            cudaEventElapsedTime(&ms_h2d, t_h2d_start, t_h2d_end);
+            cudaEventElapsedTime(&ms_solve, t_solve_start, t_solve_end);
+            cudaEventElapsedTime(&ms_d2h, t_solve_end, t_d2h_end);
+            out.h2d_ms = static_cast<double>(ms_h2d);
+            out.solve_ms = static_cast<double>(ms_solve);
+            out.d2h_ms = static_cast<double>(ms_d2h);
+            out.solve_host_ms = ::std::chrono::duration_cast<::std::chrono::duration<double, ::std::milli>>(host_solve1 - host_solve0).count();
+            out.solve_total_host_ms = out.h2d_ms + out.solve_host_ms + out.d2h_ms;
+            destroy_events();
+
+            if(debug)
+            {
+                std::fprintf(stderr, "[phy_engine][cuda][cg_jacobi] n=%d nnz=%d it=%d it_max=%d r_rel=%.3e tol=%.3e\n",
+                             n, nnz, it, it_max, (b_norm != 0.0) ? (r_norm / b_norm) : 0.0, tol);
+            }
+
+            return (r_norm / b_norm) < tol * 10;
+        }
+
         [[nodiscard]] bool solve_csr_real_ilu0_bicgstab(int n,
                                                         int nnz,
                                                         int const* row_ptr_host,
@@ -1209,7 +1624,7 @@ namespace phy_engine::solver
                         return std::strtod(v, nullptr);
                     }();
                     // API is deprecated in CUDA 12+, but still present; ignore return if unavailable at runtime.
-                    (void)cusparseDcsrilu02_numericBoost(cusparse_handle, ilu_info_d, boost_enable, __builtin_addressof(boost_tol), __builtin_addressof(boost_val));
+                    (void)cusparseDcsrilu02_numericBoost(cusparse_handle, ilu_info_d, boost_enable, &boost_tol, &boost_val);
                 }
             }
 

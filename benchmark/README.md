@@ -13,7 +13,7 @@ This repo can optionally accelerate large MNA solves with CUDA (cuSolverSP + cuS
   - `PHY_ENGINE_CUDA_PINNED=1` (use pinned host buffers)
   - `PHY_ENGINE_CUDA_CSR_CACHE=1` (reuse CSR pattern across solves; default enabled)
   - `PHY_ENGINE_CUDA_QR_REORDER=0/1` (cuSolver QR reordering; default 1)
-  - `PHY_ENGINE_CUDA_SOLVER=qr|ilu0` (choose CUDA solver for real systems; default `qr`)
+  - `PHY_ENGINE_CUDA_SOLVER=qr|ilu0|cg` (choose CUDA solver for real systems; default `qr`)
   - `PHY_ENGINE_CUDA_ITER_MAX=200` (BiCGSTAB max iterations for `ilu0`)
   - `PHY_ENGINE_CUDA_ITER_TOL=1e-10` (BiCGSTAB relative residual tolerance for `ilu0`)
   - `PHY_ENGINE_CUDA_ILU_BOOST=1` (enable ILU numeric-boost to avoid zero-pivot; default on)
@@ -57,7 +57,7 @@ PHY_ENGINE_CUDA_PINNED=1 PHY_ENGINE_CUDA_CSR_CACHE=1 \\
 Prefer the iterative solver for performance on large MNA (recommended):
 
 ```bash
-PHY_ENGINE_CUDA_SOLVER=ilu0 PHY_ENGINE_CUDA_PINNED=1 PHY_ENGINE_CUDA_CSR_CACHE=1 \\
+PHY_ENGINE_CUDA_SOLVER=cg PHY_ENGINE_CUDA_PINNED=1 PHY_ENGINE_CUDA_CSR_CACHE=1 \\
   ./build_bench_cuda/bench_100000_random_links_compare --nodes=200000 --links=500000 --warmup=2 --iters=20 --excite=idc:1.0
 ```
 
@@ -91,6 +91,6 @@ nvcc -O3 -std=c++20 -lineinfo \\
   -I./include -I"$CUDA_HOME/include" \\
   -o bench_100000_random_links_compare \\
   benchmark/0001.models/100000_random_links_compare.cu \\
-  -L"$CUDA_HOME/lib64" -lcudart -lcusolver -lcusparse
+  -L"$CUDA_HOME/lib64" -lcudart -lcusolver -lcusparse -lcublas
 ./bench_100000_random_links_compare --nodes=100000 --links=10000 --warmup=1 --iters=5
 ```
