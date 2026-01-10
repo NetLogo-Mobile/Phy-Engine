@@ -6,6 +6,9 @@
 .vscode
 .xmake
 build
+build_*/
+build-*/
+cmake-build-*/
 .vs/
 .*/*
 .cmake
