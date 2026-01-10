@@ -10,6 +10,9 @@ option(PHY_ENGINE_CUDA_CLANG_TEST "Build CUDA smoke test with Clang (no nvcc)" O
 set(PHY_ENGINE_CUDA_PATH "/usr/local/cuda" CACHE PATH "CUDA toolkit root path (for Clang CUDA)")
 set(PHY_ENGINE_CUDA_SMOKE_ARCH "sm_70" CACHE STRING "CUDA GPU arch for smoke test (e.g. sm_70)")
 
+option(PHY_ENGINE_BUILD_FUZZERS "Build LLVM libFuzzer targets" OFF)
+set(PHY_ENGINE_FUZZ_SANITIZERS "fuzzer,address,undefined" CACHE STRING "Clang -fsanitize=... list for fuzz targets")
+
 if (MSVC)
     add_compile_options(/nologo /Zc:preprocessor /utf-8 /DNOMINMAX /bigobj /GR-)
 else()
@@ -36,6 +39,22 @@ foreach(a_test IN LISTS test_srcs)
     set_target_properties(${filename} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${output_dir}")
     add_test(NAME ${filename} COMMAND "${output_dir}/${filename}")
 endforeach()
+
+if(PHY_ENGINE_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+        message(FATAL_ERROR "PHY_ENGINE_BUILD_FUZZERS requires Clang/AppleClang (set -DCMAKE_CXX_COMPILER=clang++).")
+    endif()
+
+    set(_phy_fuzz_dir "${CMAKE_SOURCE_DIR}/../fuzz")
+    set(_phy_fuzz_out "${CMAKE_BINARY_DIR}/fuzz")
+    file(MAKE_DIRECTORY "${_phy_fuzz_out}")
+
+    add_executable(verilog_digital_fuzzer "${_phy_fuzz_dir}/verilog_digital_fuzzer.cpp")
+    set_target_properties(verilog_digital_fuzzer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${_phy_fuzz_out}")
+    target_include_directories(verilog_digital_fuzzer PRIVATE "${CMAKE_SOURCE_DIR}/../include")
+    target_compile_options(verilog_digital_fuzzer PRIVATE -O1 -fno-omit-frame-pointer "-fsanitize=${PHY_ENGINE_FUZZ_SANITIZERS}")
+    target_link_options(verilog_digital_fuzzer PRIVATE "-fsanitize=${PHY_ENGINE_FUZZ_SANITIZERS}")
+endif()
 
 if(PHY_ENGINE_CUDA_CLANG_TEST)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
