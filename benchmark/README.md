@@ -13,6 +13,9 @@ This repo can optionally accelerate large MNA solves with CUDA (cuSolverSP + cuS
   - `PHY_ENGINE_CUDA_PINNED=1` (use pinned host buffers)
   - `PHY_ENGINE_CUDA_CSR_CACHE=1` (reuse CSR pattern across solves; default enabled)
   - `PHY_ENGINE_CUDA_QR_REORDER=0/1` (cuSolver QR reordering; default 1)
+  - `PHY_ENGINE_CUDA_SOLVER=qr|ilu0` (choose CUDA solver for real systems; default `qr`)
+  - `PHY_ENGINE_CUDA_ITER_MAX=200` (BiCGSTAB max iterations for `ilu0`)
+  - `PHY_ENGINE_CUDA_ITER_TOL=1e-10` (BiCGSTAB relative residual tolerance for `ilu0`)
 
 ## Build (CPU benchmarks)
 
@@ -46,6 +49,13 @@ Run compare (prints CPU vs CUDA timing + max abs diffs):
 ```bash
 PHY_ENGINE_CUDA_PINNED=1 PHY_ENGINE_CUDA_CSR_CACHE=1 \\
   ./build_bench_cuda/bench_100000_random_links_compare --nodes=100000 --links=10000 --warmup=1 --iters=5
+```
+
+Prefer the iterative solver for performance on large MNA (recommended):
+
+```bash
+PHY_ENGINE_CUDA_SOLVER=ilu0 PHY_ENGINE_CUDA_PINNED=1 PHY_ENGINE_CUDA_CSR_CACHE=1 \\
+  ./build_bench_cuda/bench_100000_random_links_compare --nodes=200000 --links=500000 --warmup=2 --iters=20
 ```
 
 Expected:

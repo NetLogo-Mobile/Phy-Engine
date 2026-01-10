@@ -13,6 +13,7 @@
 
     #include <cuda_runtime.h>
     #include <cuComplex.h>
+    #include <cublas_v2.h>
     #include <cusolverSp.h>
     #include <cusparse.h>
 
@@ -48,6 +49,32 @@ namespace phy_engine::solver
             if(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) != cudaSuccess)
             {
                 available = false;
+                return;
+            }
+
+            if(cublasCreate(&cublas_handle) != CUBLAS_STATUS_SUCCESS)
+            {
+                available = false;
+                cleanup();
+                return;
+            }
+            if(cublasSetStream(cublas_handle, stream) != CUBLAS_STATUS_SUCCESS)
+            {
+                available = false;
+                cleanup();
+                return;
+            }
+
+            if(cusparseCreate(&cusparse_handle) != CUSPARSE_STATUS_SUCCESS)
+            {
+                available = false;
+                cleanup();
+                return;
+            }
+            if(cusparseSetStream(cusparse_handle, stream) != CUSPARSE_STATUS_SUCCESS)
+            {
+                available = false;
+                cleanup();
                 return;
             }
 
@@ -95,6 +122,8 @@ namespace phy_engine::solver
             cleanup();
 
             available = other.available;
+            cublas_handle = other.cublas_handle;
+            cusparse_handle = other.cusparse_handle;
             cusolver_handle = other.cusolver_handle;
             descrA = other.descrA;
             stream = other.stream;
@@ -132,7 +161,28 @@ namespace phy_engine::solver
             d_b_d = other.d_b_d;
             d_x_d = other.d_x_d;
 
+            ilu_n_d = other.ilu_n_d;
+            ilu_nnz_d = other.ilu_nnz_d;
+            descrL_d = other.descrL_d;
+            descrU_d = other.descrU_d;
+            ilu_info_d = other.ilu_info_d;
+            ilu_L_info_d = other.ilu_L_info_d;
+            ilu_U_info_d = other.ilu_U_info_d;
+            ilu_buffer_d = other.ilu_buffer_d;
+            ilu_buffer_bytes_d = other.ilu_buffer_bytes_d;
+            d_ilu_vals_d = other.d_ilu_vals_d;
+            d_r_d = other.d_r_d;
+            d_rhat_d = other.d_rhat_d;
+            d_p_d = other.d_p_d;
+            d_v_d = other.d_v_d;
+            d_s_d = other.d_s_d;
+            d_t_d = other.d_t_d;
+            d_y_d = other.d_y_d;
+            d_z_d = other.d_z_d;
+
             other.available = false;
+            other.cublas_handle = nullptr;
+            other.cusparse_handle = nullptr;
             other.cusolver_handle = nullptr;
             other.descrA = nullptr;
             other.stream = nullptr;
@@ -164,6 +214,24 @@ namespace phy_engine::solver
             other.d_values_d = nullptr;
             other.d_b_d = nullptr;
             other.d_x_d = nullptr;
+            other.ilu_n_d = 0;
+            other.ilu_nnz_d = 0;
+            other.descrL_d = nullptr;
+            other.descrU_d = nullptr;
+            other.ilu_info_d = nullptr;
+            other.ilu_L_info_d = nullptr;
+            other.ilu_U_info_d = nullptr;
+            other.ilu_buffer_d = nullptr;
+            other.ilu_buffer_bytes_d = 0;
+            other.d_ilu_vals_d = nullptr;
+            other.d_r_d = nullptr;
+            other.d_rhat_d = nullptr;
+            other.d_p_d = nullptr;
+            other.d_v_d = nullptr;
+            other.d_s_d = nullptr;
+            other.d_t_d = nullptr;
+            other.d_y_d = nullptr;
+            other.d_z_d = nullptr;
 
             return *this;
         }
@@ -363,6 +431,20 @@ namespace phy_engine::solver
             if(!ensure_capacity_real(n, nnz)) { return false; }
             if(!ensure_pinned_real(n, nnz)) { return false; }
 
+            static int const solver_mode = []() noexcept
+            {
+                // 0: QR (default), 1: ILU0+BiCGSTAB
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_SOLVER");
+                if(v == nullptr) { return 0; }
+                if(*v == 'i' || *v == 'I') { return 1; }
+                return 0;
+            }();
+
+            if(solver_mode == 1)
+            {
+                return solve_csr_real_ilu0_bicgstab(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern);
+            }
+
             auto t_h2d_start = cudaEvent_t{};
             auto t_h2d_end = cudaEvent_t{};
             auto t_solve_start = cudaEvent_t{};
@@ -555,6 +637,8 @@ namespace phy_engine::solver
 
     private:
         bool available{};
+        cublasHandle_t cublas_handle{};
+        cusparseHandle_t cusparse_handle{};
         cusolverSpHandle_t cusolver_handle{};
         cusparseMatDescr_t descrA{};
         cudaStream_t stream{};
@@ -593,6 +677,27 @@ namespace phy_engine::solver
         double* d_b_d{};
         double* d_x_d{};
 
+        // ILU0 + BiCGSTAB (real-only)
+        int ilu_n_d{};
+        int ilu_nnz_d{};
+        cusparseMatDescr_t descrL_d{};
+        cusparseMatDescr_t descrU_d{};
+        csrilu02Info_t ilu_info_d{};
+        csrsv2Info_t ilu_L_info_d{};
+        csrsv2Info_t ilu_U_info_d{};
+        void* ilu_buffer_d{};
+        int ilu_buffer_bytes_d{};
+
+        double* d_ilu_vals_d{};
+        double* d_r_d{};
+        double* d_rhat_d{};
+        double* d_p_d{};
+        double* d_v_d{};
+        double* d_s_d{};
+        double* d_t_d{};
+        double* d_y_d{};
+        double* d_z_d{};
+
         csrqrInfo_t csrqr_info_d{};
         void* csrqr_buffer_d{};
         size_t csrqr_buffer_bytes_d{};
@@ -603,6 +708,41 @@ namespace phy_engine::solver
 
         void cleanup() noexcept
         {
+            if(ilu_buffer_d) { cudaFree(ilu_buffer_d); }
+            ilu_buffer_d = nullptr;
+            ilu_buffer_bytes_d = 0;
+            if(d_ilu_vals_d) { cudaFree(d_ilu_vals_d); }
+            if(d_r_d) { cudaFree(d_r_d); }
+            if(d_rhat_d) { cudaFree(d_rhat_d); }
+            if(d_p_d) { cudaFree(d_p_d); }
+            if(d_v_d) { cudaFree(d_v_d); }
+            if(d_s_d) { cudaFree(d_s_d); }
+            if(d_t_d) { cudaFree(d_t_d); }
+            if(d_y_d) { cudaFree(d_y_d); }
+            if(d_z_d) { cudaFree(d_z_d); }
+            d_ilu_vals_d = nullptr;
+            d_r_d = nullptr;
+            d_rhat_d = nullptr;
+            d_p_d = nullptr;
+            d_v_d = nullptr;
+            d_s_d = nullptr;
+            d_t_d = nullptr;
+            d_y_d = nullptr;
+            d_z_d = nullptr;
+            ilu_n_d = 0;
+            ilu_nnz_d = 0;
+
+            if(ilu_info_d) { cusparseDestroyCsrilu02Info(ilu_info_d); }
+            if(ilu_L_info_d) { cusparseDestroyCsrsv2Info(ilu_L_info_d); }
+            if(ilu_U_info_d) { cusparseDestroyCsrsv2Info(ilu_U_info_d); }
+            ilu_info_d = nullptr;
+            ilu_L_info_d = nullptr;
+            ilu_U_info_d = nullptr;
+            if(descrL_d) { cusparseDestroyMatDescr(descrL_d); }
+            if(descrU_d) { cusparseDestroyMatDescr(descrU_d); }
+            descrL_d = nullptr;
+            descrU_d = nullptr;
+
             if(d_row_ptr) { cudaFree(d_row_ptr); }
             if(d_col_ind) { cudaFree(d_col_ind); }
             if(d_values_z) { cudaFree(d_values_z); }
@@ -655,6 +795,12 @@ namespace phy_engine::solver
 
             if(cusolver_handle) { cusolverSpDestroy(cusolver_handle); }
             cusolver_handle = nullptr;
+
+            if(cusparse_handle) { cusparseDestroy(cusparse_handle); }
+            cusparse_handle = nullptr;
+
+            if(cublas_handle) { cublasDestroy(cublas_handle); }
+            cublas_handle = nullptr;
 
             if(stream) { cudaStreamDestroy(stream); }
             stream = nullptr;
@@ -741,6 +887,415 @@ namespace phy_engine::solver
             pinned_n_capacity_d = n;
             pinned_nnz_capacity_d = nnz;
             return true;
+        }
+
+        [[nodiscard]] bool ensure_ilu_workspace_real(int n, int nnz) noexcept
+        {
+            if(n <= 0 || nnz < 0) { return false; }
+            if(ilu_n_d == n && ilu_nnz_d == nnz && d_ilu_vals_d != nullptr && d_r_d != nullptr) { return true; }
+
+            if(descrL_d) { cusparseDestroyMatDescr(descrL_d); descrL_d = nullptr; }
+            if(descrU_d) { cusparseDestroyMatDescr(descrU_d); descrU_d = nullptr; }
+            if(ilu_info_d) { cusparseDestroyCsrilu02Info(ilu_info_d); ilu_info_d = nullptr; }
+            if(ilu_L_info_d) { cusparseDestroyCsrsv2Info(ilu_L_info_d); ilu_L_info_d = nullptr; }
+            if(ilu_U_info_d) { cusparseDestroyCsrsv2Info(ilu_U_info_d); ilu_U_info_d = nullptr; }
+            if(ilu_buffer_d) { cudaFree(ilu_buffer_d); ilu_buffer_d = nullptr; }
+            ilu_buffer_bytes_d = 0;
+
+            if(d_ilu_vals_d) { cudaFree(d_ilu_vals_d); d_ilu_vals_d = nullptr; }
+            if(d_r_d) { cudaFree(d_r_d); d_r_d = nullptr; }
+            if(d_rhat_d) { cudaFree(d_rhat_d); d_rhat_d = nullptr; }
+            if(d_p_d) { cudaFree(d_p_d); d_p_d = nullptr; }
+            if(d_v_d) { cudaFree(d_v_d); d_v_d = nullptr; }
+            if(d_s_d) { cudaFree(d_s_d); d_s_d = nullptr; }
+            if(d_t_d) { cudaFree(d_t_d); d_t_d = nullptr; }
+            if(d_y_d) { cudaFree(d_y_d); d_y_d = nullptr; }
+            if(d_z_d) { cudaFree(d_z_d); d_z_d = nullptr; }
+
+            if(cusparseCreateMatDescr(&descrL_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            if(cusparseCreateMatDescr(&descrU_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            cusparseSetMatIndexBase(descrL_d, CUSPARSE_INDEX_BASE_ZERO);
+            cusparseSetMatIndexBase(descrU_d, CUSPARSE_INDEX_BASE_ZERO);
+            cusparseSetMatType(descrL_d, CUSPARSE_MATRIX_TYPE_GENERAL);
+            cusparseSetMatType(descrU_d, CUSPARSE_MATRIX_TYPE_GENERAL);
+            cusparseSetMatFillMode(descrL_d, CUSPARSE_FILL_MODE_LOWER);
+            cusparseSetMatFillMode(descrU_d, CUSPARSE_FILL_MODE_UPPER);
+            cusparseSetMatDiagType(descrL_d, CUSPARSE_DIAG_TYPE_UNIT);
+            cusparseSetMatDiagType(descrU_d, CUSPARSE_DIAG_TYPE_NON_UNIT);
+
+            if(cusparseCreateCsrilu02Info(&ilu_info_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            if(cusparseCreateCsrsv2Info(&ilu_L_info_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            if(cusparseCreateCsrsv2Info(&ilu_U_info_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
+
+            if(cudaMalloc(reinterpret_cast<void**>(&d_ilu_vals_d), static_cast<::std::size_t>(nnz) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_r_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_rhat_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_p_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_v_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_s_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_t_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_y_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d_z_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+
+            ilu_n_d = n;
+            ilu_nnz_d = nnz;
+            return true;
+        }
+
+        [[nodiscard]] bool solve_csr_real_ilu0_bicgstab(int n,
+                                                        int nnz,
+                                                        int const* row_ptr_host,
+                                                        int const* col_ind_host,
+                                                        double const* values_host,
+                                                        double const* b_host,
+                                                        double* x_host,
+                                                        timings& out,
+                                                        bool copy_pattern) noexcept
+        {
+            if(!ensure_ilu_workspace_real(n, nnz)) { return false; }
+
+            auto t_h2d_start = cudaEvent_t{};
+            auto t_h2d_end = cudaEvent_t{};
+            auto t_solve_start = cudaEvent_t{};
+            auto t_solve_end = cudaEvent_t{};
+            auto t_d2h_end = cudaEvent_t{};
+            if(cudaEventCreate(&t_h2d_start) != cudaSuccess) { return false; }
+            if(cudaEventCreate(&t_h2d_end) != cudaSuccess) { cudaEventDestroy(t_h2d_start); return false; }
+            if(cudaEventCreate(&t_solve_start) != cudaSuccess)
+            {
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+                return false;
+            }
+            if(cudaEventCreate(&t_solve_end) != cudaSuccess)
+            {
+                cudaEventDestroy(t_solve_start);
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+                return false;
+            }
+            if(cudaEventCreate(&t_d2h_end) != cudaSuccess)
+            {
+                cudaEventDestroy(t_solve_end);
+                cudaEventDestroy(t_solve_start);
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+                return false;
+            }
+
+            auto const destroy_events = [&]() noexcept {
+                cudaEventDestroy(t_d2h_end);
+                cudaEventDestroy(t_solve_end);
+                cudaEventDestroy(t_solve_start);
+                cudaEventDestroy(t_h2d_end);
+                cudaEventDestroy(t_h2d_start);
+            };
+
+            if(cudaEventRecord(t_h2d_start, stream) != cudaSuccess) { destroy_events(); return false; }
+
+            bool const must_copy_pattern{copy_pattern || !pattern_uploaded || pattern_n != n || pattern_nnz != nnz};
+            if(must_copy_pattern)
+            {
+                if(cudaMemcpyAsync(d_row_ptr, row_ptr_host, static_cast<::std::size_t>(n + 1) * sizeof(int), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(cudaMemcpyAsync(d_col_ind, col_ind_host, static_cast<::std::size_t>(nnz) * sizeof(int), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+                pattern_uploaded = true;
+                pattern_n = n;
+                pattern_nnz = nnz;
+            }
+
+            double const* values_src{values_host};
+            double const* b_src{b_host};
+            if(pinned && h_values_d && h_b_d)
+            {
+                std::memcpy(h_values_d, values_host, static_cast<::std::size_t>(nnz) * sizeof(double));
+                std::memcpy(h_b_d, b_host, static_cast<::std::size_t>(n) * sizeof(double));
+                values_src = h_values_d;
+                b_src = h_b_d;
+            }
+
+            if(cudaMemcpyAsync(d_values_d, values_src, static_cast<::std::size_t>(nnz) * sizeof(double), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cudaMemcpyAsync(d_b_d, b_src, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyHostToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+
+            // Make a working copy for ILU0 factorization.
+            if(cudaMemcpyAsync(d_ilu_vals_d, d_values_d, static_cast<::std::size_t>(nnz) * sizeof(double), cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+
+            if(cudaEventRecord(t_h2d_end, stream) != cudaSuccess) { destroy_events(); return false; }
+
+            auto const it_max = []() noexcept -> int
+            {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ITER_MAX");
+                if(v == nullptr) { return 200; }
+                return static_cast<int>(std::strtol(v, nullptr, 10));
+            }();
+            auto const tol = []() noexcept -> double
+            {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ITER_TOL");
+                if(v == nullptr) { return 1e-10; }
+                return std::strtod(v, nullptr);
+            }();
+
+            auto const host_solve0 = ::std::chrono::steady_clock::now();
+            if(cudaEventRecord(t_solve_start, stream) != cudaSuccess) { destroy_events(); return false; }
+
+            // ILU0 factorization + triangular solve analysis.
+            int ilu_buf_bytes{};
+            if(cusparseDcsrilu02_bufferSize(cusparse_handle, n, nnz, descrA, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_info_d, &ilu_buf_bytes) !=
+               CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+            int L_buf_bytes{};
+            int U_buf_bytes{};
+            if(cusparseDcsrsv2_bufferSize(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrL_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_L_info_d,
+                                          &L_buf_bytes) != CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cusparseDcsrsv2_bufferSize(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrU_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_U_info_d,
+                                          &U_buf_bytes) != CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+            int const need_bytes = ilu_buf_bytes > (L_buf_bytes > U_buf_bytes ? L_buf_bytes : U_buf_bytes) ? ilu_buf_bytes : (L_buf_bytes > U_buf_bytes ? L_buf_bytes : U_buf_bytes);
+            if(need_bytes > ilu_buffer_bytes_d)
+            {
+                if(ilu_buffer_d) { cudaFree(ilu_buffer_d); ilu_buffer_d = nullptr; }
+                if(cudaMalloc(&ilu_buffer_d, static_cast<::std::size_t>(need_bytes)) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+                ilu_buffer_bytes_d = need_bytes;
+            }
+
+            if(cusparseDcsrilu02_analysis(cusparse_handle, n, nnz, descrA, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_info_d, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) !=
+               CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cusparseDcsrilu02(cusparse_handle, n, nnz, descrA, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_info_d, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) !=
+               CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+
+            if(cusparseDcsrsv2_analysis(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrL_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_L_info_d,
+                                       CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cusparseDcsrsv2_analysis(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrU_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_U_info_d,
+                                       CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+            {
+                destroy_events();
+                return false;
+            }
+
+            double b_norm{};
+            if(cublasDnrm2(cublas_handle, n, d_b_d, 1, &b_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+            if(b_norm == 0.0) { b_norm = 1.0; }
+
+            // x = 0, r = b, rhat = r
+            if(cudaMemsetAsync(d_x_d, 0, static_cast<::std::size_t>(n) * sizeof(double), stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cudaMemcpyAsync(d_r_d, d_b_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cudaMemcpyAsync(d_rhat_d, d_r_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToDevice, stream) != cudaSuccess)
+            {
+                destroy_events();
+                return false;
+            }
+            if(cudaMemsetAsync(d_p_d, 0, static_cast<::std::size_t>(n) * sizeof(double), stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cudaMemsetAsync(d_v_d, 0, static_cast<::std::size_t>(n) * sizeof(double), stream) != cudaSuccess) { destroy_events(); return false; }
+
+            auto const apply_precond = [&](double const* rhs, double* outv) noexcept -> bool
+            {
+                double const one{1.0};
+                if(cusparseDcsrsv2_solve(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, &one, descrL_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_L_info_d,
+                                         rhs, d_y_d, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    return false;
+                }
+                if(cusparseDcsrsv2_solve(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, &one, descrU_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_U_info_d,
+                                         d_y_d, outv, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    return false;
+                }
+                return true;
+            };
+
+            auto const spmv = [&](double const* xin, double* yout) noexcept -> bool
+            {
+                double const one{1.0};
+                double const zero{0.0};
+                if(cusparseDcsrmv(cusparse_handle,
+                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                  n,
+                                  n,
+                                  nnz,
+                                  &one,
+                                  descrA,
+                                  d_values_d,
+                                  d_row_ptr,
+                                  d_col_ind,
+                                  xin,
+                                  &zero,
+                                  yout) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    return false;
+                }
+                return true;
+            };
+
+            double rho_old{1.0};
+            double alpha{1.0};
+            double omega{1.0};
+
+            int it{};
+            double r_norm{};
+            for(; it < it_max; ++it)
+            {
+                double rho_new{};
+                if(cublasDdot(cublas_handle, n, d_rhat_d, 1, d_r_d, 1, &rho_new) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(rho_new == 0.0) { break; }
+
+                if(it == 0)
+                {
+                    if(cublasDcopy(cublas_handle, n, d_r_d, 1, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                }
+                else
+                {
+                    double const beta{(rho_new / rho_old) * (alpha / omega)};
+                    // p = r + beta * (p - omega*v)
+                    double const neg_omega{-omega};
+                    if(cublasDaxpy(cublas_handle, n, &neg_omega, d_v_d, 1, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                    if(cublasDscal(cublas_handle, n, &beta, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                    double const one{1.0};
+                    if(cublasDaxpy(cublas_handle, n, &one, d_r_d, 1, d_p_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                }
+
+                // y = M^{-1} p
+                if(!apply_precond(d_p_d, d_y_d)) { destroy_events(); return false; }
+                // v = A*y
+                if(!spmv(d_y_d, d_v_d)) { destroy_events(); return false; }
+
+                double denom{};
+                if(cublasDdot(cublas_handle, n, d_rhat_d, 1, d_v_d, 1, &denom) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(denom == 0.0) { break; }
+                alpha = rho_new / denom;
+
+                // s = r - alpha*v
+                if(cublasDcopy(cublas_handle, n, d_r_d, 1, d_s_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                double const neg_alpha{-alpha};
+                if(cublasDaxpy(cublas_handle, n, &neg_alpha, d_v_d, 1, d_s_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+
+                double s_norm{};
+                if(cublasDnrm2(cublas_handle, n, d_s_d, 1, &s_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if((s_norm / b_norm) < tol)
+                {
+                    if(cublasDaxpy(cublas_handle, n, &alpha, d_y_d, 1, d_x_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                    r_norm = s_norm;
+                    break;
+                }
+
+                // z = M^{-1} s
+                if(!apply_precond(d_s_d, d_z_d)) { destroy_events(); return false; }
+                // t = A*z
+                if(!spmv(d_z_d, d_t_d)) { destroy_events(); return false; }
+
+                double tt{};
+                double ts{};
+                if(cublasDdot(cublas_handle, n, d_t_d, 1, d_t_d, 1, &tt) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(cublasDdot(cublas_handle, n, d_t_d, 1, d_s_d, 1, &ts) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(tt == 0.0) { break; }
+                omega = ts / tt;
+                if(omega == 0.0) { break; }
+
+                // x = x + alpha*y + omega*z
+                if(cublasDaxpy(cublas_handle, n, &alpha, d_y_d, 1, d_x_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if(cublasDaxpy(cublas_handle, n, &omega, d_z_d, 1, d_x_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+
+                // r = s - omega*t
+                if(cublasDcopy(cublas_handle, n, d_s_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                double const neg_omega{-omega};
+                if(cublasDaxpy(cublas_handle, n, &neg_omega, d_t_d, 1, d_r_d, 1) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+
+                if(cublasDnrm2(cublas_handle, n, d_r_d, 1, &r_norm) != CUBLAS_STATUS_SUCCESS) { destroy_events(); return false; }
+                if((r_norm / b_norm) < tol) { break; }
+
+                rho_old = rho_new;
+            }
+
+            if(pinned && h_x_d)
+            {
+                if(cudaMemcpyAsync(h_x_d, d_x_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+            }
+            else
+            {
+                if(cudaMemcpyAsync(x_host, d_x_d, static_cast<::std::size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+                {
+                    destroy_events();
+                    return false;
+                }
+            }
+
+            if(cudaEventRecord(t_solve_end, stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cudaEventRecord(t_d2h_end, stream) != cudaSuccess) { destroy_events(); return false; }
+            if(cudaEventSynchronize(t_d2h_end) != cudaSuccess) { destroy_events(); return false; }
+
+            if(pinned && h_x_d)
+            {
+                std::memcpy(x_host, h_x_d, static_cast<::std::size_t>(n) * sizeof(double));
+            }
+
+            auto const host_solve1 = ::std::chrono::steady_clock::now();
+
+            float ms_h2d{};
+            float ms_solve{};
+            float ms_d2h{};
+            cudaEventElapsedTime(&ms_h2d, t_h2d_start, t_h2d_end);
+            cudaEventElapsedTime(&ms_solve, t_solve_start, t_solve_end);
+            cudaEventElapsedTime(&ms_d2h, t_solve_end, t_d2h_end);
+            out.h2d_ms = static_cast<double>(ms_h2d);
+            out.solve_ms = static_cast<double>(ms_solve);
+            out.d2h_ms = static_cast<double>(ms_d2h);
+            out.solve_host_ms = ::std::chrono::duration_cast<::std::chrono::duration<double, ::std::milli>>(host_solve1 - host_solve0).count();
+            out.solve_total_host_ms = out.h2d_ms + out.solve_host_ms + out.d2h_ms;
+
+            destroy_events();
+            return (r_norm / b_norm) < tol * 10;
         }
 
         [[nodiscard]] bool ensure_pinned_complex(int n, int nnz) noexcept
