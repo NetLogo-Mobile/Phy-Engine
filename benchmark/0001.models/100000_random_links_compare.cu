@@ -80,7 +80,8 @@ namespace
         std::size_t iters{5};
         double r_chain{1000.0};
         double r_link{1000.0};
-        double vdc{1.0};
+        double excite{1.0};
+        bool excite_is_current{};
         double eps{1e-6};
     };
 
@@ -119,10 +120,25 @@ namespace
             {
                 cfg.eps = std::strtod(a + 6, nullptr);
             }
+            else if(starts_with(a, "--excite="))
+            {
+                char const* v = a + 9;
+                // --excite=vdc:1.0 or --excite=idc:1.0
+                if(starts_with(v, "vdc:") || starts_with(v, "VDC:"))
+                {
+                    cfg.excite_is_current = false;
+                    cfg.excite = std::strtod(v + 4, nullptr);
+                }
+                else if(starts_with(v, "idc:") || starts_with(v, "IDC:"))
+                {
+                    cfg.excite_is_current = true;
+                    cfg.excite = std::strtod(v + 4, nullptr);
+                }
+            }
             else if(!std::strcmp(a, "--help"))
             {
                 ::fast_io::io::perr(
-                    "Usage: 100000_random_links_compare [--nodes=N] [--links=10,100,1000,10000] [--seed=S] [--warmup=N] [--iters=N] [--eps=1e-6]\n");
+                    "Usage: 100000_random_links_compare [--nodes=N] [--links=10,100,1000,10000] [--seed=S] [--warmup=N] [--iters=N] [--eps=1e-6] [--excite=vdc:1.0|idc:1.0]\n");
                 ::fast_io::fast_terminate();
             }
         }
@@ -269,7 +285,8 @@ int main(int argc, char** argv)
         ::fast_io::io::perr("GPU[0]=", prop.name, ", cc=", prop.major, ".", prop.minor, "\n");
     }
 
-    ::fast_io::io::perr("CPU vs CUDA random links benchmark: nodes=", cfg.nodes, ", warmup=", cfg.warmup, ", iters=", cfg.iters, ", seed=", cfg.seed, "\n");
+    ::fast_io::io::perr("CPU vs CUDA random links benchmark: nodes=", cfg.nodes, ", warmup=", cfg.warmup, ", iters=", cfg.iters, ", seed=", cfg.seed,
+                        ", excite=", (cfg.excite_is_current ? "idc:" : "vdc:"), cfg.excite, "\n");
     ::fast_io::io::perr("links cases: ");
     for(std::size_t i{}; i < cfg.links.size(); ++i)
     {
@@ -281,7 +298,55 @@ int main(int argc, char** argv)
     for(auto const links: cfg.links)
     {
         ::phy_engine::circult c{};
-        build_random_links_case(c, cfg.nodes, links, cfg.seed, cfg.r_chain, cfg.r_link, cfg.vdc);
+        // To make ILU0 stable (avoid MNA branch rows with structural zero diagonal from V sources),
+        // allow using a current source excitation which keeps the system in pure nodal form.
+        if(cfg.excite_is_current)
+        {
+            c.set_analyze_type(::phy_engine::analyze_type::DC);
+            auto& nl{c.get_netlist()};
+
+            std::vector<::phy_engine::model::node_t*> ns{};
+            ns.reserve(cfg.nodes);
+            for(std::size_t i{}; i < cfg.nodes; ++i)
+            {
+                auto& n{create_node(nl)};
+                ns.push_back(std::addressof(n));
+            }
+
+            {
+                auto [Rg, _]{add_model(nl, ::phy_engine::model::resistance{.r = cfg.r_chain})};
+                add_to_node(nl, *Rg, 0, nl.ground_node);
+                add_to_node(nl, *Rg, 1, *ns[0]);
+            }
+            for(std::size_t i{}; i + 1 < cfg.nodes; ++i)
+            {
+                auto [R, _]{add_model(nl, ::phy_engine::model::resistance{.r = cfg.r_chain})};
+                add_to_node(nl, *R, 0, *ns[i]);
+                add_to_node(nl, *R, 1, *ns[i + 1]);
+            }
+
+            {
+                auto [I, _]{add_model(nl, ::phy_engine::model::IDC{.I = cfg.excite})};
+                add_to_node(nl, *I, 0, *ns[cfg.nodes - 1]);
+                add_to_node(nl, *I, 1, nl.ground_node);
+            }
+
+            std::mt19937_64 rng{cfg.seed};
+            std::uniform_int_distribution<std::size_t> dist(0, cfg.nodes - 1);
+            for(std::size_t i{}; i < links; ++i)
+            {
+                auto a{dist(rng)};
+                auto b{dist(rng)};
+                while(b == a) { b = dist(rng); }
+                auto [R, _]{add_model(nl, ::phy_engine::model::resistance{.r = cfg.r_link})};
+                add_to_node(nl, *R, 0, *ns[a]);
+                add_to_node(nl, *R, 1, *ns[b]);
+            }
+        }
+        else
+        {
+            build_random_links_case(c, cfg.nodes, links, cfg.seed, cfg.r_chain, cfg.r_link, cfg.excite);
+        }
         c.prepare();
 
         if(!c.cuda_solver.is_available())

@@ -58,7 +58,7 @@ Prefer the iterative solver for performance on large MNA (recommended):
 
 ```bash
 PHY_ENGINE_CUDA_SOLVER=ilu0 PHY_ENGINE_CUDA_PINNED=1 PHY_ENGINE_CUDA_CSR_CACHE=1 \\
-  ./build_bench_cuda/bench_100000_random_links_compare --nodes=200000 --links=500000 --warmup=2 --iters=20
+  ./build_bench_cuda/bench_100000_random_links_compare --nodes=200000 --links=500000 --warmup=2 --iters=20 --excite=idc:1.0
 ```
 
 Expected:
