@@ -188,6 +188,7 @@ namespace
     {
         double avg_ms{};
         double solves_per_s{};
+        std::size_t nnz{};
     };
 
     [[nodiscard]] run_stats run_solve_loops(::phy_engine::circult& c, std::size_t warmup, std::size_t iters)
@@ -197,6 +198,9 @@ namespace
             if(!c.solve_once()) { return {}; }
         }
 
+        run_stats st{};
+        st.nnz = nnz_from_mna(c);
+
         auto const t0{std::chrono::steady_clock::now()};
         for(std::size_t i{}; i < iters; ++i)
         {
@@ -205,7 +209,6 @@ namespace
         auto const t1{std::chrono::steady_clock::now()};
         auto const elapsed_ns{std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()};
         double const elapsed_s{static_cast<double>(elapsed_ns) * 1e-9};
-        run_stats st{};
         st.avg_ms = (elapsed_s / static_cast<double>(iters)) * 1e3;
         st.solves_per_s = static_cast<double>(iters) / elapsed_s;
         return st;
@@ -287,8 +290,6 @@ int main(int argc, char** argv)
             return 77;
         }
 
-        auto const nnz{nnz_from_mna(c)};
-
         // CPU
         c.set_cuda_policy(::phy_engine::circult::cuda_solve_policy::force_cpu);
         auto const cpu_stats{run_solve_loops(c, cfg.warmup, cfg.iters)};
@@ -323,7 +324,7 @@ int main(int argc, char** argv)
         ::fast_io::io::perr("links=", links,
                             " node_counter=", c.node_counter,
                             " branch_counter=", c.branch_counter,
-                            " nnz=", nnz,
+                            " nnz=", cpu_stats.nnz,
                             " cpu_avg_ms=", cpu_stats.avg_ms,
                             " cuda_avg_ms=", cuda_stats.avg_ms,
                             " speedup=", speedup,
@@ -341,4 +342,3 @@ int main(int argc, char** argv)
     return 0;
 }
 #endif
-
