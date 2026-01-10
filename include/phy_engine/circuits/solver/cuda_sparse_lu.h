@@ -478,7 +478,7 @@ namespace phy_engine::solver
             if(!ensure_capacity_real(n, nnz)) { return false; }
             if(!ensure_pinned_real(n, nnz)) { return false; }
 
-            static int const solver_mode = []() noexcept
+            int const solver_mode = []() noexcept
             {
                 // 0: QR (default), 1: ILU0+BiCGSTAB, 2: CG+Jacobi (SPD/nodal systems)
                 auto const* v = ::std::getenv("PHY_ENGINE_CUDA_SOLVER");
@@ -488,13 +488,19 @@ namespace phy_engine::solver
                 return 0;
             }();
 
+            bool const debug = []() noexcept {
+                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
+                return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+            }();
+            if(debug)
+            {
+                char const* name = (solver_mode == 1) ? "ilu0" : (solver_mode == 2) ? "cg" : "qr";
+                std::fprintf(stderr, "[phy_engine][cuda] solver=%s n=%d nnz=%d\n", name, n, nnz);
+            }
+
             if(solver_mode == 1)
             {
                 if(solve_csr_real_ilu0_bicgstab(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern)) { return true; }
-                static bool const debug = []() noexcept {
-                    auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
-                    return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
-                }();
                 if(debug)
                 {
                     std::fprintf(stderr, "[phy_engine][cuda] ilu0_bicgstab failed, falling back to QR solver\n");
@@ -503,10 +509,6 @@ namespace phy_engine::solver
             else if(solver_mode == 2)
             {
                 if(solve_csr_real_cg_jacobi(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern)) { return true; }
-                static bool const debug = []() noexcept {
-                    auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
-                    return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
-                }();
                 if(debug)
                 {
                     std::fprintf(stderr, "[phy_engine][cuda] cg_jacobi failed, falling back to QR solver\n");
