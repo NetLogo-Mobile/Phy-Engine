@@ -163,13 +163,22 @@ namespace phy_engine::solver
 
             ilu_n_d = other.ilu_n_d;
             ilu_nnz_d = other.ilu_nnz_d;
-            descrL_d = other.descrL_d;
-            descrU_d = other.descrU_d;
             ilu_info_d = other.ilu_info_d;
-            ilu_L_info_d = other.ilu_L_info_d;
-            ilu_U_info_d = other.ilu_U_info_d;
             ilu_buffer_d = other.ilu_buffer_d;
             ilu_buffer_bytes_d = other.ilu_buffer_bytes_d;
+            spmatA_d = other.spmatA_d;
+            spmatL_d = other.spmatL_d;
+            spmatU_d = other.spmatU_d;
+            spsvL_d = other.spsvL_d;
+            spsvU_d = other.spsvU_d;
+            vec_in_d = other.vec_in_d;
+            vec_out_d = other.vec_out_d;
+            spmv_buffer_d = other.spmv_buffer_d;
+            spmv_buffer_bytes_d = other.spmv_buffer_bytes_d;
+            spsvL_buffer_d = other.spsvL_buffer_d;
+            spsvL_buffer_bytes_d = other.spsvL_buffer_bytes_d;
+            spsvU_buffer_d = other.spsvU_buffer_d;
+            spsvU_buffer_bytes_d = other.spsvU_buffer_bytes_d;
             d_ilu_vals_d = other.d_ilu_vals_d;
             d_r_d = other.d_r_d;
             d_rhat_d = other.d_rhat_d;
@@ -216,13 +225,22 @@ namespace phy_engine::solver
             other.d_x_d = nullptr;
             other.ilu_n_d = 0;
             other.ilu_nnz_d = 0;
-            other.descrL_d = nullptr;
-            other.descrU_d = nullptr;
             other.ilu_info_d = nullptr;
-            other.ilu_L_info_d = nullptr;
-            other.ilu_U_info_d = nullptr;
             other.ilu_buffer_d = nullptr;
             other.ilu_buffer_bytes_d = 0;
+            other.spmatA_d = nullptr;
+            other.spmatL_d = nullptr;
+            other.spmatU_d = nullptr;
+            other.spsvL_d = nullptr;
+            other.spsvU_d = nullptr;
+            other.vec_in_d = nullptr;
+            other.vec_out_d = nullptr;
+            other.spmv_buffer_d = nullptr;
+            other.spmv_buffer_bytes_d = 0;
+            other.spsvL_buffer_d = nullptr;
+            other.spsvL_buffer_bytes_d = 0;
+            other.spsvU_buffer_d = nullptr;
+            other.spsvU_buffer_bytes_d = 0;
             other.d_ilu_vals_d = nullptr;
             other.d_r_d = nullptr;
             other.d_rhat_d = nullptr;
@@ -680,13 +698,24 @@ namespace phy_engine::solver
         // ILU0 + BiCGSTAB (real-only)
         int ilu_n_d{};
         int ilu_nnz_d{};
-        cusparseMatDescr_t descrL_d{};
-        cusparseMatDescr_t descrU_d{};
         csrilu02Info_t ilu_info_d{};
-        csrsv2Info_t ilu_L_info_d{};
-        csrsv2Info_t ilu_U_info_d{};
         void* ilu_buffer_d{};
         int ilu_buffer_bytes_d{};
+
+        // cuSPARSE generic API descriptors for SpMV/SpSV (preferred on CUDA 12+).
+        cusparseSpMatDescr_t spmatA_d{};    // A (for SpMV), values = d_values_d
+        cusparseSpMatDescr_t spmatL_d{};    // L (for SpSV), values = d_ilu_vals_d
+        cusparseSpMatDescr_t spmatU_d{};    // U (for SpSV), values = d_ilu_vals_d
+        cusparseSpSVDescr_t spsvL_d{};
+        cusparseSpSVDescr_t spsvU_d{};
+        cusparseDnVecDescr_t vec_in_d{};
+        cusparseDnVecDescr_t vec_out_d{};
+        void* spmv_buffer_d{};
+        size_t spmv_buffer_bytes_d{};
+        void* spsvL_buffer_d{};
+        size_t spsvL_buffer_bytes_d{};
+        void* spsvU_buffer_d{};
+        size_t spsvU_buffer_bytes_d{};
 
         double* d_ilu_vals_d{};
         double* d_r_d{};
@@ -733,15 +762,30 @@ namespace phy_engine::solver
             ilu_nnz_d = 0;
 
             if(ilu_info_d) { cusparseDestroyCsrilu02Info(ilu_info_d); }
-            if(ilu_L_info_d) { cusparseDestroyCsrsv2Info(ilu_L_info_d); }
-            if(ilu_U_info_d) { cusparseDestroyCsrsv2Info(ilu_U_info_d); }
             ilu_info_d = nullptr;
-            ilu_L_info_d = nullptr;
-            ilu_U_info_d = nullptr;
-            if(descrL_d) { cusparseDestroyMatDescr(descrL_d); }
-            if(descrU_d) { cusparseDestroyMatDescr(descrU_d); }
-            descrL_d = nullptr;
-            descrU_d = nullptr;
+            if(spsvL_d) { cusparseSpSV_destroyDescr(spsvL_d); }
+            if(spsvU_d) { cusparseSpSV_destroyDescr(spsvU_d); }
+            spsvL_d = nullptr;
+            spsvU_d = nullptr;
+            if(spmatA_d) { cusparseDestroySpMat(spmatA_d); }
+            if(spmatL_d) { cusparseDestroySpMat(spmatL_d); }
+            if(spmatU_d) { cusparseDestroySpMat(spmatU_d); }
+            spmatA_d = nullptr;
+            spmatL_d = nullptr;
+            spmatU_d = nullptr;
+            if(vec_in_d) { cusparseDestroyDnVec(vec_in_d); }
+            if(vec_out_d) { cusparseDestroyDnVec(vec_out_d); }
+            vec_in_d = nullptr;
+            vec_out_d = nullptr;
+            if(spmv_buffer_d) { cudaFree(spmv_buffer_d); }
+            if(spsvL_buffer_d) { cudaFree(spsvL_buffer_d); }
+            if(spsvU_buffer_d) { cudaFree(spsvU_buffer_d); }
+            spmv_buffer_d = nullptr;
+            spsvL_buffer_d = nullptr;
+            spsvU_buffer_d = nullptr;
+            spmv_buffer_bytes_d = 0;
+            spsvL_buffer_bytes_d = 0;
+            spsvU_buffer_bytes_d = 0;
 
             if(d_row_ptr) { cudaFree(d_row_ptr); }
             if(d_col_ind) { cudaFree(d_col_ind); }
@@ -894,11 +938,17 @@ namespace phy_engine::solver
             if(n <= 0 || nnz < 0) { return false; }
             if(ilu_n_d == n && ilu_nnz_d == nnz && d_ilu_vals_d != nullptr && d_r_d != nullptr) { return true; }
 
-            if(descrL_d) { cusparseDestroyMatDescr(descrL_d); descrL_d = nullptr; }
-            if(descrU_d) { cusparseDestroyMatDescr(descrU_d); descrU_d = nullptr; }
             if(ilu_info_d) { cusparseDestroyCsrilu02Info(ilu_info_d); ilu_info_d = nullptr; }
-            if(ilu_L_info_d) { cusparseDestroyCsrsv2Info(ilu_L_info_d); ilu_L_info_d = nullptr; }
-            if(ilu_U_info_d) { cusparseDestroyCsrsv2Info(ilu_U_info_d); ilu_U_info_d = nullptr; }
+            if(spsvL_d) { cusparseSpSV_destroyDescr(spsvL_d); spsvL_d = nullptr; }
+            if(spsvU_d) { cusparseSpSV_destroyDescr(spsvU_d); spsvU_d = nullptr; }
+            if(spmatA_d) { cusparseDestroySpMat(spmatA_d); spmatA_d = nullptr; }
+            if(spmatL_d) { cusparseDestroySpMat(spmatL_d); spmatL_d = nullptr; }
+            if(spmatU_d) { cusparseDestroySpMat(spmatU_d); spmatU_d = nullptr; }
+            if(vec_in_d) { cusparseDestroyDnVec(vec_in_d); vec_in_d = nullptr; }
+            if(vec_out_d) { cusparseDestroyDnVec(vec_out_d); vec_out_d = nullptr; }
+            if(spmv_buffer_d) { cudaFree(spmv_buffer_d); spmv_buffer_d = nullptr; spmv_buffer_bytes_d = 0; }
+            if(spsvL_buffer_d) { cudaFree(spsvL_buffer_d); spsvL_buffer_d = nullptr; spsvL_buffer_bytes_d = 0; }
+            if(spsvU_buffer_d) { cudaFree(spsvU_buffer_d); spsvU_buffer_d = nullptr; spsvU_buffer_bytes_d = 0; }
             if(ilu_buffer_d) { cudaFree(ilu_buffer_d); ilu_buffer_d = nullptr; }
             ilu_buffer_bytes_d = 0;
 
@@ -912,20 +962,7 @@ namespace phy_engine::solver
             if(d_y_d) { cudaFree(d_y_d); d_y_d = nullptr; }
             if(d_z_d) { cudaFree(d_z_d); d_z_d = nullptr; }
 
-            if(cusparseCreateMatDescr(&descrL_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
-            if(cusparseCreateMatDescr(&descrU_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
-            cusparseSetMatIndexBase(descrL_d, CUSPARSE_INDEX_BASE_ZERO);
-            cusparseSetMatIndexBase(descrU_d, CUSPARSE_INDEX_BASE_ZERO);
-            cusparseSetMatType(descrL_d, CUSPARSE_MATRIX_TYPE_GENERAL);
-            cusparseSetMatType(descrU_d, CUSPARSE_MATRIX_TYPE_GENERAL);
-            cusparseSetMatFillMode(descrL_d, CUSPARSE_FILL_MODE_LOWER);
-            cusparseSetMatFillMode(descrU_d, CUSPARSE_FILL_MODE_UPPER);
-            cusparseSetMatDiagType(descrL_d, CUSPARSE_DIAG_TYPE_UNIT);
-            cusparseSetMatDiagType(descrU_d, CUSPARSE_DIAG_TYPE_NON_UNIT);
-
             if(cusparseCreateCsrilu02Info(&ilu_info_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
-            if(cusparseCreateCsrsv2Info(&ilu_L_info_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
-            if(cusparseCreateCsrsv2Info(&ilu_U_info_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
 
             if(cudaMalloc(reinterpret_cast<void**>(&d_ilu_vals_d), static_cast<::std::size_t>(nnz) * sizeof(double)) != cudaSuccess) { return false; }
             if(cudaMalloc(reinterpret_cast<void**>(&d_r_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
@@ -936,6 +973,64 @@ namespace phy_engine::solver
             if(cudaMalloc(reinterpret_cast<void**>(&d_t_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
             if(cudaMalloc(reinterpret_cast<void**>(&d_y_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
             if(cudaMalloc(reinterpret_cast<void**>(&d_z_d), static_cast<::std::size_t>(n) * sizeof(double)) != cudaSuccess) { return false; }
+
+            // Build generic descriptors (SpMV/SpSV). These are recreated on size change.
+            if(cusparseCreateCsr(&spmatA_d,
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(nnz),
+                                d_row_ptr,
+                                d_col_ind,
+                                d_values_d,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_BASE_ZERO,
+                                CUDA_R_64F) != CUSPARSE_STATUS_SUCCESS)
+            {
+                return false;
+            }
+            if(cusparseCreateCsr(&spmatL_d,
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(nnz),
+                                d_row_ptr,
+                                d_col_ind,
+                                d_ilu_vals_d,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_BASE_ZERO,
+                                CUDA_R_64F) != CUSPARSE_STATUS_SUCCESS)
+            {
+                return false;
+            }
+            if(cusparseCreateCsr(&spmatU_d,
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(n),
+                                static_cast<int64_t>(nnz),
+                                d_row_ptr,
+                                d_col_ind,
+                                d_ilu_vals_d,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_32I,
+                                CUSPARSE_INDEX_BASE_ZERO,
+                                CUDA_R_64F) != CUSPARSE_STATUS_SUCCESS)
+            {
+                return false;
+            }
+            {
+                cusparseFillMode_t fmL{CUSPARSE_FILL_MODE_LOWER};
+                cusparseFillMode_t fmU{CUSPARSE_FILL_MODE_UPPER};
+                cusparseDiagType_t dtL{CUSPARSE_DIAG_TYPE_UNIT};
+                cusparseDiagType_t dtU{CUSPARSE_DIAG_TYPE_NON_UNIT};
+                (void)cusparseSpMatSetAttribute(spmatL_d, CUSPARSE_SPMAT_FILL_MODE, &fmL, sizeof(fmL));
+                (void)cusparseSpMatSetAttribute(spmatL_d, CUSPARSE_SPMAT_DIAG_TYPE, &dtL, sizeof(dtL));
+                (void)cusparseSpMatSetAttribute(spmatU_d, CUSPARSE_SPMAT_FILL_MODE, &fmU, sizeof(fmU));
+                (void)cusparseSpMatSetAttribute(spmatU_d, CUSPARSE_SPMAT_DIAG_TYPE, &dtU, sizeof(dtU));
+            }
+            if(cusparseCreateDnVec(&vec_in_d, static_cast<int64_t>(n), d_y_d, CUDA_R_64F) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            if(cusparseCreateDnVec(&vec_out_d, static_cast<int64_t>(n), d_z_d, CUDA_R_64F) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            if(cusparseSpSV_createDescr(&spsvL_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
+            if(cusparseSpSV_createDescr(&spsvU_d) != CUSPARSE_STATUS_SUCCESS) { return false; }
 
             ilu_n_d = n;
             ilu_nnz_d = nnz;
@@ -1065,21 +1160,7 @@ namespace phy_engine::solver
                 destroy_events();
                 return false;
             }
-            int L_buf_bytes{};
-            int U_buf_bytes{};
-            if(cusparseDcsrsv2_bufferSize(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrL_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_L_info_d,
-                                          &L_buf_bytes) != CUSPARSE_STATUS_SUCCESS)
-            {
-                destroy_events();
-                return false;
-            }
-            if(cusparseDcsrsv2_bufferSize(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrU_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_U_info_d,
-                                          &U_buf_bytes) != CUSPARSE_STATUS_SUCCESS)
-            {
-                destroy_events();
-                return false;
-            }
-            int const need_bytes = ilu_buf_bytes > (L_buf_bytes > U_buf_bytes ? L_buf_bytes : U_buf_bytes) ? ilu_buf_bytes : (L_buf_bytes > U_buf_bytes ? L_buf_bytes : U_buf_bytes);
+            int const need_bytes = ilu_buf_bytes;
             if(need_bytes > ilu_buffer_bytes_d)
             {
                 if(ilu_buffer_d) { cudaFree(ilu_buffer_d); ilu_buffer_d = nullptr; }
@@ -1104,17 +1185,126 @@ namespace phy_engine::solver
                 return false;
             }
 
-            if(cusparseDcsrsv2_analysis(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrL_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_L_info_d,
-                                       CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+            // Generic SpSV/SpMV analysis and buffers (reused across iterations).
             {
-                destroy_events();
-                return false;
-            }
-            if(cusparseDcsrsv2_analysis(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, descrU_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_U_info_d,
-                                       CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
-            {
-                destroy_events();
-                return false;
+                size_t spmv_buf{};
+                double const one{1.0};
+                double const zero{0.0};
+                // Prepare SpMV(A * x) buffers (use v buffer).
+                (void)cusparseDnVecSetValues(vec_in_d, d_v_d);
+                (void)cusparseDnVecSetValues(vec_out_d, d_t_d);
+                if(cusparseSpMV_bufferSize(cusparse_handle,
+                                           CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &one,
+                                           spmatA_d,
+                                           vec_in_d,
+                                           &zero,
+                                           vec_out_d,
+                                           CUDA_R_64F,
+                                           CUSPARSE_SPMV_ALG_DEFAULT,
+                                           &spmv_buf) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(spmv_buf > spmv_buffer_bytes_d)
+                {
+                    if(spmv_buffer_d) { cudaFree(spmv_buffer_d); }
+                    spmv_buffer_d = nullptr;
+                    if(cudaMalloc(&spmv_buffer_d, spmv_buf) != cudaSuccess)
+                    {
+                        destroy_events();
+                        return false;
+                    }
+                    spmv_buffer_bytes_d = spmv_buf;
+                }
+
+                // SpSV buffers (L and U). Use y/z vectors for sizing.
+                size_t Lbuf{};
+                (void)cusparseDnVecSetValues(vec_in_d, d_p_d);
+                (void)cusparseDnVecSetValues(vec_out_d, d_y_d);
+                if(cusparseSpSV_bufferSize(cusparse_handle,
+                                           CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &one,
+                                           spmatL_d,
+                                           vec_in_d,
+                                           vec_out_d,
+                                           CUDA_R_64F,
+                                           CUSPARSE_SPSV_ALG_DEFAULT,
+                                           spsvL_d,
+                                           &Lbuf) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(Lbuf > spsvL_buffer_bytes_d)
+                {
+                    if(spsvL_buffer_d) { cudaFree(spsvL_buffer_d); }
+                    spsvL_buffer_d = nullptr;
+                    if(cudaMalloc(&spsvL_buffer_d, Lbuf) != cudaSuccess)
+                    {
+                        destroy_events();
+                        return false;
+                    }
+                    spsvL_buffer_bytes_d = Lbuf;
+                }
+                if(cusparseSpSV_analysis(cusparse_handle,
+                                         CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                         &one,
+                                         spmatL_d,
+                                         vec_in_d,
+                                         vec_out_d,
+                                         CUDA_R_64F,
+                                         CUSPARSE_SPSV_ALG_DEFAULT,
+                                         spsvL_d,
+                                         spsvL_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
+
+                size_t Ubuf{};
+                (void)cusparseDnVecSetValues(vec_in_d, d_y_d);
+                (void)cusparseDnVecSetValues(vec_out_d, d_z_d);
+                if(cusparseSpSV_bufferSize(cusparse_handle,
+                                           CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                           &one,
+                                           spmatU_d,
+                                           vec_in_d,
+                                           vec_out_d,
+                                           CUDA_R_64F,
+                                           CUSPARSE_SPSV_ALG_DEFAULT,
+                                           spsvU_d,
+                                           &Ubuf) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
+                if(Ubuf > spsvU_buffer_bytes_d)
+                {
+                    if(spsvU_buffer_d) { cudaFree(spsvU_buffer_d); }
+                    spsvU_buffer_d = nullptr;
+                    if(cudaMalloc(&spsvU_buffer_d, Ubuf) != cudaSuccess)
+                    {
+                        destroy_events();
+                        return false;
+                    }
+                    spsvU_buffer_bytes_d = Ubuf;
+                }
+                if(cusparseSpSV_analysis(cusparse_handle,
+                                         CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                         &one,
+                                         spmatU_d,
+                                         vec_in_d,
+                                         vec_out_d,
+                                         CUDA_R_64F,
+                                         CUSPARSE_SPSV_ALG_DEFAULT,
+                                         spsvU_d,
+                                         spsvU_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+                {
+                    destroy_events();
+                    return false;
+                }
             }
 
             double b_norm{};
@@ -1139,13 +1329,31 @@ namespace phy_engine::solver
             auto const apply_precond = [&](double const* rhs, double* outv) noexcept -> bool
             {
                 double const one{1.0};
-                if(cusparseDcsrsv2_solve(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, &one, descrL_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_L_info_d,
-                                         rhs, d_y_d, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+                (void)cusparseDnVecSetValues(vec_in_d, const_cast<double*>(rhs));
+                (void)cusparseDnVecSetValues(vec_out_d, d_y_d);
+                if(cusparseSpSV_solve(cusparse_handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      &one,
+                                      spmatL_d,
+                                      vec_in_d,
+                                      vec_out_d,
+                                      CUDA_R_64F,
+                                      CUSPARSE_SPSV_ALG_DEFAULT,
+                                      spsvL_d) != CUSPARSE_STATUS_SUCCESS)
                 {
                     return false;
                 }
-                if(cusparseDcsrsv2_solve(cusparse_handle, CUSPARSE_OPERATION_NON_TRANSPOSE, n, nnz, &one, descrU_d, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_U_info_d,
-                                         d_y_d, outv, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) != CUSPARSE_STATUS_SUCCESS)
+                (void)cusparseDnVecSetValues(vec_in_d, d_y_d);
+                (void)cusparseDnVecSetValues(vec_out_d, outv);
+                if(cusparseSpSV_solve(cusparse_handle,
+                                      CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                      &one,
+                                      spmatU_d,
+                                      vec_in_d,
+                                      vec_out_d,
+                                      CUDA_R_64F,
+                                      CUSPARSE_SPSV_ALG_DEFAULT,
+                                      spsvU_d) != CUSPARSE_STATUS_SUCCESS)
                 {
                     return false;
                 }
@@ -1156,19 +1364,18 @@ namespace phy_engine::solver
             {
                 double const one{1.0};
                 double const zero{0.0};
-                if(cusparseDcsrmv(cusparse_handle,
-                                  CUSPARSE_OPERATION_NON_TRANSPOSE,
-                                  n,
-                                  n,
-                                  nnz,
-                                  &one,
-                                  descrA,
-                                  d_values_d,
-                                  d_row_ptr,
-                                  d_col_ind,
-                                  xin,
-                                  &zero,
-                                  yout) != CUSPARSE_STATUS_SUCCESS)
+                (void)cusparseDnVecSetValues(vec_in_d, const_cast<double*>(xin));
+                (void)cusparseDnVecSetValues(vec_out_d, yout);
+                if(cusparseSpMV(cusparse_handle,
+                                CUSPARSE_OPERATION_NON_TRANSPOSE,
+                                &one,
+                                spmatA_d,
+                                vec_in_d,
+                                &zero,
+                                vec_out_d,
+                                CUDA_R_64F,
+                                CUSPARSE_SPMV_ALG_DEFAULT,
+                                spmv_buffer_d) != CUSPARSE_STATUS_SUCCESS)
                 {
                     return false;
                 }
