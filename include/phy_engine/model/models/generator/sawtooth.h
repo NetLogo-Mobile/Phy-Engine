@@ -108,6 +108,35 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_tr<sawtooth_gen>);
 
+    inline constexpr bool
+        iterate_dc_define(::phy_engine::model::model_reserve_type_t<sawtooth_gen>, sawtooth_gen const& g, ::phy_engine::MNA::MNA& mna) noexcept
+    {
+        // For DC operating point, use the waveform value at t=0.
+        return iterate_tr_define(::phy_engine::model::model_reserve_type_t<sawtooth_gen>{}, g, mna, 0.0);
+    }
+
+    static_assert(::phy_engine::model::defines::can_iterate_dc<sawtooth_gen>);
+
+    inline constexpr bool
+        iterate_ac_define(::phy_engine::model::model_reserve_type_t<sawtooth_gen>, sawtooth_gen const& g, ::phy_engine::MNA::MNA& mna, [[maybe_unused]] double omega) noexcept
+    {
+        // No defined small-signal AC excitation for time-domain generators; treat as AC=0V.
+        auto const node_P{g.pins[0].nodes};
+        auto const node_M{g.pins[1].nodes};
+        if(node_P && node_M) [[likely]]
+        {
+            auto const k{g.branches.index};
+            mna.B_ref(node_P->node_index, k) = 1.0;
+            mna.B_ref(node_M->node_index, k) = -1.0;
+            mna.C_ref(k, node_P->node_index) = 1.0;
+            mna.C_ref(k, node_M->node_index) = -1.0;
+            // mna.E_ref(k) += 0.0;
+        }
+        return true;
+    }
+
+    static_assert(::phy_engine::model::defines::can_iterate_ac<sawtooth_gen>);
+
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<sawtooth_gen>, sawtooth_gen& g) noexcept
     {
         return {g.pins, 2};
