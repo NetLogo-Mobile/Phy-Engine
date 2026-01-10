@@ -599,10 +599,6 @@ namespace phy_engine::solver
                 // Default ON (batched QR is typically more stable and faster for repeated solves).
                 return v == nullptr || (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
             }();
-            bool const debug = []() noexcept {
-                auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
-                return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
-            }();
 
             int singularity{-1};
             constexpr double tol{0.0};
