@@ -34,7 +34,8 @@ namespace phy_engine
     {
         inline bool profile_solve_enabled() noexcept
         {
-            static bool const enabled = []() noexcept {
+            static bool const enabled = []() noexcept
+            {
                 auto const* v = ::std::getenv("PHY_ENGINE_PROFILE_SOLVE");
                 return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
             }();
@@ -43,7 +44,8 @@ namespace phy_engine
 
         inline bool profile_solve_validate_enabled() noexcept
         {
-            static bool const enabled = []() noexcept {
+            static bool const enabled = []() noexcept
+            {
                 auto const* v = ::std::getenv("PHY_ENGINE_PROFILE_SOLVE_VALIDATE");
                 return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
             }();
@@ -52,11 +54,8 @@ namespace phy_engine
 
         template <typename Clock = ::std::chrono::steady_clock>
         inline double ms_since(typename Clock::time_point start, typename Clock::time_point end) noexcept
-        {
-            return static_cast<double>(::std::chrono::duration_cast<::std::chrono::duration<double, ::std::milli>>(end - start).count());
-        }
+        { return static_cast<double>(::std::chrono::duration_cast<::std::chrono::duration<double, ::std::milli>>(end - start).count()); }
     }  // namespace details
-
 
     struct circult
     {
@@ -158,7 +157,9 @@ namespace phy_engine
         constexpr ::phy_engine::analyzer::analyzer_storage_t& get_analyze_setting() noexcept { return analyzer_setting; }
 
         constexpr auto& get_ac_sweep_results() noexcept { return ac_sweep_results; }
+
         constexpr auto const& get_ac_sweep_results() const noexcept { return ac_sweep_results; }
+
         constexpr void clear_ac_sweep_results() noexcept { ac_sweep_results.clear(); }
 
         constexpr bool analyze() noexcept
@@ -335,15 +336,9 @@ namespace phy_engine
             auto const row_size{node_counter + branch_counter};
             x.resize(row_size);
 
-            for(auto const* const n: size_t_to_node_p)
-            {
-                x.index_unchecked(n->node_index) = n->node_information.an.voltage;
-            }
+            for(auto const* const n: size_t_to_node_p) { x.index_unchecked(n->node_index) = n->node_information.an.voltage; }
 
-            for(auto const* const b: size_t_to_branch_p)
-            {
-                x.index_unchecked(node_counter + b->index) = b->current;
-            }
+            for(auto const* const b: size_t_to_branch_p) { x.index_unchecked(node_counter + b->index) = b->current; }
 
             return x;
         }
@@ -361,8 +356,7 @@ namespace phy_engine
             if(ac_setting.sweep == sweep_t::linear)
             {
                 double const step{(ac_setting.points == 1) ? 0.0
-                                                          : (ac_setting.omega_stop - ac_setting.omega_start) /
-                                                                static_cast<double>(ac_setting.points - 1)};
+                                                           : (ac_setting.omega_stop - ac_setting.omega_start) / static_cast<double>(ac_setting.points - 1)};
                 for(::std::size_t idx{}; idx < ac_setting.points; ++idx)
                 {
                     ac_setting.omega = ac_setting.omega_start + step * static_cast<double>(idx);
@@ -376,9 +370,9 @@ namespace phy_engine
             {
                 if(ac_setting.omega_start <= 0.0 || ac_setting.omega_stop <= 0.0) [[unlikely]] { return false; }
 
-                double const ratio{(ac_setting.points == 1) ? 1.0
-                                                            : ::std::pow(ac_setting.omega_stop / ac_setting.omega_start,
-                                                                         1.0 / static_cast<double>(ac_setting.points - 1))};
+                double const ratio{(ac_setting.points == 1)
+                                       ? 1.0
+                                       : ::std::pow(ac_setting.omega_stop / ac_setting.omega_start, 1.0 / static_cast<double>(ac_setting.points - 1))};
                 double omega{ac_setting.omega_start};
                 for(::std::size_t idx{}; idx < ac_setting.points; ++idx)
                 {
@@ -763,13 +757,17 @@ namespace phy_engine
             bool const prof{details::profile_solve_enabled()};
             auto const t_total0 = clock::now();
 
-            static bool const mna_reuse_enabled = []() noexcept {
+            static bool const mna_reuse_enabled = []() noexcept
+            {
                 auto const* v = ::std::getenv("PHY_ENGINE_MNA_REUSE");
                 return v == nullptr || (*v != '0');
             }();
             bool const can_reuse_mna = mna_reuse_enabled && mna_keep_pattern_ready && mna.node_size == node_counter && mna.branch_size == branch_counter;
             if(can_reuse_mna) { mna.clear_values_keep_pattern(); }
-            else { mna.clear(); }
+            else
+            {
+                mna.clear();
+            }
 
             mna.resize(node_counter
 #if 0
@@ -898,7 +896,8 @@ namespace phy_engine
                     if(nnz_size > static_cast<::std::size_t>(::std::numeric_limits<int>::max())) [[unlikely]] { return false; }
 
                     auto const t_csr0 = clock::now();
-                    static bool const cache_enabled = []() noexcept {
+                    static bool const cache_enabled = []() noexcept
+                    {
                         auto const* v = ::std::getenv("PHY_ENGINE_CUDA_CSR_CACHE");
                         return v == nullptr || (*v != '0');
                     }();
@@ -907,8 +906,8 @@ namespace phy_engine
                     bool rebuilt_pattern{};
                     bool all_real{(at == ::phy_engine::analyze_type::DC || at == ::phy_engine::analyze_type::OP)};
 
-                    if(!cache_enabled || cache.row_size != row_size || cache.nnz_size != nnz_size ||
-                       cache.csr_row_ptr.size() != row_size + 1 || cache.csr_col_ind.size() != nnz_size)
+                    if(!cache_enabled || cache.row_size != row_size || cache.nnz_size != nnz_size || cache.csr_row_ptr.size() != row_size + 1 ||
+                       cache.csr_col_ind.size() != nnz_size)
                     {
                         rebuilt_pattern = true;
                         cache.row_size = row_size;
@@ -918,10 +917,7 @@ namespace phy_engine
                     }
 
                     // Ensure value buffers are allocated (no per-iter push_back/realloc).
-                    if(all_real)
-                    {
-                        cache.csr_values_real.resize(nnz_size);
-                    }
+                    if(all_real) { cache.csr_values_real.resize(nnz_size); }
                     else
                     {
                         cache.csr_values.resize(nnz_size);
@@ -957,7 +953,10 @@ namespace phy_engine
                                         cache.csr_values_real.clear();
                                     }
                                     if(all_real) { cache.csr_values_real[k] = v.real(); }
-                                    else { cache.csr_values[k] = v; }
+                                    else
+                                    {
+                                        cache.csr_values[k] = v;
+                                    }
                                 }
                                 else
                                 {
@@ -988,7 +987,10 @@ namespace phy_engine
                             rebuilt_pattern = true;
                             cache.csr_row_ptr.assign(row_size + 1, 0);
                             if(all_real) { cache.csr_values_real.resize(nnz_size); }
-                            else { cache.csr_values.resize(nnz_size); }
+                            else
+                            {
+                                cache.csr_values.resize(nnz_size);
+                            }
                             if(!fill_values_and_validate()) [[unlikely]] { return false; }
                         }
                     }
@@ -1094,28 +1096,19 @@ namespace phy_engine
                     }
                     auto const t_cuda1 = clock::now();
 
-                    if(!ok) [[unlikely]]
-                    {
-                        return false;
-                    }
+                    if(!ok) [[unlikely]] { return false; }
 
                     if(all_real)
                     {
                         for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = {cache.x_real[n->node_index], 0.0}; }
                         nl.ground_node.node_information.an.voltage = {};
-                        for(auto* const bptr: size_t_to_branch_p)
-                        {
-                            bptr->current = {cache.x_real[mna.node_size + bptr->index], 0.0};
-                        }
+                        for(auto* const bptr: size_t_to_branch_p) { bptr->current = {cache.x_real[mna.node_size + bptr->index], 0.0}; }
                     }
                     else
                     {
                         for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = cache.x[n->node_index]; }
-                    nl.ground_node.node_information.an.voltage = {};
-                    for(auto* const bptr: size_t_to_branch_p)
-                    {
-                        bptr->current = cache.x[mna.node_size + bptr->index];
-                    }
+                        nl.ground_node.node_information.an.voltage = {};
+                        for(auto* const bptr: size_t_to_branch_p) { bptr->current = cache.x[mna.node_size + bptr->index]; }
                     }
 
                     if(prof)
@@ -1176,33 +1169,66 @@ namespace phy_engine
                         auto const t_total1 = clock::now();
                         if(has_resid)
                         {
-                            ::fast_io::io::perr("[profile] stamp_ms=", details::ms_since<clock>(t_stamp0, t_stamp1),
-                                                " n=", row_size,
-                                                " nnz=", nnz_size,
-                                                " csr_ms=", details::ms_since<clock>(t_csr0, t_rhs0),
-                                                " rhs_ms=", details::ms_since<clock>(t_rhs0, t_rhs1),
-                                                " cuda_total_ms=", details::ms_since<clock>(t_cuda0, t_cuda1),
-                                                " (h2d_ms=", cuda_t.h2d_ms, " solve_ms=", cuda_t.solve_ms, " d2h_ms=", cuda_t.d2h_ms,
-                                                " solve_host_ms=", cuda_t.solve_host_ms,
-                                                " solve_total_host_ms=", cuda_t.solve_total_host_ms, ")",
-                                                " real=", all_real ? "1" : "0",
-                                                " resid_max=", resid_max,
-                                                " total_ms=", details::ms_since<clock>(t_total0, t_total1),
+                            ::fast_io::io::perr("[profile] stamp_ms=",
+                                                details::ms_since<clock>(t_stamp0, t_stamp1),
+                                                " n=",
+                                                row_size,
+                                                " nnz=",
+                                                nnz_size,
+                                                " csr_ms=",
+                                                details::ms_since<clock>(t_csr0, t_rhs0),
+                                                " rhs_ms=",
+                                                details::ms_since<clock>(t_rhs0, t_rhs1),
+                                                " cuda_total_ms=",
+                                                details::ms_since<clock>(t_cuda0, t_cuda1),
+                                                " (h2d_ms=",
+                                                cuda_t.h2d_ms,
+                                                " solve_ms=",
+                                                cuda_t.solve_ms,
+                                                " d2h_ms=",
+                                                cuda_t.d2h_ms,
+                                                " solve_host_ms=",
+                                                cuda_t.solve_host_ms,
+                                                " solve_total_host_ms=",
+                                                cuda_t.solve_total_host_ms,
+                                                ")",
+                                                " real=",
+                                                all_real ? "1" : "0",
+                                                " resid_max=",
+                                                resid_max,
+                                                " total_ms=",
+                                                details::ms_since<clock>(t_total0, t_total1),
                                                 "\n");
                         }
                         else
                         {
-                            ::fast_io::io::perr("[profile] stamp_ms=", details::ms_since<clock>(t_stamp0, t_stamp1),
-                                                " n=", row_size,
-                                                " nnz=", nnz_size,
-                                                " csr_ms=", details::ms_since<clock>(t_csr0, t_rhs0),
-                                                " rhs_ms=", details::ms_since<clock>(t_rhs0, t_rhs1),
-                                                " cuda_total_ms=", details::ms_since<clock>(t_cuda0, t_cuda1),
-                                                " (h2d_ms=", cuda_t.h2d_ms, " solve_ms=", cuda_t.solve_ms, " d2h_ms=", cuda_t.d2h_ms,
-                                                " solve_host_ms=", cuda_t.solve_host_ms,
-                                                " solve_total_host_ms=", cuda_t.solve_total_host_ms, ")",
-                                                " real=", all_real ? "1" : "0",
-                                                " total_ms=", details::ms_since<clock>(t_total0, t_total1),
+                            ::fast_io::io::perr("[profile] stamp_ms=",
+                                                details::ms_since<clock>(t_stamp0, t_stamp1),
+                                                " n=",
+                                                row_size,
+                                                " nnz=",
+                                                nnz_size,
+                                                " csr_ms=",
+                                                details::ms_since<clock>(t_csr0, t_rhs0),
+                                                " rhs_ms=",
+                                                details::ms_since<clock>(t_rhs0, t_rhs1),
+                                                " cuda_total_ms=",
+                                                details::ms_since<clock>(t_cuda0, t_cuda1),
+                                                " (h2d_ms=",
+                                                cuda_t.h2d_ms,
+                                                " solve_ms=",
+                                                cuda_t.solve_ms,
+                                                " d2h_ms=",
+                                                cuda_t.d2h_ms,
+                                                " solve_host_ms=",
+                                                cuda_t.solve_host_ms,
+                                                " solve_total_host_ms=",
+                                                cuda_t.solve_total_host_ms,
+                                                ")",
+                                                " real=",
+                                                all_real ? "1" : "0",
+                                                " total_ms=",
+                                                details::ms_since<clock>(t_total0, t_total1),
                                                 "\n");
                         }
                     }
@@ -1211,22 +1237,29 @@ namespace phy_engine
 #endif
 
                 // mna A matrix
-                smXcd temp_A{static_cast<::Eigen::Index>(row_size), static_cast<::Eigen::Index>(row_size)};
+                //
+                // mna.A is stored row-indexed (row -> {col->value}). Eigen's default SparseMatrix is column-major,
+                // and writing with (row,col) outer/inner would effectively transpose the system for non-symmetric A.
+                // Build in row-major first, then convert to column-major for SparseLU.
+                using smXcd_rm = ::Eigen::SparseMatrix<::std::complex<double>, ::Eigen::RowMajor>;
+                smXcd_rm temp_A_rm{static_cast<::Eigen::Index>(row_size), static_cast<::Eigen::Index>(row_size)};
 
-                smXcd::IndexVector wi{temp_A.outerSize()};
+                smXcd_rm::IndexVector wi{temp_A_rm.outerSize()};
                 for(::std::size_t r{}; r < row_size; ++r)
                 {
-                    wi(static_cast<::Eigen::Index>(r)) = static_cast<typename smXcd::StorageIndex>(mna.A[r].size());
+                    wi(static_cast<::Eigen::Index>(r)) = static_cast<typename smXcd_rm::StorageIndex>(mna.A[r].size());
                 }
 
-                temp_A.reserve(wi);
+                temp_A_rm.reserve(wi);
 
                 for(::std::size_t r{}; r < row_size; ++r)
                 {
-                    for(auto const& [c, v]: mna.A[r]) { temp_A.insertBackUncompressed(static_cast<::Eigen::Index>(r), static_cast<::Eigen::Index>(c)) = v; }
+                    for(auto const& [c, v]: mna.A[r]) { temp_A_rm.insertBackUncompressed(static_cast<::Eigen::Index>(r), static_cast<::Eigen::Index>(c)) = v; }
                 }
 
-                temp_A.collapseDuplicates(::Eigen::internal::scalar_sum_op<smXcd::Scalar, smXcd::Scalar>());
+                temp_A_rm.collapseDuplicates(::Eigen::internal::scalar_sum_op<smXcd_rm::Scalar, smXcd_rm::Scalar>());
+                smXcd temp_A{temp_A_rm};
+                temp_A.makeCompressed();
 
                 // mna Z vector
                 svXcd temp_Z{static_cast<::Eigen::Index>(row_size)};
@@ -1242,10 +1275,7 @@ namespace phy_engine
                 // storage
                 for(auto* const n: size_t_to_node_p) { n->node_information.an.voltage = X[n->node_index]; }
                 nl.ground_node.node_information.an.voltage = {};
-                for(auto* const b: size_t_to_branch_p)
-                {
-                    b->current = X[mna.node_size + b->index];
-                }
+                for(auto* const b: size_t_to_branch_p) { b->current = X[mna.node_size + b->index]; }
             }
 
             return true;

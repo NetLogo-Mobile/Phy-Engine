@@ -43,7 +43,11 @@ endmodule
     add_to_node(nl, *vmod, 3, ny_sel0);
     add_to_node(nl, *vmod, 4, ny_local);
 
-    if(!c.analyze()) { return 1; }
+    if(!c.analyze())
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: analyze failed\n");
+        return 1;
+    }
 
     auto set_in = [&](::phy_engine::model::model_base* in, ::phy_engine::model::digital_node_statement_t v) {
         in->ptr->set_attribute(0, {.digital{v}, .type{::phy_engine::model::variant_type::digital}});
@@ -52,18 +56,41 @@ endmodule
     set_in(ina, ::phy_engine::model::digital_node_statement_t::true_state);
     set_in(inb, ::phy_engine::model::digital_node_statement_t::false_state);
     c.digital_clk();
-    if(ny_sel1.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state) { return 1; }
-    if(ny_sel0.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::false_state) { return 1; }
+    if(ny_sel1.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state)
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: y_sel1 mismatch\n");
+        return 1;
+    }
+    if(ny_sel0.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::false_state)
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: y_sel0 mismatch\n");
+        return 1;
+    }
     // localparam override must be ignored: L=0 => selects b (0)
-    if(ny_local.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::false_state) { return 1; }
+    if(ny_local.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::false_state)
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: y_local mismatch (localparam override applied?)\n");
+        return 1;
+    }
 
     set_in(ina, ::phy_engine::model::digital_node_statement_t::false_state);
     set_in(inb, ::phy_engine::model::digital_node_statement_t::true_state);
     c.digital_clk();
-    if(ny_sel1.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::false_state) { return 1; }
-    if(ny_sel0.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state) { return 1; }
-    if(ny_local.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state) { return 1; }
+    if(ny_sel1.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::false_state)
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: y_sel1 mismatch (case 2)\n");
+        return 1;
+    }
+    if(ny_sel0.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state)
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: y_sel0 mismatch (case 2)\n");
+        return 1;
+    }
+    if(ny_local.node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state)
+    {
+        ::fast_io::io::perr("sim_param_localparam_instantiation: y_local mismatch (case 2)\n");
+        return 1;
+    }
 
     return 0;
 }
-

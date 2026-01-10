@@ -8,7 +8,8 @@ namespace phy_engine::model
     {
         inline static constexpr ::fast_io::u8string_view model_name{u8"Relay"};
 
-        inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::linear};
+        // Relay is piecewise (state depends on solved coil voltage), so treat it as non-linear to trigger iterative DC solving.
+        inline static constexpr ::phy_engine::model::model_device_type device_type{::phy_engine::model::model_device_type::non_linear};
         inline static constexpr ::fast_io::u8string_view identification_name{u8"RELAY"};
 
         // Control coil: C+ and C-; Contact: A and B
@@ -106,16 +107,12 @@ namespace phy_engine::model
     static_assert(::phy_engine::model::defines::can_iterate_dc<relay>);
 
     inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<relay>, relay& r) noexcept
-    {
-        return {r.pins, 4};
-    }
+    { return {r.pins, 4}; }
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<relay>);
 
     inline constexpr ::phy_engine::model::branch_view generate_branch_view_define(::phy_engine::model::model_reserve_type_t<relay>, relay& r) noexcept
-    {
-        return {__builtin_addressof(r.branches), 1};
-    }
+    { return {__builtin_addressof(r.branches), 1}; }
 
     static_assert(::phy_engine::model::defines::can_generate_branch_view<relay>);
 }  // namespace phy_engine::model

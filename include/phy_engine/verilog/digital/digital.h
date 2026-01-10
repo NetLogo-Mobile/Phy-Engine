@@ -145,7 +145,7 @@ namespace phy_engine::verilog::digital
         // Optional resolver for `` `include "path" `` / `` `include <path> ``.
         // Return true and write the included file content into `out_text` to include it.
         void* user{};
-        bool (*include_resolver)(void* user, ::fast_io::u8string_view path, ::fast_io::u8string& out_text) noexcept{};
+        bool (*include_resolver)(void* user, ::fast_io::u8string_view path, ::fast_io::u8string& out_text) noexcept {};
         ::std::uint32_t include_depth_limit{32};
     };
 
@@ -650,46 +650,28 @@ namespace phy_engine::verilog::digital
                         {
                             // inactive branch: ignore include but keep line structure
                         }
-                        else if(depth >= opt.include_depth_limit)
-                        {
-                            do_error(u8"`include depth limit exceeded", col0);
-                        }
-                        else if(opt.include_resolver == nullptr)
-                        {
-                            do_error(u8"`include requires an include_resolver", col0);
-                        }
+                        else if(depth >= opt.include_depth_limit) { do_error(u8"`include depth limit exceeded", col0); }
+                        else if(opt.include_resolver == nullptr) { do_error(u8"`include requires an include_resolver", col0); }
                         else
                         {
                             skip_spaces(t, logical_end);
-                            if(t >= logical_end)
-                            {
-                                do_error(u8"expected path after `include", col0);
-                            }
+                            if(t >= logical_end) { do_error(u8"expected path after `include", col0); }
                             else
                             {
                                 char8_t const open{*t};
                                 char8_t const close{open == u8'<' ? u8'>' : u8'"'};
-                                if(open != u8'"' && open != u8'<')
-                                {
-                                    do_error(u8"expected `include \"path\" or `include <path>", col0);
-                                }
+                                if(open != u8'"' && open != u8'<') { do_error(u8"expected `include \"path\" or `include <path>", col0); }
                                 else
                                 {
                                     ++t;  // consume open
                                     char8_t const* const b{t};
                                     while(t < logical_end && *t != close) { ++t; }
-                                    if(t >= logical_end)
-                                    {
-                                        do_error(u8"unterminated `include path", col0);
-                                    }
+                                    if(t >= logical_end) { do_error(u8"unterminated `include path", col0); }
                                     else
                                     {
                                         ::fast_io::u8string_view const path{b, static_cast<::std::size_t>(t - b)};
                                         ::fast_io::u8string included{};
-                                        if(!opt.include_resolver(opt.user, path, included))
-                                        {
-                                            do_error(u8"failed to resolve `include", col0);
-                                        }
+                                        if(!opt.include_resolver(opt.user, path, included)) { do_error(u8"failed to resolve `include", col0); }
                                         else
                                         {
                                             emit_newline = false;  // include replaces this directive line
@@ -1373,6 +1355,9 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<bool> signal_is_reg{};
         ::fast_io::vector<bool> signal_is_signed{};
         ::fast_io::vector<::std::uint8_t> signal_is_const{};
+        // Whether a const signal can be constant-propagated into literals during expression parsing.
+        // Parameters must remain overrideable per-instance, so only localparams are foldable.
+        ::fast_io::vector<::std::uint8_t> signal_is_const_foldable{};
         ::fast_io::vector<logic_t> signal_const_value{};
         ::absl::btree_map<::fast_io::u8string, ::std::size_t> signal_index{};
 
@@ -1775,6 +1760,7 @@ namespace phy_engine::verilog::digital
             m.signal_is_reg.push_back(false);
             m.signal_is_signed.push_back(false);
             m.signal_is_const.push_back(0u);
+            m.signal_is_const_foldable.push_back(0u);
             m.signal_const_value.push_back(logic_t::indeterminate_state);
             m.signal_index.insert({::fast_io::u8string{name}, idx});
             return idx;
@@ -1971,6 +1957,7 @@ namespace phy_engine::verilog::digital
             if(m.signal_is_const.size() < m.signal_names.size())
             {
                 m.signal_is_const.resize(m.signal_names.size());
+                m.signal_is_const_foldable.resize(m.signal_names.size());
                 m.signal_const_value.resize(m.signal_names.size());
             }
             m.signal_is_const.index_unchecked(sig) = 1u;
@@ -2000,12 +1987,17 @@ namespace phy_engine::verilog::digital
                     auto const sig{vd.bits.index_unchecked(pos_from_msb)};
                     bool const b{((value >> bit_from_lsb) & 1u) != 0u};
                     set_const_signal(m, sig, b ? logic_t::true_state : logic_t::false_state);
+                    if(sig < m.signal_is_const_foldable.size()) { m.signal_is_const_foldable.index_unchecked(sig) = is_local ? 1u : 0u; }
                 }
             }
             else
             {
                 // Should not happen, but keep state consistent.
-                for(auto const sig: vd.bits) { set_const_signal(m, sig, logic_t::indeterminate_state); }
+                for(auto const sig: vd.bits)
+                {
+                    set_const_signal(m, sig, logic_t::indeterminate_state);
+                    if(sig < m.signal_is_const_foldable.size()) { m.signal_is_const_foldable.index_unchecked(sig) = is_local ? 1u : 0u; }
+                }
             }
 
             if(!is_local) { m.param_order.push_back(key); }
@@ -2039,7 +2031,8 @@ namespace phy_engine::verilog::digital
 
                 // Constant-propagate constant signals into literals.
                 if(n.kind == expr_kind::signal && n.signal != SIZE_MAX && n.signal < m->signal_is_const.size() && n.signal < m->signal_const_value.size() &&
-                   m->signal_is_const.index_unchecked(n.signal) != 0u)
+                   m->signal_is_const.index_unchecked(n.signal) != 0u && n.signal < m->signal_is_const_foldable.size() &&
+                   m->signal_is_const_foldable.index_unchecked(n.signal) != 0u)
                 {
                     n.kind = expr_kind::literal;
                     n.literal = m->signal_const_value.index_unchecked(n.signal);
