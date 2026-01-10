@@ -22,7 +22,7 @@ namespace phy_engine::verilog::digital
     // This is a deliberately small, synthesizable Verilog subset intended for use as a digital "device" in Phy-Engine.
     // Supported:
     // - `module` / `endmodule`
-    // - Simple preprocessor: `define`/`undef`/`ifdef`/`ifndef`/`else`/`endif` + `NAME` macro expansion
+    // - Simple preprocessor: `define`/`undef`/`ifdef`/`ifndef`/`else`/`endif`/`include` + `NAME` macro expansion
     // - Port declarations: `input` / `output` / `inout`, scalar or vectors (`[msb:lsb]`), and `output reg`
     // - `wire` / `reg` declarations (scalar or vectors)
     // - Continuous assignment: `assign lhs = expr;`
@@ -35,7 +35,7 @@ namespace phy_engine::verilog::digital
     // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
     // - Module instantiation: named/positional port connections (including general expressions) + width coercion (truncation, sign/zero extension)
     //
-    // Not supported: `include`, drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
+    // Not supported: drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
 
@@ -140,11 +140,18 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<compile_error> errors{};
     };
 
-    inline preprocess_result preprocess(::fast_io::u8string_view src) noexcept
+    struct preprocess_options
+    {
+        // Optional resolver for `` `include "path" `` / `` `include <path> ``.
+        // Return true and write the included file content into `out_text` to include it.
+        void* user{};
+        bool (*include_resolver)(void* user, ::fast_io::u8string_view path, ::fast_io::u8string& out_text) noexcept{};
+        ::std::uint32_t include_depth_limit{32};
+    };
+
+    inline preprocess_result preprocess(::fast_io::u8string_view src, preprocess_options const& opt) noexcept
     {
         preprocess_result out{};
-        out.output.reserve(src.size());
-        out.source_map.reserve(src.size());
 
         struct macro_def
         {
@@ -521,151 +528,225 @@ namespace phy_engine::verilog::digital
             return r;
         };
 
-        char8_t const* p{src.data()};
-        char8_t const* const e{src.data() + src.size()};
-        ::std::size_t line{1};
-
-        while(p < e)
+        auto process_text = [&](auto&& self, ::fast_io::u8string_view text, ::std::uint32_t depth) noexcept -> void
         {
-            char8_t const* const line_begin{p};
-            char8_t const* line_end{p};
-            while(line_end < e && *line_end != u8'\n') { ++line_end; }
+            out.output.reserve(out.output.size() + text.size());
+            out.source_map.reserve(out.source_map.size() + text.size());
 
-            // strip trailing \r
-            char8_t const* logical_end{line_end};
-            if(logical_end > line_begin && logical_end[-1] == u8'\r') { --logical_end; }
+            char8_t const* p{text.data()};
+            char8_t const* const e{text.data() + text.size()};
+            ::std::size_t line{1};
 
-            // find first non-space
-            char8_t const* q{line_begin};
-            while(q < logical_end && details::is_space(*q) && *q != u8'\n' && *q != u8'\r') { ++q; }
-
-            bool const is_directive{q < logical_end && *q == u8'`'};
-
-            if(is_directive)
+            while(p < e)
             {
-                char8_t const* t{q + 1};
-                while(t < logical_end && details::is_space(*t)) { ++t; }
-                auto const kw_sv{parse_ident(t, logical_end)};
+                char8_t const* const line_begin{p};
+                char8_t const* line_end{p};
+                while(line_end < e && *line_end != u8'\n') { ++line_end; }
 
-                auto kw_eq = [&](::fast_io::u8string_view kw) noexcept { return kw_sv == kw; };
+                // strip trailing \r
+                char8_t const* logical_end{line_end};
+                if(logical_end > line_begin && logical_end[-1] == u8'\r') { --logical_end; }
 
-                auto do_error = [&](::fast_io::u8string_view msg, ::std::size_t col) noexcept
-                { out.errors.push_back({::fast_io::u8string{msg}, 0, line, col}); };
+                // find first non-space
+                char8_t const* q{line_begin};
+                while(q < logical_end && details::is_space(*q) && *q != u8'\n' && *q != u8'\r') { ++q; }
 
-                auto const col0{static_cast<::std::size_t>(q - line_begin) + 1};
+                bool const is_directive{q < logical_end && *q == u8'`'};
 
-                if(kw_eq(u8"define"))
+                if(is_directive)
                 {
-                    if(!current_active())
+                    bool emit_newline{true};
+
+                    char8_t const* t{q + 1};
+                    while(t < logical_end && details::is_space(*t)) { ++t; }
+                    auto const kw_sv{parse_ident(t, logical_end)};
+
+                    auto kw_eq = [&](::fast_io::u8string_view kw) noexcept { return kw_sv == kw; };
+
+                    auto do_error = [&](::fast_io::u8string_view msg, ::std::size_t col) noexcept
+                    { out.errors.push_back({::fast_io::u8string{msg}, 0, line, col}); };
+
+                    auto const col0{static_cast<::std::size_t>(q - line_begin) + 1};
+
+                    if(kw_eq(u8"define"))
                     {
-                        // ignore defines in inactive branches, but keep line structure
+                        if(!current_active())
+                        {
+                            // ignore defines in inactive branches, but keep line structure
+                        }
+                        else
+                        {
+                            skip_spaces(t, logical_end);
+                            auto const name_sv{parse_ident(t, logical_end)};
+                            if(name_sv.empty()) { do_error(u8"expected macro name after `define", col0); }
+                            else
+                            {
+                                macro_def md{};
+                                // Function-like macros require '(' immediately after the name (no whitespace),
+                                // matching common Verilog/C preprocessor behavior.
+                                if(t < logical_end && *t == u8'(')
+                                {
+                                    md.function_like = true;
+                                    if(!parse_param_list_after_lparen(t, logical_end, md.params))
+                                    {
+                                        do_error(u8"invalid macro parameter list in `define", col0);
+                                        md.params.clear();
+                                    }
+                                }
+
+                                skip_spaces(t, logical_end);
+                                md.body.assign(::fast_io::u8string_view{t, static_cast<::std::size_t>(logical_end - t)});
+                                macros.insert_or_assign(::fast_io::u8string{name_sv}, ::std::move(md));
+                            }
+                        }
                     }
-                    else
+                    else if(kw_eq(u8"undef"))
+                    {
+                        if(current_active())
+                        {
+                            skip_spaces(t, logical_end);
+                            auto const name_sv{parse_ident(t, logical_end)};
+                            if(name_sv.empty()) { do_error(u8"expected macro name after `undef", col0); }
+                            else
+                            {
+                                macros.erase(::fast_io::u8string{name_sv});
+                            }
+                        }
+                    }
+                    else if(kw_eq(u8"ifdef") || kw_eq(u8"ifndef"))
                     {
                         skip_spaces(t, logical_end);
                         auto const name_sv{parse_ident(t, logical_end)};
-                        if(name_sv.empty()) { do_error(u8"expected macro name after `define", col0); }
+                        bool const defined{name_sv.empty() ? false : (macros.find(::fast_io::u8string{name_sv}) != macros.end())};
+                        bool const cond{kw_eq(u8"ifdef") ? defined : !defined};
+                        bool const parent{current_active()};
+                        ifs.push_back({parent, cond, parent && cond, false});
+                    }
+                    else if(kw_eq(u8"else"))
+                    {
+                        if(ifs.empty()) { do_error(u8"`else without matching `ifdef/`ifndef", col0); }
                         else
                         {
-                            macro_def md{};
-                            // Function-like macros require '(' immediately after the name (no whitespace),
-                            // matching common Verilog/C preprocessor behavior.
-                            if(t < logical_end && *t == u8'(')
+                            auto& fr{ifs.back_unchecked()};
+                            if(fr.seen_else) { do_error(u8"multiple `else in the same conditional block", col0); }
+                            else
                             {
-                                md.function_like = true;
-                                if(!parse_param_list_after_lparen(t, logical_end, md.params))
+                                fr.seen_else = true;
+                                fr.active = fr.parent_active && !fr.cond;
+                            }
+                        }
+                    }
+                    else if(kw_eq(u8"endif"))
+                    {
+                        if(ifs.empty()) { do_error(u8"`endif without matching `ifdef/`ifndef", col0); }
+                        else
+                        {
+                            ifs.pop_back();
+                        }
+                    }
+                    else if(kw_eq(u8"include"))
+                    {
+                        if(!current_active())
+                        {
+                            // inactive branch: ignore include but keep line structure
+                        }
+                        else if(depth >= opt.include_depth_limit)
+                        {
+                            do_error(u8"`include depth limit exceeded", col0);
+                        }
+                        else if(opt.include_resolver == nullptr)
+                        {
+                            do_error(u8"`include requires an include_resolver", col0);
+                        }
+                        else
+                        {
+                            skip_spaces(t, logical_end);
+                            if(t >= logical_end)
+                            {
+                                do_error(u8"expected path after `include", col0);
+                            }
+                            else
+                            {
+                                char8_t const open{*t};
+                                char8_t const close{open == u8'<' ? u8'>' : u8'"'};
+                                if(open != u8'"' && open != u8'<')
                                 {
-                                    do_error(u8"invalid macro parameter list in `define", col0);
-                                    md.params.clear();
+                                    do_error(u8"expected `include \"path\" or `include <path>", col0);
+                                }
+                                else
+                                {
+                                    ++t;  // consume open
+                                    char8_t const* const b{t};
+                                    while(t < logical_end && *t != close) { ++t; }
+                                    if(t >= logical_end)
+                                    {
+                                        do_error(u8"unterminated `include path", col0);
+                                    }
+                                    else
+                                    {
+                                        ::fast_io::u8string_view const path{b, static_cast<::std::size_t>(t - b)};
+                                        ::fast_io::u8string included{};
+                                        if(!opt.include_resolver(opt.user, path, included))
+                                        {
+                                            do_error(u8"failed to resolve `include", col0);
+                                        }
+                                        else
+                                        {
+                                            emit_newline = false;  // include replaces this directive line
+                                            self(self, ::fast_io::u8string_view{included.data(), included.size()}, depth + 1);
+                                        }
+                                    }
                                 }
                             }
+                        }
+                    }
+                    else
+                    {
+                        do_error(u8"unsupported Verilog preprocessor directive", col0);
+                    }
 
-                            skip_spaces(t, logical_end);
-                            md.body.assign(::fast_io::u8string_view{t, static_cast<::std::size_t>(logical_end - t)});
-                            macros.insert_or_assign(::fast_io::u8string{name_sv}, ::std::move(md));
-                        }
-                    }
-                }
-                else if(kw_eq(u8"undef"))
-                {
-                    if(current_active())
+                    if(emit_newline)
                     {
-                        skip_spaces(t, logical_end);
-                        auto const name_sv{parse_ident(t, logical_end)};
-                        if(name_sv.empty()) { do_error(u8"expected macro name after `undef", col0); }
-                        else
-                        {
-                            macros.erase(::fast_io::u8string{name_sv});
-                        }
+                        // Preserve line structure for directives.
+                        out.output.push_back(u8'\n');
+                        out.source_map.push_back({static_cast<::std::uint32_t>(line), 1u});
                     }
                 }
-                else if(kw_eq(u8"ifdef") || kw_eq(u8"ifndef"))
+                else if(current_active())
                 {
-                    skip_spaces(t, logical_end);
-                    auto const name_sv{parse_ident(t, logical_end)};
-                    bool const defined{name_sv.empty() ? false : (macros.find(::fast_io::u8string{name_sv}) != macros.end())};
-                    bool const cond{kw_eq(u8"ifdef") ? defined : !defined};
-                    bool const parent{current_active()};
-                    ifs.push_back({parent, cond, parent && cond, false});
+                    // Expand macros (object-like and function-like): `NAME / `NAME(...)
+                    auto const expanded{
+                        expand_text(expand_text, ::fast_io::u8string_view{line_begin, static_cast<::std::size_t>(logical_end - line_begin)}, line, 1, 0)};
+                    out.output.append(::fast_io::u8string_view{expanded.text.data(), expanded.text.size()});
+                    for(auto const& sp: expanded.map) { out.source_map.push_back(sp); }
+                    out.output.push_back(u8'\n');
+                    out.source_map.push_back({static_cast<::std::uint32_t>(line), 1u});
                 }
-                else if(kw_eq(u8"else"))
-                {
-                    if(ifs.empty()) { do_error(u8"`else without matching `ifdef/`ifndef", col0); }
-                    else
-                    {
-                        auto& fr{ifs.back_unchecked()};
-                        if(fr.seen_else) { do_error(u8"multiple `else in the same conditional block", col0); }
-                        else
-                        {
-                            fr.seen_else = true;
-                            fr.active = fr.parent_active && !fr.cond;
-                        }
-                    }
-                }
-                else if(kw_eq(u8"endif"))
-                {
-                    if(ifs.empty()) { do_error(u8"`endif without matching `ifdef/`ifndef", col0); }
-                    else
-                    {
-                        ifs.pop_back();
-                    }
-                }
-                else if(kw_eq(u8"include")) { do_error(u8"`include is not supported in this Verilog subset", col0); }
                 else
                 {
-                    do_error(u8"unsupported Verilog preprocessor directive", col0);
+                    // inactive block: emit blank line
+                    out.output.push_back(u8'\n');
+                    out.source_map.push_back({static_cast<::std::uint32_t>(line), 1u});
                 }
 
-                // Preserve line numbering.
-                out.output.push_back(u8'\n');
-                out.source_map.push_back({static_cast<::std::uint32_t>(line), 1u});
+                if(line_end < e && *line_end == u8'\n') { p = line_end + 1; }
+                else
+                {
+                    p = line_end;
+                }
+                ++line;
             }
-            else if(current_active())
-            {
-                // Expand macros (object-like and function-like): `NAME / `NAME(...)
-                auto const expanded{
-                    expand_text(expand_text, ::fast_io::u8string_view{line_begin, static_cast<::std::size_t>(logical_end - line_begin)}, line, 1, 0)};
-                out.output.append(::fast_io::u8string_view{expanded.text.data(), expanded.text.size()});
-                for(auto const& sp: expanded.map) { out.source_map.push_back(sp); }
-                out.output.push_back(u8'\n');
-                out.source_map.push_back({static_cast<::std::uint32_t>(line), 1u});
-            }
-            else
-            {
-                // inactive block: emit blank line
-                out.output.push_back(u8'\n');
-                out.source_map.push_back({static_cast<::std::uint32_t>(line), 1u});
-            }
+        };
 
-            if(line_end < e && *line_end == u8'\n') { p = line_end + 1; }
-            else
-            {
-                p = line_end;
-            }
-            ++line;
-        }
+        process_text(process_text, src, 0);
 
         return out;
+    }
+
+    inline preprocess_result preprocess(::fast_io::u8string_view src) noexcept
+    {
+        preprocess_options opt{};
+        return preprocess(src, opt);
     }
 
     inline lex_result lex(::fast_io::u8string_view src, ::fast_io::vector<preprocess_result::source_position> const* smap) noexcept
@@ -6553,10 +6634,15 @@ namespace phy_engine::verilog::digital
         }
     }  // namespace details
 
-    inline compile_result compile(::fast_io::u8string_view src) noexcept
+    struct compile_options
+    {
+        preprocess_options preprocess{};
+    };
+
+    inline compile_result compile(::fast_io::u8string_view src, compile_options const& opt) noexcept
     {
         compile_result out{};
-        auto pp{preprocess(src)};
+        auto pp{preprocess(src, opt.preprocess)};
         out.errors = ::std::move(pp.errors);
 
         auto const lr{lex(::fast_io::u8string_view{pp.output.data(), pp.output.size()}, __builtin_addressof(pp.source_map))};
@@ -6576,6 +6662,12 @@ namespace phy_engine::verilog::digital
         }
 
         return out;
+    }
+
+    inline compile_result compile(::fast_io::u8string_view src) noexcept
+    {
+        compile_options opt{};
+        return compile(src, opt);
     }
 
     inline logic_t eval_expr(compiled_module const& m, ::std::size_t root, ::fast_io::vector<logic_t> const& values) noexcept
@@ -7609,13 +7701,13 @@ namespace phy_engine::verilog::digital
                     {
                         ::fast_io::vector<rhs_bit> rhs{};
                         rhs.resize(width);
-                        for(::std::size_t pos{}; pos < width; ++pos)
+                        for(::std::size_t pos{}; pos != width; ++pos)
                         {
                             rhs.index_unchecked(pos) = {.is_literal = false, .child_signal = cm.ports.index_unchecked(port_offset + pos).signal, .literal = {}};
                         }
 
                         auto const rhs_resized{resize_rhs(rhs, dw, pd.is_signed)};
-                        for(::std::size_t pos{}; pos < dw; ++pos)
+                        for(::std::size_t pos{}; pos != dw; ++pos)
                         {
                             auto const dst{dst_bits.index_unchecked(pos)};
                             if(dst == SIZE_MAX) { continue; }

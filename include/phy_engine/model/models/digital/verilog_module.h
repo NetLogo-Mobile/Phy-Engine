@@ -13,6 +13,63 @@
 
 namespace phy_engine::model
 {
+    namespace details
+    {
+        template <typename T>
+        inline void copy_fast_io_vector(::fast_io::vector<T>& dst, ::fast_io::vector<T> const& src) noexcept
+        {
+            dst.clear();
+            dst.reserve(src.size());
+            for(::std::size_t i{}; i < src.size(); ++i) { dst.push_back(src.index_unchecked(i)); }
+        }
+
+        inline void deep_copy_module_state(::phy_engine::verilog::digital::module_state& dst,
+                                           ::phy_engine::verilog::digital::module_state const& src) noexcept
+        {
+            dst.mod = src.mod;
+            copy_fast_io_vector(dst.values, src.values);
+            copy_fast_io_vector(dst.prev_values, src.prev_values);
+            copy_fast_io_vector(dst.comb_prev_values, src.comb_prev_values);
+            copy_fast_io_vector(dst.events, src.events);
+            copy_fast_io_vector(dst.nba_queue, src.nba_queue);
+            copy_fast_io_vector(dst.next_net_values, src.next_net_values);
+            copy_fast_io_vector(dst.change_mark, src.change_mark);
+            copy_fast_io_vector(dst.changed_signals, src.changed_signals);
+            dst.change_token = src.change_token;
+            copy_fast_io_vector(dst.expr_eval_cache, src.expr_eval_cache);
+            copy_fast_io_vector(dst.expr_eval_mark, src.expr_eval_mark);
+            dst.expr_eval_token = src.expr_eval_token;
+        }
+
+        inline void deep_copy_instance_state(::phy_engine::verilog::digital::instance_state& dst,
+                                             ::phy_engine::verilog::digital::instance_state const& src) noexcept
+        {
+            dst.mod = src.mod;
+            dst.instance_name = src.instance_name;
+            deep_copy_module_state(dst.state, src.state);
+            copy_fast_io_vector(dst.driven_nets, src.driven_nets);
+            copy_fast_io_vector(dst.bindings, src.bindings);
+            copy_fast_io_vector(dst.output_drives, src.output_drives);
+
+            dst.children.clear();
+            dst.children.reserve(src.children.size());
+            for(::std::size_t i{}; i < src.children.size(); ++i)
+            {
+                auto const& child{src.children.index_unchecked(i)};
+                if(child == nullptr)
+                {
+                    dst.children.push_back(::std::unique_ptr<::phy_engine::verilog::digital::instance_state>{});
+                    continue;
+                }
+
+                auto cloned{::std::make_unique<::phy_engine::verilog::digital::instance_state>()};
+                deep_copy_instance_state(*cloned, *child);
+                dst.children.push_back(::std::move(cloned));
+            }
+        }
+
+    }  // namespace details
+
     struct VERILOG_MODULE
     {
         inline static constexpr ::fast_io::u8string_view model_name{u8"VERILOG_MODULE"};
@@ -39,6 +96,60 @@ namespace phy_engine::model
 
         // Round-robin emitter for analog drives (because the digital API returns one drive per call).
         ::std::size_t analog_emit_cursor{};
+
+        VERILOG_MODULE() noexcept = default;
+        VERILOG_MODULE(VERILOG_MODULE const& other) noexcept
+        {
+            Ll = other.Ll;
+            Hl = other.Hl;
+            source = other.source;
+            top = other.top;
+            design = other.design;
+            tick = other.tick;
+            analog_emit_cursor = other.analog_emit_cursor;
+            details::deep_copy_instance_state(top_instance, other.top_instance);
+            pin_name_storage.clear();
+            pins.clear();
+            if(top_instance.mod != nullptr)
+            {
+                pin_name_storage.reserve(top_instance.mod->ports.size());
+                pins.reserve(top_instance.mod->ports.size());
+                for(auto const& p: top_instance.mod->ports)
+                {
+                    pin_name_storage.push_back(p.name);
+                    auto const& name{pin_name_storage.back_unchecked()};
+                    pins.push_back({::fast_io::u8string_view{name.data(), name.size()}, nullptr, nullptr});
+                }
+            }
+        }
+        VERILOG_MODULE& operator=(VERILOG_MODULE const& other) noexcept
+        {
+            if(__builtin_addressof(other) == this) { return *this; }
+            Ll = other.Ll;
+            Hl = other.Hl;
+            source = other.source;
+            top = other.top;
+            design = other.design;
+            tick = other.tick;
+            analog_emit_cursor = other.analog_emit_cursor;
+            details::deep_copy_instance_state(top_instance, other.top_instance);
+            pin_name_storage.clear();
+            pins.clear();
+            if(top_instance.mod != nullptr)
+            {
+                pin_name_storage.reserve(top_instance.mod->ports.size());
+                pins.reserve(top_instance.mod->ports.size());
+                for(auto const& p: top_instance.mod->ports)
+                {
+                    pin_name_storage.push_back(p.name);
+                    auto const& name{pin_name_storage.back_unchecked()};
+                    pins.push_back({::fast_io::u8string_view{name.data(), name.size()}, nullptr, nullptr});
+                }
+            }
+            return *this;
+        }
+        VERILOG_MODULE(VERILOG_MODULE&&) noexcept = default;
+        VERILOG_MODULE& operator=(VERILOG_MODULE&&) noexcept = default;
     };
 
     static_assert(::phy_engine::model::model<VERILOG_MODULE>);
@@ -193,15 +304,16 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_update_digital_clk<VERILOG_MODULE>);
 
-    // Build a VERILOG_MODULE from source text; returns an empty module if compilation or top lookup fails.
+    // Build a VERILOG_MODULE from source text with custom compile options (e.g. `include` resolver).
     inline VERILOG_MODULE make_verilog_module(::fast_io::u8string_view source,
-                                              ::fast_io::u8string_view top_name) noexcept
+                                              ::fast_io::u8string_view top_name,
+                                              ::phy_engine::verilog::digital::compile_options const& opt) noexcept
     {
         VERILOG_MODULE m{};
         m.source = ::fast_io::u8string{source};
         m.top = ::fast_io::u8string{top_name};
 
-        auto cr{::phy_engine::verilog::digital::compile(source)};
+        auto cr{::phy_engine::verilog::digital::compile(source, opt)};
         if(cr.modules.empty()) { return m; }
 
         m.design = ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
@@ -225,6 +337,14 @@ namespace phy_engine::model
         }
 
         return m;
+    }
+
+    // Build a VERILOG_MODULE from source text; returns an empty module if compilation or top lookup fails.
+    inline VERILOG_MODULE make_verilog_module(::fast_io::u8string_view source,
+                                              ::fast_io::u8string_view top_name) noexcept
+    {
+        ::phy_engine::verilog::digital::compile_options opt{};
+        return make_verilog_module(source, top_name, opt);
     }
 
 }  // namespace phy_engine::model

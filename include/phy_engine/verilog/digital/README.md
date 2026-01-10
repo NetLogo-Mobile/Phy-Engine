@@ -31,7 +31,7 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 ## TODO / Not Yet Supported
 
 ### Preprocessor / Compilation Units
-- [ ] `` `include `` (file loading, include search paths)
+- [x] `` `include `` (via `preprocess_options::include_resolver`; no include search paths)
 - [x] Macro arguments (function-like macros) (basic: `` `NAME(...) ``; no stringify/paste/line-continuation)
 - [x] Better `line`/column mapping through preprocessing (for diagnostics)
 
