@@ -31,11 +31,11 @@ namespace phy_engine::verilog::digital
     //   - `always @(a or b or c)` / `always @(a, b, c)` as combinational (sensitivity list drives scheduling)
     //   - `always @(posedge/negedge clk)` / `always_ff @(posedge clk or negedge rst_n)` as sequential (nonblocking assignment `<=`)
     // - Bit/part-select on any expression: `expr[idx]`, `expr[msb:lsb]` (expression part-select indices must be constant in this subset)
-	    // - Concatenation: `{a, b, c}`, `{N{...}}` (replication count must be constant in this subset)
-	    // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
-	    // - Module instantiation: named/positional port connections (including general expressions) + width coercion (truncation, sign/zero extension)
-	    //
-	    // Not supported: `include`, drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
+    // - Concatenation: `{a, b, c}`, `{N{...}}` (replication count must be constant in this subset)
+    // - Small delays: `#<int>` before assignments (tick unit defined by the embedding engine)
+    // - Module instantiation: named/positional port connections (including general expressions) + width coercion (truncation, sign/zero extension)
+    //
+    // Not supported: `include`, drive strengths, and complex event expressions inside `@(...)` (beyond signal/bit selects + posedge/negedge).
 
     using logic_t = ::phy_engine::model::digital_node_statement_t;
 
@@ -800,8 +800,8 @@ namespace phy_engine::verilog::digital
                 // Peek base marker.
                 ::std::size_t q{1};
                 if(p + q < e && (p[q] == u8's' || p[q] == u8'S')) { ++q; }
-                if(p + q < e && (p[q] == u8'b' || p[q] == u8'B' || p[q] == u8'o' || p[q] == u8'O' || p[q] == u8'd' || p[q] == u8'D' ||
-                                 p[q] == u8'h' || p[q] == u8'H'))
+                if(p + q < e &&
+                   (p[q] == u8'b' || p[q] == u8'B' || p[q] == u8'o' || p[q] == u8'O' || p[q] == u8'd' || p[q] == u8'D' || p[q] == u8'h' || p[q] == u8'H'))
                 {
                     char8_t const base{p[q]};
 
@@ -1054,7 +1054,7 @@ namespace phy_engine::verilog::digital
     {
         literal,
         signal,
-        is_unknown,   // returns 1 iff input is X/Z (Z treated as X)
+        is_unknown,  // returns 1 iff input is X/Z (Z treated as X)
         unary_not,
         binary_and,
         binary_or,
@@ -1064,48 +1064,46 @@ namespace phy_engine::verilog::digital
         binary_case_eq  // 4-state case equality for 1-bit: always 0/1 (no X result)
     };
 
-	    struct expr_node
-	    {
-	        expr_kind kind{expr_kind::literal};
-	        logic_t literal{logic_t::indeterminate_state};
-	        ::std::size_t a{SIZE_MAX};
-	        ::std::size_t b{SIZE_MAX};
-	        ::std::size_t signal{SIZE_MAX};
-	    };
+    struct expr_node
+    {
+        expr_kind kind{expr_kind::literal};
+        logic_t literal{logic_t::indeterminate_state};
+        ::std::size_t a{SIZE_MAX};
+        ::std::size_t b{SIZE_MAX};
+        ::std::size_t signal{SIZE_MAX};
+    };
 
-	    struct expr_node_key
-	    {
-	        expr_kind kind{expr_kind::literal};
-	        logic_t literal{logic_t::indeterminate_state};
-	        ::std::size_t a{SIZE_MAX};
-	        ::std::size_t b{SIZE_MAX};
-	        ::std::size_t signal{SIZE_MAX};
-	    };
+    struct expr_node_key
+    {
+        expr_kind kind{expr_kind::literal};
+        logic_t literal{logic_t::indeterminate_state};
+        ::std::size_t a{SIZE_MAX};
+        ::std::size_t b{SIZE_MAX};
+        ::std::size_t signal{SIZE_MAX};
+    };
 
-	    inline constexpr bool operator==(expr_node_key const& x, expr_node_key const& y) noexcept
-	    {
-	        return x.kind == y.kind && x.literal == y.literal && x.a == y.a && x.b == y.b && x.signal == y.signal;
-	    }
+    inline constexpr bool operator== (expr_node_key const& x, expr_node_key const& y) noexcept
+    { return x.kind == y.kind && x.literal == y.literal && x.a == y.a && x.b == y.b && x.signal == y.signal; }
 
-	    struct expr_node_key_hash
-	    {
-	        [[nodiscard]] ::std::size_t operator()(expr_node_key const& k) const noexcept
-	        {
-	            auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
-	            {
-	                // 64-bit mix (works fine on 32-bit too).
-	                return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
-	            };
+    struct expr_node_key_hash
+    {
+        [[nodiscard]] ::std::size_t operator() (expr_node_key const& k) const noexcept
+        {
+            auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
+            {
+                // 64-bit mix (works fine on 32-bit too).
+                return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
+            };
 
-	            std::size_t h{};
-	            h = mix(h, static_cast<std::size_t>(k.kind));
-	            h = mix(h, static_cast<std::size_t>(k.literal));
-	            h = mix(h, k.a);
-	            h = mix(h, k.b);
-	            h = mix(h, k.signal);
-	            return h;
-	        }
-	    };
+            std::size_t h{};
+            h = mix(h, static_cast<std::size_t>(k.kind));
+            h = mix(h, static_cast<std::size_t>(k.literal));
+            h = mix(h, k.a);
+            h = mix(h, k.b);
+            h = mix(h, k.signal);
+            return h;
+        }
+    };
 
     struct continuous_assign
     {
@@ -1118,7 +1116,7 @@ namespace phy_engine::verilog::digital
     {
         bool is_default{};
         ::fast_io::vector<::std::size_t> match_roots{};  // msb->lsb (resized to case expression width)
-        ::fast_io::vector<::std::size_t> stmts{}; // indices into stmt_node arena
+        ::fast_io::vector<::std::size_t> stmts{};        // indices into stmt_node arena
     };
 
     struct stmt_node
@@ -1184,8 +1182,8 @@ namespace phy_engine::verilog::digital
 
     struct always_comb
     {
-        bool is_star{true};                                  // @* / always_comb (implicit sensitivity)
-        ::fast_io::vector<::std::size_t> sens_signals{};     // when !is_star: explicit sensitivity signals
+        bool is_star{true};                               // @* / always_comb (implicit sensitivity)
+        ::fast_io::vector<::std::size_t> sens_signals{};  // when !is_star: explicit sensitivity signals
         ::fast_io::vector<stmt_node> stmt_nodes{};
         ::fast_io::vector<::std::size_t> roots{};
     };
@@ -1210,16 +1208,16 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<::std::size_t> bits{};
     };
 
-	    enum class connection_kind : ::std::uint_fast8_t
-	    {
-	        unconnected,
-	        scalar,
-	        vector,
-	        literal,
-	        literal_vector,
-	        bit_list,  // msb->lsb list of parent signals and/or literals (e.g. concat/slice)
-	        expr       // general expression (msb->lsb expr roots into the parent module's expr_nodes)
-	    };
+    enum class connection_kind : ::std::uint_fast8_t
+    {
+        unconnected,
+        scalar,
+        vector,
+        literal,
+        literal_vector,
+        bit_list,  // msb->lsb list of parent signals and/or literals (e.g. concat/slice)
+        expr       // general expression (msb->lsb expr roots into the parent module's expr_nodes)
+    };
 
     struct connection_bit
     {
@@ -1228,17 +1226,17 @@ namespace phy_engine::verilog::digital
         logic_t literal{logic_t::indeterminate_state};
     };
 
-	    struct connection_ref
-	    {
-	        connection_kind kind{connection_kind::unconnected};
-	        bool is_signed{};
-	        ::std::size_t scalar_signal{SIZE_MAX};
-	        ::fast_io::u8string vector_base{};
-	        logic_t literal{logic_t::indeterminate_state};
-	        ::fast_io::vector<logic_t> literal_bits{};     // msb->lsb (only for literal_vector)
-	        ::fast_io::vector<connection_bit> bit_list{};  // msb->lsb (only for bit_list)
-	        ::fast_io::vector<::std::size_t> expr_roots{}; // msb->lsb (only for expr)
-	    };
+    struct connection_ref
+    {
+        connection_kind kind{connection_kind::unconnected};
+        bool is_signed{};
+        ::std::size_t scalar_signal{SIZE_MAX};
+        ::fast_io::u8string vector_base{};
+        logic_t literal{logic_t::indeterminate_state};
+        ::fast_io::vector<logic_t> literal_bits{};      // msb->lsb (only for literal_vector)
+        ::fast_io::vector<connection_bit> bit_list{};   // msb->lsb (only for bit_list)
+        ::fast_io::vector<::std::size_t> expr_roots{};  // msb->lsb (only for expr)
+    };
 
     struct instance_connection
     {
@@ -1279,9 +1277,9 @@ namespace phy_engine::verilog::digital
         ::fast_io::u8string rhs_expr_text{};                  // expression text for the single assignment body
     };
 
-	    struct compiled_module
-	    {
-	        ::fast_io::u8string name{};
+    struct compiled_module
+    {
+        ::fast_io::u8string name{};
 
         // Bit-level ports (vector ports are expanded to multiple entries).
         ::fast_io::vector<port> ports{};
@@ -1302,13 +1300,13 @@ namespace phy_engine::verilog::digital
         ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> param_default_values{};
         ::absl::btree_map<::fast_io::u8string, bool> param_is_local{};
 
-	        ::fast_io::vector<expr_node> expr_nodes{};
-	        // Expression node interning table for aggressive DAG sharing (common subexpr elimination).
-	        ::std::unordered_map<expr_node_key, ::std::size_t, expr_node_key_hash> expr_intern{};
-	        ::fast_io::vector<continuous_assign> assigns{};
-	        ::fast_io::vector<always_ff> always_ffs{};
-	        ::fast_io::vector<always_comb> always_combs{};
-	        ::fast_io::vector<instance> instances{};
+        ::fast_io::vector<expr_node> expr_nodes{};
+        // Expression node interning table for aggressive DAG sharing (common subexpr elimination).
+        ::std::unordered_map<expr_node_key, ::std::size_t, expr_node_key_hash> expr_intern{};
+        ::fast_io::vector<continuous_assign> assigns{};
+        ::fast_io::vector<always_ff> always_ffs{};
+        ::fast_io::vector<always_comb> always_combs{};
+        ::fast_io::vector<instance> instances{};
 
         ::absl::btree_map<::fast_io::u8string, function_def> functions{};
         ::absl::btree_map<::fast_io::u8string, task_def> tasks{};
@@ -1813,13 +1811,8 @@ namespace phy_engine::verilog::digital
             return vd.msb + static_cast<int>(pos);
         }
 
-        inline vector_desc& declare_vector_range(parser* p,
-                                                 compiled_module& m,
-                                                 ::fast_io::u8string_view base,
-                                                 int msb,
-                                                 int lsb,
-                                                 bool is_reg,
-                                                 bool is_signed = false) noexcept
+        inline vector_desc&
+            declare_vector_range(parser* p, compiled_module& m, ::fast_io::u8string_view base, int msb, int lsb, bool is_reg, bool is_signed = false) noexcept
         {
             ::fast_io::u8string key{base};
             auto it{m.vectors.find(key)};
@@ -1949,115 +1942,120 @@ namespace phy_engine::verilog::digital
             int lsb{};
         };
 
-	        struct expr_parser
-	        {
-	            static inline constexpr ::std::size_t max_expr_nodes{100000u};
-	            static inline constexpr ::std::size_t max_concat_bits{4096u};
+        struct expr_parser
+        {
+            inline static constexpr ::std::size_t max_expr_nodes{100000u};
+            inline static constexpr ::std::size_t max_concat_bits{4096u};
 
-	            parser* p{};
-	            compiled_module* m{};
-	            ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents{};
-	            ::absl::btree_map<::fast_io::u8string, expr_value> const* subst_idents{};
+            parser* p{};
+            compiled_module* m{};
+            ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents{};
+            ::absl::btree_map<::fast_io::u8string, expr_value> const* subst_idents{};
 
-	            [[nodiscard]] ::std::size_t add_node(expr_node n) noexcept
-	            {
-	                if(m == nullptr) { return SIZE_MAX; }
+            [[nodiscard]] ::std::size_t add_node(expr_node n) noexcept
+            {
+                if(m == nullptr) { return SIZE_MAX; }
 
-	                // Constant-propagate constant signals into literals.
-	                if(n.kind == expr_kind::signal && n.signal != SIZE_MAX && n.signal < m->signal_is_const.size() &&
-	                   n.signal < m->signal_const_value.size() && m->signal_is_const.index_unchecked(n.signal) != 0u)
-	                {
-	                    n.kind = expr_kind::literal;
-	                    n.literal = m->signal_const_value.index_unchecked(n.signal);
-	                    n.a = SIZE_MAX;
-	                    n.b = SIZE_MAX;
-	                    n.signal = SIZE_MAX;
-	                }
+                // Constant-propagate constant signals into literals.
+                if(n.kind == expr_kind::signal && n.signal != SIZE_MAX && n.signal < m->signal_is_const.size() && n.signal < m->signal_const_value.size() &&
+                   m->signal_is_const.index_unchecked(n.signal) != 0u)
+                {
+                    n.kind = expr_kind::literal;
+                    n.literal = m->signal_const_value.index_unchecked(n.signal);
+                    n.a = SIZE_MAX;
+                    n.b = SIZE_MAX;
+                    n.signal = SIZE_MAX;
+                }
 
-	                auto const try_get_literal = [&](::std::size_t root, logic_t& out) noexcept -> bool
-	                {
-	                    if(root >= m->expr_nodes.size()) { return false; }
-	                    auto const& nn{m->expr_nodes.index_unchecked(root)};
-	                    if(nn.kind != expr_kind::literal) { return false; }
-	                    out = nn.literal;
-	                    return true;
-	                };
+                auto const try_get_literal = [&](::std::size_t root, logic_t& out) noexcept -> bool
+                {
+                    if(root >= m->expr_nodes.size()) { return false; }
+                    auto const& nn{m->expr_nodes.index_unchecked(root)};
+                    if(nn.kind != expr_kind::literal) { return false; }
+                    out = nn.literal;
+                    return true;
+                };
 
-	                // Constant folding for 1-bit ops
-	                if(n.kind == expr_kind::unary_not)
-	                {
-	                    logic_t a{};
-	                    if(try_get_literal(n.a, a)) { return add_node({.kind = expr_kind::literal, .literal = logic_not(a)}); }
-	                }
-	                else if(n.kind == expr_kind::is_unknown)
-	                {
-	                    logic_t a{};
-	                    if(try_get_literal(n.a, a))
-	                    {
-	                        auto const aa{normalize_z_to_x(a)};
-	                        return add_node({.kind = expr_kind::literal,
-	                                         .literal = is_unknown(aa) ? logic_t::true_state : logic_t::false_state});
-	                    }
-	                }
-	                else if(n.kind == expr_kind::binary_and || n.kind == expr_kind::binary_or || n.kind == expr_kind::binary_xor ||
-	                        n.kind == expr_kind::binary_eq || n.kind == expr_kind::binary_neq || n.kind == expr_kind::binary_case_eq)
-	                {
-	                    logic_t a{};
-	                    logic_t b{};
-	                    if(try_get_literal(n.a, a) && try_get_literal(n.b, b))
-	                    {
-	                        logic_t v{logic_t::indeterminate_state};
-	                        switch(n.kind)
-	                        {
-	                            case expr_kind::binary_and: v = logic_and(a, b); break;
-	                            case expr_kind::binary_or: v = logic_or(a, b); break;
-	                            case expr_kind::binary_xor: v = logic_xor(a, b); break;
-	                            case expr_kind::binary_eq:
-	                            {
-	                                auto const aa{normalize_z_to_x(a)};
-	                                auto const bb{normalize_z_to_x(b)};
-	                                if(is_unknown(aa) || is_unknown(bb)) { v = logic_t::indeterminate_state; }
-	                                else { v = (aa == bb) ? logic_t::true_state : logic_t::false_state; }
-	                                break;
-	                            }
-	                            case expr_kind::binary_neq:
-	                            {
-	                                auto const aa{normalize_z_to_x(a)};
-	                                auto const bb{normalize_z_to_x(b)};
-	                                if(is_unknown(aa) || is_unknown(bb)) { v = logic_t::indeterminate_state; }
-	                                else { v = (aa != bb) ? logic_t::true_state : logic_t::false_state; }
-	                                break;
-	                            }
-	                            case expr_kind::binary_case_eq: v = (a == b) ? logic_t::true_state : logic_t::false_state; break;
-	                            default: break;
-	                        }
-	                        return add_node({.kind = expr_kind::literal, .literal = v});
-	                    }
-	                }
+                // Constant folding for 1-bit ops
+                if(n.kind == expr_kind::unary_not)
+                {
+                    logic_t a{};
+                    if(try_get_literal(n.a, a)) { return add_node({.kind = expr_kind::literal, .literal = logic_not(a)}); }
+                }
+                else if(n.kind == expr_kind::is_unknown)
+                {
+                    logic_t a{};
+                    if(try_get_literal(n.a, a))
+                    {
+                        auto const aa{normalize_z_to_x(a)};
+                        return add_node({.kind = expr_kind::literal, .literal = is_unknown(aa) ? logic_t::true_state : logic_t::false_state});
+                    }
+                }
+                else if(n.kind == expr_kind::binary_and || n.kind == expr_kind::binary_or || n.kind == expr_kind::binary_xor ||
+                        n.kind == expr_kind::binary_eq || n.kind == expr_kind::binary_neq || n.kind == expr_kind::binary_case_eq)
+                {
+                    logic_t a{};
+                    logic_t b{};
+                    if(try_get_literal(n.a, a) && try_get_literal(n.b, b))
+                    {
+                        logic_t v{logic_t::indeterminate_state};
+                        switch(n.kind)
+                        {
+                            case expr_kind::binary_and: v = logic_and(a, b); break;
+                            case expr_kind::binary_or: v = logic_or(a, b); break;
+                            case expr_kind::binary_xor: v = logic_xor(a, b); break;
+                            case expr_kind::binary_eq:
+                            {
+                                auto const aa{normalize_z_to_x(a)};
+                                auto const bb{normalize_z_to_x(b)};
+                                if(is_unknown(aa) || is_unknown(bb)) { v = logic_t::indeterminate_state; }
+                                else
+                                {
+                                    v = (aa == bb) ? logic_t::true_state : logic_t::false_state;
+                                }
+                                break;
+                            }
+                            case expr_kind::binary_neq:
+                            {
+                                auto const aa{normalize_z_to_x(a)};
+                                auto const bb{normalize_z_to_x(b)};
+                                if(is_unknown(aa) || is_unknown(bb)) { v = logic_t::indeterminate_state; }
+                                else
+                                {
+                                    v = (aa != bb) ? logic_t::true_state : logic_t::false_state;
+                                }
+                                break;
+                            }
+                            case expr_kind::binary_case_eq: v = (a == b) ? logic_t::true_state : logic_t::false_state; break;
+                            default: break;
+                        }
+                        return add_node({.kind = expr_kind::literal, .literal = v});
+                    }
+                }
 
-	                expr_node_key const key{.kind = n.kind, .literal = n.literal, .a = n.a, .b = n.b, .signal = n.signal};
-	                if(auto it{m->expr_intern.find(key)}; it != m->expr_intern.end()) { return it->second; }
+                expr_node_key const key{.kind = n.kind, .literal = n.literal, .a = n.a, .b = n.b, .signal = n.signal};
+                if(auto it{m->expr_intern.find(key)}; it != m->expr_intern.end()) { return it->second; }
 
-	                if(m->expr_nodes.size() >= max_expr_nodes)
-	                {
-	                    if(p) { p->err(p->peek(), u8"expression too large (node limit exceeded)"); }
-	                    return SIZE_MAX;
-	                }
+                if(m->expr_nodes.size() >= max_expr_nodes)
+                {
+                    if(p) { p->err(p->peek(), u8"expression too large (node limit exceeded)"); }
+                    return SIZE_MAX;
+                }
 
-	                ::std::size_t const idx{m->expr_nodes.size()};
-	                m->expr_nodes.push_back(n);
-	                m->expr_intern.emplace(key, idx);
-	                return idx;
-	            }
+                ::std::size_t const idx{m->expr_nodes.size()};
+                m->expr_nodes.push_back(n);
+                m->expr_intern.emplace(key, idx);
+                return idx;
+            }
 
-	            [[nodiscard]] ::std::size_t make_literal(logic_t v) noexcept { return add_node({.kind = expr_kind::literal, .literal = v}); }
+            [[nodiscard]] ::std::size_t make_literal(logic_t v) noexcept { return add_node({.kind = expr_kind::literal, .literal = v}); }
 
-	            [[nodiscard]] ::std::size_t make_signal_root(::std::size_t sig) noexcept { return add_node({.kind = expr_kind::signal, .signal = sig}); }
+            [[nodiscard]] ::std::size_t make_signal_root(::std::size_t sig) noexcept { return add_node({.kind = expr_kind::signal, .signal = sig}); }
 
-	            [[nodiscard]] expr_value make_scalar(::std::size_t root, int msb = 0, int lsb = 0, bool is_signed = false) noexcept
-	            {
-	                expr_value v{};
-	                v.is_vector = false;
+            [[nodiscard]] expr_value make_scalar(::std::size_t root, int msb = 0, int lsb = 0, bool is_signed = false) noexcept
+            {
+                expr_value v{};
+                v.is_vector = false;
                 v.is_signed = is_signed;
                 v.scalar_root = root;
                 v.msb = msb;
@@ -2081,22 +2079,21 @@ namespace phy_engine::verilog::digital
                 return v;
             }
 
-	            [[nodiscard]] expr_value make_vector(::fast_io::vector<::std::size_t>&& roots, bool is_signed = false) noexcept
-	            {
-	                if(roots.size() > max_concat_bits)
-	                {
-	                    if(p) { p->err(p->peek(), u8"vector expression too wide (limit exceeded)"); }
-	                    roots.resize(max_concat_bits);
-	                }
-	                if(roots.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, is_signed); }
-	                int const msb{static_cast<int>(roots.size() - 1)};
-	                return make_vector_with_range(::std::move(roots), msb, 0, is_signed);
-	            }
+            [[nodiscard]] expr_value make_vector(::fast_io::vector<::std::size_t>&& roots, bool is_signed = false) noexcept
+            {
+                if(roots.size() > max_concat_bits)
+                {
+                    if(p) { p->err(p->peek(), u8"vector expression too wide (limit exceeded)"); }
+                    roots.resize(max_concat_bits);
+                }
+                if(roots.empty()) { return make_scalar(make_literal(logic_t::indeterminate_state), 0, 0, is_signed); }
+                int const msb{static_cast<int>(roots.size() - 1)};
+                return make_vector_with_range(::std::move(roots), msb, 0, is_signed);
+            }
 
             [[nodiscard]] ::std::size_t width(expr_value const& v) const noexcept { return v.is_vector ? v.vector_roots.size() : 1; }
 
-            [[nodiscard]] ::fast_io::vector<::std::size_t>
-                resize_to_vector(expr_value const& v, ::std::size_t w, bool sign_extend = false) noexcept
+            [[nodiscard]] ::fast_io::vector<::std::size_t> resize_to_vector(expr_value const& v, ::std::size_t w, bool sign_extend = false) noexcept
             {
                 ::fast_io::vector<::std::size_t> src{};
                 if(v.is_vector) { src = v.vector_roots; }
@@ -2428,10 +2425,7 @@ namespace phy_engine::verilog::digital
                         bool const bit63{((value >> 63) & 1u) != 0u};
                         if(bit63 != sign_bit) { return false; }
                     }
-                    else if(w < 64 && sign_bit)
-                    {
-                        value |= (~0ull) << w;
-                    }
+                    else if(w < 64 && sign_bit) { value |= (~0ull) << w; }
                     out = static_cast<::std::int64_t>(value);
                     return true;
                 }
@@ -2495,10 +2489,7 @@ namespace phy_engine::verilog::digital
                 if(!v.is_vector) { return make_is_unknown(v.scalar_root); }
                 if(v.vector_roots.empty()) { return make_literal(logic_t::true_state); }
                 auto r{make_literal(logic_t::false_state)};
-                for(auto const bit: v.vector_roots)
-                {
-                    r = make_or(r, make_is_unknown(bit));
-                }
+                for(auto const bit: v.vector_roots) { r = make_or(r, make_is_unknown(bit)); }
                 return r;
             }
 
@@ -2722,12 +2713,18 @@ namespace phy_engine::verilog::digital
                     if((exp & 1u) != 0u)
                     {
                         if(w == 64) { result = static_cast<::std::uint64_t>(result * base); }
-                        else { result = static_cast<::std::uint64_t>((static_cast<__uint128_t>(result) * base) & mask); }
+                        else
+                        {
+                            result = static_cast<::std::uint64_t>((static_cast<__uint128_t>(result) * base) & mask);
+                        }
                     }
                     exp >>= 1u;
                     if(exp == 0u) { break; }
                     if(w == 64) { base = static_cast<::std::uint64_t>(base * base); }
-                    else { base = static_cast<::std::uint64_t>((static_cast<__uint128_t>(base) * base) & mask); }
+                    else
+                    {
+                        base = static_cast<::std::uint64_t>((static_cast<__uint128_t>(base) * base) & mask);
+                    }
                 }
 
                 if(signed_op) { return make_int_literal(static_cast<::std::int64_t>(result), w); }
@@ -3142,42 +3139,43 @@ namespace phy_engine::verilog::digital
                                 auto const& ref{ic.ref};
                                 resolved = true;
 
-	                                if(ref.kind == connection_kind::scalar)
-	                                {
-	                                    bool const sgn{ref.scalar_signal < m->signal_is_signed.size() && m->signal_is_signed.index_unchecked(ref.scalar_signal)};
-	                                    base = make_scalar(make_signal_root(ref.scalar_signal), 0, 0, sgn);
-	                                }
+                                if(ref.kind == connection_kind::scalar)
+                                {
+                                    bool const sgn{ref.scalar_signal < m->signal_is_signed.size() && m->signal_is_signed.index_unchecked(ref.scalar_signal)};
+                                    base = make_scalar(make_signal_root(ref.scalar_signal), 0, 0, sgn);
+                                }
                                 else if(ref.kind == connection_kind::literal) { base = make_scalar(make_literal(ref.literal), 0, 0, false); }
-	                                else if(ref.kind == connection_kind::literal_vector)
-	                                {
-	                                    ::fast_io::vector<::std::size_t> roots{};
-	                                    roots.resize(ref.literal_bits.size());
-	                                    for(::std::size_t i{}; i < ref.literal_bits.size(); ++i)
-	                                    {
-	                                        roots.index_unchecked(i) = make_literal(ref.literal_bits.index_unchecked(i));
-	                                    }
-	                                    base = make_vector(::std::move(roots), ref.is_signed);
-	                                }
-	                                else if(ref.kind == connection_kind::expr)
-	                                {
-	                                    if(ref.expr_roots.size() <= 1)
-	                                    {
-	                                        base = make_scalar(ref.expr_roots.empty() ? make_literal(logic_t::indeterminate_state) : ref.expr_roots.front_unchecked(),
-	                                                           0,
-	                                                           0,
-	                                                           ref.is_signed);
-	                                    }
-	                                    else
-	                                    {
-	                                        ::fast_io::vector<::std::size_t> roots{ref.expr_roots};
-	                                        base = make_vector(::std::move(roots), ref.is_signed);
-	                                    }
-	                                }
-	                                else if(ref.kind == connection_kind::vector)
-	                                {
-	                                    auto itv{m->vectors.find(ref.vector_base)};
-	                                    if(itv != m->vectors.end() && !itv->second.bits.empty())
-	                                    {
+                                else if(ref.kind == connection_kind::literal_vector)
+                                {
+                                    ::fast_io::vector<::std::size_t> roots{};
+                                    roots.resize(ref.literal_bits.size());
+                                    for(::std::size_t i{}; i < ref.literal_bits.size(); ++i)
+                                    {
+                                        roots.index_unchecked(i) = make_literal(ref.literal_bits.index_unchecked(i));
+                                    }
+                                    base = make_vector(::std::move(roots), ref.is_signed);
+                                }
+                                else if(ref.kind == connection_kind::expr)
+                                {
+                                    if(ref.expr_roots.size() <= 1)
+                                    {
+                                        base =
+                                            make_scalar(ref.expr_roots.empty() ? make_literal(logic_t::indeterminate_state) : ref.expr_roots.front_unchecked(),
+                                                        0,
+                                                        0,
+                                                        ref.is_signed);
+                                    }
+                                    else
+                                    {
+                                        ::fast_io::vector<::std::size_t> roots{ref.expr_roots};
+                                        base = make_vector(::std::move(roots), ref.is_signed);
+                                    }
+                                }
+                                else if(ref.kind == connection_kind::vector)
+                                {
+                                    auto itv{m->vectors.find(ref.vector_base)};
+                                    if(itv != m->vectors.end() && !itv->second.bits.empty())
+                                    {
                                         if(details::vector_width(itv->second) <= 1)
                                         {
                                             base = make_scalar(make_signal_root(itv->second.bits.front_unchecked()),
@@ -3201,17 +3199,17 @@ namespace phy_engine::verilog::digital
                                         base = make_scalar(make_literal(logic_t::indeterminate_state));
                                     }
                                 }
-	                                else if(ref.kind == connection_kind::bit_list)
-	                                {
-	                                    ::fast_io::vector<::std::size_t> bits{};
-	                                    bits.resize(ref.bit_list.size());
-	                                    for(::std::size_t i{}; i < ref.bit_list.size(); ++i)
-	                                    {
-	                                        auto const& b{ref.bit_list.index_unchecked(i)};
-	                                        bits.index_unchecked(i) = b.is_literal ? make_literal(b.literal) : make_signal_root(b.signal);
-	                                    }
-	                                    base = make_vector(::std::move(bits), ref.is_signed);
-	                                }
+                                else if(ref.kind == connection_kind::bit_list)
+                                {
+                                    ::fast_io::vector<::std::size_t> bits{};
+                                    bits.resize(ref.bit_list.size());
+                                    for(::std::size_t i{}; i < ref.bit_list.size(); ++i)
+                                    {
+                                        auto const& b{ref.bit_list.index_unchecked(i)};
+                                        bits.index_unchecked(i) = b.is_literal ? make_literal(b.literal) : make_signal_root(b.signal);
+                                    }
+                                    base = make_vector(::std::move(bits), ref.is_signed);
+                                }
                                 else
                                 {
                                     base = make_scalar(make_literal(logic_t::indeterminate_state));
@@ -3287,33 +3285,31 @@ namespace phy_engine::verilog::digital
                         else
                         {
                             auto it{m->vectors.find(name)};
-	                            if(it != m->vectors.end() && !it->second.bits.empty())
-	                            {
-	                                if(details::vector_width(it->second) <= 1)
-	                                {
-	                                    base = make_scalar(make_signal_root(it->second.bits.front_unchecked()),
-	                                                       it->second.msb,
-	                                                       it->second.lsb,
-	                                                       it->second.is_signed);
-	                                }
-	                                else
-	                                {
+                            if(it != m->vectors.end() && !it->second.bits.empty())
+                            {
+                                if(details::vector_width(it->second) <= 1)
+                                {
+                                    base =
+                                        make_scalar(make_signal_root(it->second.bits.front_unchecked()), it->second.msb, it->second.lsb, it->second.is_signed);
+                                }
+                                else
+                                {
                                     ::fast_io::vector<::std::size_t> bits{};
-	                                    bits.resize(it->second.bits.size());
-	                                    for(::std::size_t i{}; i < it->second.bits.size(); ++i)
-	                                    {
-	                                        bits.index_unchecked(i) = make_signal_root(it->second.bits.index_unchecked(i));
-	                                    }
-	                                    base = make_vector_with_range(::std::move(bits), it->second.msb, it->second.lsb, it->second.is_signed);
-	                                }
-	                            }
-	                            else
-	                            {
-	                                auto const sig{get_or_create_signal(*m, name)};
-	                                bool const sgn{sig < m->signal_is_signed.size() && m->signal_is_signed.index_unchecked(sig)};
-	                                base = make_scalar(make_signal_root(sig), 0, 0, sgn);
-	                            }
-	                        }
+                                    bits.resize(it->second.bits.size());
+                                    for(::std::size_t i{}; i < it->second.bits.size(); ++i)
+                                    {
+                                        bits.index_unchecked(i) = make_signal_root(it->second.bits.index_unchecked(i));
+                                    }
+                                    base = make_vector_with_range(::std::move(bits), it->second.msb, it->second.lsb, it->second.is_signed);
+                                }
+                            }
+                            else
+                            {
+                                auto const sig{get_or_create_signal(*m, name)};
+                                bool const sgn{sig < m->signal_is_signed.size() && m->signal_is_signed.index_unchecked(sig)};
+                                base = make_scalar(make_signal_root(sig), 0, 0, sgn);
+                            }
+                        }
                     }
                 }
                 else if(t0.kind == token_kind::number)
@@ -3339,11 +3335,11 @@ namespace phy_engine::verilog::digital
                         base = make_vector(::std::move(roots), lit_signed);
                     }
                 }
-	                else if(t0.kind == token_kind::symbol && is_sym(t0.text, u8'{'))
-	                {
-	                    p->consume();
+                else if(t0.kind == token_kind::symbol && is_sym(t0.text, u8'{'))
+                {
+                    p->consume();
 
-	                    if(p->accept_sym(u8'}'))
+                    if(p->accept_sym(u8'}'))
                     {
                         p->err(p->peek(), u8"empty concatenation is not supported");
                         base = make_scalar(make_literal(logic_t::indeterminate_state));
@@ -3387,58 +3383,58 @@ namespace phy_engine::verilog::digital
 
                         // '{<expr>, ...}' or '{<count>{...}}'
                         auto const first_expr{parse_expr()};
-	                        if(p->accept_sym(u8'{'))
-	                        {
-	                            int rep_count{};
-	                            if(!try_eval_const_int(first_expr, rep_count) || rep_count < 0)
-	                            {
-	                                p->err(p->peek(), u8"expected non-negative constant integer replication count");
-	                                rep_count = 0;
-	                            }
+                        if(p->accept_sym(u8'{'))
+                        {
+                            int rep_count{};
+                            if(!try_eval_const_int(first_expr, rep_count) || rep_count < 0)
+                            {
+                                p->err(p->peek(), u8"expected non-negative constant integer replication count");
+                                rep_count = 0;
+                            }
 
-	                            auto const inner_bits{parse_concat_items_until_rbrace()};  // consumes inner '}'
-	                            if(!p->accept_sym(u8'}')) { p->err(p->peek(), u8"expected '}'"); }
+                            auto const inner_bits{parse_concat_items_until_rbrace()};  // consumes inner '}'
+                            if(!p->accept_sym(u8'}')) { p->err(p->peek(), u8"expected '}'"); }
 
-	                            if(rep_count <= 0 || inner_bits.empty()) { base = make_scalar(make_literal(logic_t::indeterminate_state)); }
-	                            else
-	                            {
-	                                ::std::size_t const want{inner_bits.size() * static_cast<::std::size_t>(rep_count)};
-	                                if(want > max_concat_bits)
-	                                {
-	                                    p->err(p->peek(), u8"concatenation/replication too wide (limit exceeded)");
-	                                    base = make_unknown_vector(max_concat_bits);
-	                                }
-	                                else
-	                                {
-	                                ::fast_io::vector<::std::size_t> out{};
-	                                out.reserve(want);
-	                                for(int i{}; i < rep_count; ++i)
-	                                {
-	                                    for(auto const r: inner_bits) { out.push_back(r); }
-	                                }
-	                                base = make_vector(::std::move(out));
-	                                }
-	                            }
-	                        }
-	                        else
-	                        {
-	                            ::fast_io::vector<::std::size_t> bits{};
-	                            append_bits(bits, first_expr);
-	                            while(p->accept_sym(u8','))
-	                            {
-	                                auto const e{parse_expr()};
-	                                append_bits(bits, e);
-	                            }
-	                            if(!p->accept_sym(u8'}')) { p->err(p->peek(), u8"expected '}'"); }
-	                            if(bits.size() > max_concat_bits)
-	                            {
-	                                p->err(p->peek(), u8"concatenation too wide (limit exceeded)");
-	                                bits.resize(max_concat_bits);
-	                            }
-	                            base = make_vector(::std::move(bits));
-	                        }
-	                    }
-	                }
+                            if(rep_count <= 0 || inner_bits.empty()) { base = make_scalar(make_literal(logic_t::indeterminate_state)); }
+                            else
+                            {
+                                ::std::size_t const want{inner_bits.size() * static_cast<::std::size_t>(rep_count)};
+                                if(want > max_concat_bits)
+                                {
+                                    p->err(p->peek(), u8"concatenation/replication too wide (limit exceeded)");
+                                    base = make_unknown_vector(max_concat_bits);
+                                }
+                                else
+                                {
+                                    ::fast_io::vector<::std::size_t> out{};
+                                    out.reserve(want);
+                                    for(int i{}; i < rep_count; ++i)
+                                    {
+                                        for(auto const r: inner_bits) { out.push_back(r); }
+                                    }
+                                    base = make_vector(::std::move(out));
+                                }
+                            }
+                        }
+                        else
+                        {
+                            ::fast_io::vector<::std::size_t> bits{};
+                            append_bits(bits, first_expr);
+                            while(p->accept_sym(u8','))
+                            {
+                                auto const e{parse_expr()};
+                                append_bits(bits, e);
+                            }
+                            if(!p->accept_sym(u8'}')) { p->err(p->peek(), u8"expected '}'"); }
+                            if(bits.size() > max_concat_bits)
+                            {
+                                p->err(p->peek(), u8"concatenation too wide (limit exceeded)");
+                                bits.resize(max_concat_bits);
+                            }
+                            base = make_vector(::std::move(bits));
+                        }
+                    }
+                }
                 else if(t0.kind == token_kind::symbol && is_sym(t0.text, u8'('))
                 {
                     p->consume();
@@ -3840,7 +3836,7 @@ namespace phy_engine::verilog::digital
             {
                 scalar,
                 vector,
-                dynamic_bit_select,          // a[idx]
+                dynamic_bit_select,           // a[idx]
                 dynamic_indexed_part_select,  // a[idx +: W] / a[idx -: W]
                 dynamic_part_select           // a[msb:lsb] where msb/lsb are non-const expressions
             };
@@ -4116,8 +4112,9 @@ namespace phy_engine::verilog::digital
             return true;
         }
 
-        inline connection_ref
-            parse_connection_ref_legacy(parser& p, compiled_module& m, ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents = nullptr) noexcept
+        inline connection_ref parse_connection_ref_legacy(parser& p,
+                                                          compiled_module& m,
+                                                          ::absl::btree_map<::fast_io::u8string, ::std::uint64_t> const* const_idents = nullptr) noexcept
         {
             connection_ref r{};
             auto const& t{p.peek()};
@@ -4223,7 +4220,7 @@ namespace phy_engine::verilog::digital
             if(t.kind == token_kind::symbol && is_sym(t.text, u8'('))
             {
                 p.consume();
-	                r = parse_connection_ref_legacy(p, m, const_idents);
+                r = parse_connection_ref_legacy(p, m, const_idents);
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after connection expression"); }
                 return r;
             }
@@ -4252,7 +4249,7 @@ namespace phy_engine::verilog::digital
 
                     for(;;)
                     {
-	                        auto const item{parse_connection_ref_legacy(p, m, const_idents)};
+                        auto const item{parse_connection_ref_legacy(p, m, const_idents)};
                         append_ref_bits(bits, item);
                         if(p.accept_sym(u8',')) { continue; }
                         break;
@@ -4262,7 +4259,7 @@ namespace phy_engine::verilog::digital
                     return bits;
                 };
 
-	                auto const first_item{parse_connection_ref_legacy(p, m, const_idents)};
+                auto const first_item{parse_connection_ref_legacy(p, m, const_idents)};
                 if(p.accept_sym(u8'{'))
                 {
                     int rep_count{};
@@ -4295,7 +4292,7 @@ namespace phy_engine::verilog::digital
                 append_ref_bits(bits, first_item);
                 while(p.accept_sym(u8','))
                 {
-	                    auto const item{parse_connection_ref_legacy(p, m, const_idents)};
+                    auto const item{parse_connection_ref_legacy(p, m, const_idents)};
                     append_ref_bits(bits, item);
                 }
                 if(!p.accept_sym(u8'}')) { p.err(p.peek(), u8"expected '}'"); }
@@ -4511,7 +4508,10 @@ namespace phy_engine::verilog::digital
 
             ::fast_io::vector<::std::size_t> roots{};
             if(v.is_vector) { roots = v.vector_roots; }
-            else { roots.push_back(v.scalar_root); }
+            else
+            {
+                roots.push_back(v.scalar_root);
+            }
             if(roots.empty()) { return r; }
 
             auto const root_node = [&](::std::size_t root) noexcept -> expr_node const*
@@ -4584,10 +4584,7 @@ namespace phy_engine::verilog::digital
                         r.bit_list.index_unchecked(i) = {.is_literal = true, .signal = SIZE_MAX, .literal = logic_t::indeterminate_state};
                         continue;
                     }
-                    if(k == expr_kind::signal)
-                    {
-                        r.bit_list.index_unchecked(i) = {.is_literal = false, .signal = n->signal, .literal = {}};
-                    }
+                    if(k == expr_kind::signal) { r.bit_list.index_unchecked(i) = {.is_literal = false, .signal = n->signal, .literal = {}}; }
                     else
                     {
                         r.bit_list.index_unchecked(i) = {.is_literal = true, .signal = SIZE_MAX, .literal = n->literal};
@@ -5250,7 +5247,10 @@ namespace phy_engine::verilog::digital
 
                 ::std::size_t init_stmt{SIZE_MAX};
                 if(p.accept_sym(u8';')) { init_stmt = SIZE_MAX; }
-                else { init_stmt = parse_for_assign(u8';'); }
+                else
+                {
+                    init_stmt = parse_for_assign(u8';');
+                }
 
                 ::std::size_t cond_root{SIZE_MAX};
                 if(p.accept_sym(u8';'))
@@ -5268,7 +5268,10 @@ namespace phy_engine::verilog::digital
 
                 ::std::size_t step_stmt{SIZE_MAX};
                 if(p.accept_sym(u8')')) { step_stmt = SIZE_MAX; }
-                else { step_stmt = parse_for_assign(u8')'); }
+                else
+                {
+                    step_stmt = parse_for_assign(u8')');
+                }
 
                 stmt_node st{};
                 st.k = stmt_node::kind::for_stmt;
@@ -5310,7 +5313,10 @@ namespace phy_engine::verilog::digital
                 st.k = stmt_node::kind::case_stmt;
                 st.ck = ck;
                 if(key_v.is_vector) { st.case_expr_roots = key_v.vector_roots; }
-                else { st.case_expr_roots.push_back(key_v.scalar_root); }
+                else
+                {
+                    st.case_expr_roots.push_back(key_v.scalar_root);
+                }
                 if(st.case_expr_roots.empty()) { st.case_expr_roots.push_back(ep.make_literal(logic_t::indeterminate_state)); }
 
                 ::std::size_t const w{st.case_expr_roots.size()};
@@ -5914,9 +5920,7 @@ namespace phy_engine::verilog::digital
             }
 
             auto push_assign = [&](::std::size_t lhs_signal, ::std::size_t expr_root, ::std::size_t guard_root) noexcept
-            {
-                m.assigns.push_back({lhs_signal, expr_root, guard_root});
-            };
+            { m.assigns.push_back({lhs_signal, expr_root, guard_root}); };
 
             if(lhs.k == lvalue_ref::kind::vector)
             {
@@ -6189,7 +6193,10 @@ namespace phy_engine::verilog::digital
                 }
 
                 if(ek == sensitivity_event::kind::level) { add_level_signals(sigs); }
-                else { events.push_back({ek, sigs.front_unchecked()}); }
+                else
+                {
+                    events.push_back({ek, sigs.front_unchecked()});
+                }
                 return true;
             };
 
@@ -6524,8 +6531,7 @@ namespace phy_engine::verilog::digital
 
                 if(pd.has_range)
                 {
-                    auto& vd{
-                        declare_vector_range(nullptr, m, ::fast_io::u8string_view{base.data(), base.size()}, pd.msb, pd.lsb, pd.is_reg, pd.is_signed)};
+                    auto& vd{declare_vector_range(nullptr, m, ::fast_io::u8string_view{base.data(), base.size()}, pd.msb, pd.lsb, pd.is_reg, pd.is_signed)};
                     ::std::size_t const w{vector_width(vd)};
                     for(::std::size_t pos{}; pos < w; ++pos)
                     {
@@ -6762,43 +6768,43 @@ namespace phy_engine::verilog::digital
         return eval(eval, root);
     }
 
-	    struct port_binding
-	    {
-	        enum class kind : ::std::uint_fast8_t
-	        {
-	            unconnected,
-	            parent_signal,
-	            literal,
-	            parent_expr_root
-	        };
+    struct port_binding
+    {
+        enum class kind : ::std::uint_fast8_t
+        {
+            unconnected,
+            parent_signal,
+            literal,
+            parent_expr_root
+        };
 
-	        kind k{kind::unconnected};
-	        ::std::size_t parent_signal{SIZE_MAX};
-	        ::std::size_t parent_expr_root{SIZE_MAX};
-	        logic_t literal{logic_t::indeterminate_state};
-	    };
+        kind k{kind::unconnected};
+        ::std::size_t parent_signal{SIZE_MAX};
+        ::std::size_t parent_expr_root{SIZE_MAX};
+        logic_t literal{logic_t::indeterminate_state};
+    };
 
-	    struct port_drive
-	    {
-	        ::std::size_t parent_signal{SIZE_MAX};
-	        bool src_is_literal{};
-	        ::std::size_t child_signal{SIZE_MAX};
-	        logic_t literal{logic_t::indeterminate_state};
-	    };
+    struct port_drive
+    {
+        ::std::size_t parent_signal{SIZE_MAX};
+        bool src_is_literal{};
+        ::std::size_t child_signal{SIZE_MAX};
+        logic_t literal{logic_t::indeterminate_state};
+    };
 
-	    struct instance_state
-	    {
-	        compiled_module const* mod{};
-	        ::fast_io::u8string instance_name{};
-	        module_state state{};
+    struct instance_state
+    {
+        compiled_module const* mod{};
+        ::fast_io::u8string instance_name{};
+        module_state state{};
         // Bitmask over `state.values` indices: 1 => net has internal driver(s) and is re-resolved each comb delta.
         ::fast_io::vector<::std::uint8_t> driven_nets{};
-	        // For each bit-level port in `mod->ports`, a binding into the parent instance.
-	        ::fast_io::vector<port_binding> bindings{};
-	        // For output/inout ports: drives into the parent (post-width-coercion mapping).
-	        ::fast_io::vector<port_drive> output_drives{};
-	        ::fast_io::vector<::std::unique_ptr<instance_state>> children{};
-	    };
+        // For each bit-level port in `mod->ports`, a binding into the parent instance.
+        ::fast_io::vector<port_binding> bindings{};
+        // For output/inout ports: drives into the parent (post-width-coercion mapping).
+        ::fast_io::vector<port_drive> output_drives{};
+        ::fast_io::vector<::std::unique_ptr<instance_state>> children{};
+    };
 
     struct compiled_design
     {
@@ -7010,10 +7016,7 @@ namespace phy_engine::verilog::digital
                     ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
                     ::fast_io::vector<logic_t> key_bits{};
                     key_bits.resize(w);
-                    if(n.case_expr_roots.empty())
-                    {
-                        key_bits.index_unchecked(0) = logic_t::indeterminate_state;
-                    }
+                    if(n.case_expr_roots.empty()) { key_bits.index_unchecked(0) = logic_t::indeterminate_state; }
                     else
                     {
                         for(::std::size_t i{}; i < w; ++i) { key_bits.index_unchecked(i) = eval_expr_cached(m, n.case_expr_roots.index_unchecked(i), st); }
@@ -7232,52 +7235,49 @@ namespace phy_engine::verilog::digital
             ::std::size_t const nports{cm.ports.size()};
             if(child.bindings.size() < nports) { return false; }
 
-	            for(::std::size_t i{}; i < nports; ++i)
-	            {
-	                auto const& p{cm.ports.index_unchecked(i)};
-	                if(p.dir == port_dir::output) { continue; }
+            for(::std::size_t i{}; i < nports; ++i)
+            {
+                auto const& p{cm.ports.index_unchecked(i)};
+                if(p.dir == port_dir::output) { continue; }
 
-	                logic_t v{logic_t::indeterminate_state};
-	                auto const& b{child.bindings.index_unchecked(i)};
-	                if(b.k == port_binding::kind::parent_signal)
-	                {
-	                    if(b.parent_signal < parent.state.values.size()) { v = parent.state.values.index_unchecked(b.parent_signal); }
-	                }
-	                else if(b.k == port_binding::kind::literal) { v = b.literal; }
-	                else if(b.k == port_binding::kind::parent_expr_root)
-	                {
-	                    if(parent.mod != nullptr && b.parent_expr_root != SIZE_MAX)
-	                    {
-	                        v = eval_expr_cached(*parent.mod, b.parent_expr_root, parent.state);
-	                    }
-	                }
+                logic_t v{logic_t::indeterminate_state};
+                auto const& b{child.bindings.index_unchecked(i)};
+                if(b.k == port_binding::kind::parent_signal)
+                {
+                    if(b.parent_signal < parent.state.values.size()) { v = parent.state.values.index_unchecked(b.parent_signal); }
+                }
+                else if(b.k == port_binding::kind::literal) { v = b.literal; }
+                else if(b.k == port_binding::kind::parent_expr_root)
+                {
+                    if(parent.mod != nullptr && b.parent_expr_root != SIZE_MAX) { v = eval_expr_cached(*parent.mod, b.parent_expr_root, parent.state); }
+                }
 
-	                changed = assign_signal(cst, p.signal, v) || changed;
-	            }
+                changed = assign_signal(cst, p.signal, v) || changed;
+            }
 
             return changed;
         }
 
-	        inline bool propagate_child_to_parent(instance_state& child, instance_state& parent) noexcept
-	        {
-	            if(child.mod == nullptr) { return false; }
-	            auto& cst{child.state};
+        inline bool propagate_child_to_parent(instance_state& child, instance_state& parent) noexcept
+        {
+            if(child.mod == nullptr) { return false; }
+            auto& cst{child.state};
 
-	            for(auto const& d: child.output_drives)
-	            {
-	                if(d.parent_signal == SIZE_MAX) { continue; }
-	                logic_t v{logic_t::indeterminate_state};
-	                if(d.src_is_literal) { v = d.literal; }
-	                else
-	                {
-	                    if(d.child_signal >= cst.values.size()) { continue; }
-	                    v = cst.values.index_unchecked(d.child_signal);
-	                }
-	                drive_signal_next(parent, d.parent_signal, v);
-	            }
+            for(auto const& d: child.output_drives)
+            {
+                if(d.parent_signal == SIZE_MAX) { continue; }
+                logic_t v{logic_t::indeterminate_state};
+                if(d.src_is_literal) { v = d.literal; }
+                else
+                {
+                    if(d.child_signal >= cst.values.size()) { continue; }
+                    v = cst.values.index_unchecked(d.child_signal);
+                }
+                drive_signal_next(parent, d.parent_signal, v);
+            }
 
-	            return false;
-	        }
+            return false;
+        }
 
         inline void sequential_pass(instance_state& inst, ::std::uint64_t tick, bool process_sequential) noexcept
         {
@@ -7438,10 +7438,7 @@ namespace phy_engine::verilog::digital
                     case connection_kind::bit_list:
                     {
                         bits_out.reserve(ref.bit_list.size());
-                        for(auto const& b: ref.bit_list)
-                        {
-                            bits_out.push_back(b.is_literal ? make_literal(b.literal) : make_parent_signal(b.signal));
-                        }
+                        for(auto const& b: ref.bit_list) { bits_out.push_back(b.is_literal ? make_literal(b.literal) : make_parent_signal(b.signal)); }
                         return;
                     }
                     case connection_kind::expr:
@@ -7454,8 +7451,7 @@ namespace phy_engine::verilog::digital
                 }
             };
 
-            auto resize_bits = [&](::fast_io::vector<port_binding> const& src, ::std::size_t w, bool sign_extend) noexcept
-                -> ::fast_io::vector<port_binding>
+            auto resize_bits = [&](::fast_io::vector<port_binding> const& src, ::std::size_t w, bool sign_extend) noexcept -> ::fast_io::vector<port_binding>
             {
                 ::fast_io::vector<port_binding> out{};
                 if(w == 0) { return out; }
@@ -7527,8 +7523,7 @@ namespace phy_engine::verilog::digital
                 logic_t literal{logic_t::indeterminate_state};
             };
 
-            auto resize_rhs = [&](::fast_io::vector<rhs_bit> const& src, ::std::size_t w, bool sign_extend) noexcept
-                -> ::fast_io::vector<rhs_bit>
+            auto resize_rhs = [&](::fast_io::vector<rhs_bit> const& src, ::std::size_t w, bool sign_extend) noexcept -> ::fast_io::vector<rhs_bit>
             {
                 ::fast_io::vector<rhs_bit> out{};
                 if(w == 0) { return out; }
@@ -7536,7 +7531,10 @@ namespace phy_engine::verilog::digital
                 if(src.empty())
                 {
                     out.resize(w);
-                    for(::std::size_t i{}; i < w; ++i) { out.index_unchecked(i) = {.is_literal = true, .child_signal = SIZE_MAX, .literal = logic_t::indeterminate_state}; }
+                    for(::std::size_t i{}; i < w; ++i)
+                    {
+                        out.index_unchecked(i) = {.is_literal = true, .child_signal = SIZE_MAX, .literal = logic_t::indeterminate_state};
+                    }
                     return out;
                 }
 
@@ -7557,7 +7555,9 @@ namespace phy_engine::verilog::digital
                 }
 
                 ::std::size_t const pad{w - src.size()};
-                rhs_bit const fill{sign_extend ? src.front_unchecked() : rhs_bit{.is_literal = true, .child_signal = SIZE_MAX, .literal = logic_t::false_state}};
+                rhs_bit const fill{
+                    sign_extend ? src.front_unchecked() : rhs_bit{.is_literal = true, .child_signal = SIZE_MAX, .literal = logic_t::false_state}
+                };
                 for(::std::size_t i{}; i < pad; ++i) { out.index_unchecked(i) = fill; }
                 for(::std::size_t i{}; i < src.size(); ++i) { out.index_unchecked(pad + i) = src.index_unchecked(i); }
                 return out;
@@ -7621,10 +7621,8 @@ namespace phy_engine::verilog::digital
                             if(dst == SIZE_MAX) { continue; }
                             auto const& src{rhs_resized.index_unchecked(pos)};
                             if(!src.is_literal && src.child_signal == SIZE_MAX) { continue; }
-                            output_drives.push_back(port_drive{.parent_signal = dst,
-                                                               .src_is_literal = src.is_literal,
-                                                               .child_signal = src.child_signal,
-                                                               .literal = src.literal});
+                            output_drives.push_back(
+                                port_drive{.parent_signal = dst, .src_is_literal = src.is_literal, .child_signal = src.child_signal, .literal = src.literal});
                         }
                     }
                 }
@@ -7647,10 +7645,10 @@ namespace phy_engine::verilog::digital
                 auto child{::std::make_unique<instance_state>()};
                 child->mod = cm;
                 child->instance_name = idef.instance_name;
-	                init_state(child->state, *cm);
-	                init_driven_nets_from_assigns(*child);
-	                child->bindings.assign(cm->ports.size(), {});
-	                child->output_drives.clear();
+                init_state(child->state, *cm);
+                init_driven_nets_from_assigns(*child);
+                child->bindings.assign(cm->ports.size(), {});
+                child->output_drives.clear();
 
                 // Apply per-instance parameter overrides by writing constant parameter vectors into the instance state.
                 if(!idef.param_named_values.empty() || !idef.param_positional_values.empty())
@@ -7693,17 +7691,17 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-	                fill_bindings(pm, *cm, idef, child->bindings, child->output_drives);
+                fill_bindings(pm, *cm, idef, child->bindings, child->output_drives);
 
                 // Child outputs drive parent nets (potentially multiple drivers): mark as internally-driven in the parent.
                 if(parent.driven_nets.empty()) { init_driven_nets_from_assigns(parent); }
-	                for(auto const& d: child->output_drives)
-	                {
-	                    if(d.parent_signal == SIZE_MAX) { continue; }
-	                    if(d.parent_signal >= parent.driven_nets.size()) { continue; }
-	                    if(d.parent_signal < pm.signal_is_reg.size() && pm.signal_is_reg.index_unchecked(d.parent_signal)) { continue; }
-	                    parent.driven_nets.index_unchecked(d.parent_signal) = 1u;
-	                }
+                for(auto const& d: child->output_drives)
+                {
+                    if(d.parent_signal == SIZE_MAX) { continue; }
+                    if(d.parent_signal >= parent.driven_nets.size()) { continue; }
+                    if(d.parent_signal < pm.signal_is_reg.size() && pm.signal_is_reg.index_unchecked(d.parent_signal)) { continue; }
+                    parent.driven_nets.index_unchecked(d.parent_signal) = 1u;
+                }
 
                 elaborate_children(d, *child, depth + 1);
 
