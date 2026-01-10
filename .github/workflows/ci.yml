@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S test -B build_test_ci -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build_test_ci --config Debug -j 2
+
+      - name: Test
+        run: ctest --test-dir build_test_ci --output-on-failure --build-config Debug
+
