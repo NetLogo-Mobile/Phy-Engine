@@ -460,7 +460,15 @@ namespace phy_engine::solver
 
             if(solver_mode == 1)
             {
-                return solve_csr_real_ilu0_bicgstab(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern);
+                if(solve_csr_real_ilu0_bicgstab(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern)) { return true; }
+                static bool const debug = []() noexcept {
+                    auto const* v = ::std::getenv("PHY_ENGINE_CUDA_DEBUG");
+                    return v != nullptr && (*v == '1' || *v == 'y' || *v == 'Y' || *v == 't' || *v == 'T');
+                }();
+                if(debug)
+                {
+                    std::fprintf(stderr, "[phy_engine][cuda] ilu0_bicgstab failed, falling back to QR solver\n");
+                }
             }
 
             auto t_h2d_start = cudaEvent_t{};
@@ -1182,11 +1190,31 @@ namespace phy_engine::solver
                 destroy_events();
                 return false;
             }
+            {
+                int pivot{};
+                auto const zp = cusparseXcsrilu02_zeroPivot(cusparse_handle, ilu_info_d, &pivot);
+                if(zp == CUSPARSE_STATUS_ZERO_PIVOT)
+                {
+                    if(debug) { std::fprintf(stderr, "[phy_engine][cuda][ilu0] zero pivot during analysis at row=%d\n", pivot); }
+                    destroy_events();
+                    return false;
+                }
+            }
             if(cusparseDcsrilu02(cusparse_handle, n, nnz, descrA, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_info_d, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) !=
                CUSPARSE_STATUS_SUCCESS)
             {
                 destroy_events();
                 return false;
+            }
+            {
+                int pivot{};
+                auto const zp = cusparseXcsrilu02_zeroPivot(cusparse_handle, ilu_info_d, &pivot);
+                if(zp == CUSPARSE_STATUS_ZERO_PIVOT)
+                {
+                    if(debug) { std::fprintf(stderr, "[phy_engine][cuda][ilu0] zero pivot during factorization at row=%d\n", pivot); }
+                    destroy_events();
+                    return false;
+                }
             }
 
             // Generic SpSV/SpMV analysis and buffers (reused across iterations).
