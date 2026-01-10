@@ -16,6 +16,9 @@ This repo can optionally accelerate large MNA solves with CUDA (cuSolverSP + cuS
   - `PHY_ENGINE_CUDA_SOLVER=qr|ilu0` (choose CUDA solver for real systems; default `qr`)
   - `PHY_ENGINE_CUDA_ITER_MAX=200` (BiCGSTAB max iterations for `ilu0`)
   - `PHY_ENGINE_CUDA_ITER_TOL=1e-10` (BiCGSTAB relative residual tolerance for `ilu0`)
+  - `PHY_ENGINE_CUDA_ILU_BOOST=1` (enable ILU numeric-boost to avoid zero-pivot; default on)
+  - `PHY_ENGINE_CUDA_ILU_BOOST_TOL=0` (boost tolerance)
+  - `PHY_ENGINE_CUDA_ILU_BOOST_VAL=1e-12` (boost diagonal value)
 
 ## Build (CPU benchmarks)
 

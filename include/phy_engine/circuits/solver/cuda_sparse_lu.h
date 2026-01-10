@@ -1184,6 +1184,35 @@ namespace phy_engine::solver
                 ilu_buffer_bytes_d = need_bytes;
             }
 
+            // Optional: numeric boost to avoid ILU0 zero-pivot on MNA (which often has structural zero diagonal
+            // on branch/current rows). This only affects the preconditioner, not the original A used in SpMV.
+            // Enable by default; can be disabled by setting PHY_ENGINE_CUDA_ILU_BOOST=0.
+            {
+                static int const boost_enable = []() noexcept
+                {
+                    auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ILU_BOOST");
+                    if(v == nullptr) { return 1; }
+                    return (*v == '0') ? 0 : 1;
+                }();
+                if(boost_enable)
+                {
+                    double const boost_tol = []() noexcept
+                    {
+                        auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ILU_BOOST_TOL");
+                        if(v == nullptr) { return 0.0; }
+                        return std::strtod(v, nullptr);
+                    }();
+                    double const boost_val = []() noexcept
+                    {
+                        auto const* v = ::std::getenv("PHY_ENGINE_CUDA_ILU_BOOST_VAL");
+                        if(v == nullptr) { return 1e-12; }
+                        return std::strtod(v, nullptr);
+                    }();
+                    // API is deprecated in CUDA 12+, but still present; ignore return if unavailable at runtime.
+                    (void)cusparseDcsrilu02_numericBoost(cusparse_handle, ilu_info_d, boost_enable, boost_tol, boost_val);
+                }
+            }
+
             if(cusparseDcsrilu02_analysis(cusparse_handle, n, nnz, descrA, d_ilu_vals_d, d_row_ptr, d_col_ind, ilu_info_d, CUSPARSE_SOLVE_POLICY_NO_LEVEL, ilu_buffer_d) !=
                CUSPARSE_STATUS_SUCCESS)
             {
