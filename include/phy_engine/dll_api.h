@@ -103,6 +103,13 @@ enum phy_engine_element_code : int
     PHY_ENGINE_E_DIGITAL_T_BAR_FF = 227,
     PHY_ENGINE_E_DIGITAL_JKFF = 228,
 
+    // Digital (utility blocks)
+    PHY_ENGINE_E_DIGITAL_COUNTER4 = 229,          // properties: init_value (0..15)
+    PHY_ENGINE_E_DIGITAL_RANDOM_GENERATOR4 = 230, // properties: init_state (0..15)
+    PHY_ENGINE_E_DIGITAL_EIGHT_BIT_INPUT = 231,   // properties: value (0..255)
+    PHY_ENGINE_E_DIGITAL_EIGHT_BIT_DISPLAY = 232, // properties: none
+    PHY_ENGINE_E_DIGITAL_SCHMITT_TRIGGER = 233,   // properties: Vth_low,Vth_high,inverted(0/1),Ll,Hl
+
     // Verilog module (only supported via `create_circuit_ex`)
     PHY_ENGINE_E_VERILOG_MODULE = 300,
 };

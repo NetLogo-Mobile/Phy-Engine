@@ -36,6 +36,9 @@
 #include "model/models/digital/logical/non_implication.h"
 #include "model/models/digital/logical/input.h"
 #include "model/models/digital/logical/output.h"
+#include "model/models/digital/logical/eight_bit_input.h"
+#include "model/models/digital/logical/eight_bit_display.h"
+#include "model/models/digital/logical/schmitt_trigger.h"
 #include "model/models/digital/verilog_module.h"
 
 // Combinational (no delay)
@@ -48,3 +51,5 @@
 #include "model/models/digital/combinational/jk_ff.h"
 #include "model/models/digital/combinational/t_ff.h"
 #include "model/models/digital/combinational/t_bar_ff.h"
+#include "model/models/digital/combinational/counter4.h"
+#include "model/models/digital/combinational/random_generator4.h"

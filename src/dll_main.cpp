@@ -504,6 +504,41 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
         case 228:
             // Digital JKFF
             return add_model(nl, ::phy_engine::model::JKFF{});
+        case 229:
+        {
+            // Digital COUNTER4: init_value (0..15)
+            double const v = *((*curr_prop_ptr)++);
+            auto const init = (v < 0.0) ? 0u : (v > 15.0 ? 15u : static_cast<unsigned>(v));
+            return add_model(nl, ::phy_engine::model::COUNTER4{.value = static_cast<::std::uint8_t>(init)});
+        }
+        case 230:
+        {
+            // Digital RANDOM_GENERATOR4: init_state (0..15)
+            double const v = *((*curr_prop_ptr)++);
+            auto const init = (v < 0.0) ? 0u : (v > 15.0 ? 15u : static_cast<unsigned>(v));
+            return add_model(nl, ::phy_engine::model::RANDOM_GENERATOR4{.state = static_cast<::std::uint8_t>(init)});
+        }
+        case 231:
+        {
+            // Digital EIGHT_BIT_INPUT: value (0..255)
+            double const v = *((*curr_prop_ptr)++);
+            auto const init = (v < 0.0) ? 0u : (v > 255.0 ? 255u : static_cast<unsigned>(v));
+            return add_model(nl, ::phy_engine::model::EIGHT_BIT_INPUT{.value = static_cast<::std::uint8_t>(init)});
+        }
+        case 232:
+            // Digital EIGHT_BIT_DISPLAY
+            return add_model(nl, ::phy_engine::model::EIGHT_BIT_DISPLAY{});
+        case 233:
+        {
+            // Digital SCHMITT_TRIGGER: Vth_low,Vth_high,inverted(0/1),Ll,Hl
+            ::phy_engine::model::SCHMITT_TRIGGER s{};
+            s.Vth_low = *((*curr_prop_ptr)++);
+            s.Vth_high = *((*curr_prop_ptr)++);
+            s.inverted = (*((*curr_prop_ptr)++) != 0.0);
+            s.Ll = *((*curr_prop_ptr)++);
+            s.Hl = *((*curr_prop_ptr)++);
+            return add_model(nl, ::std::move(s));
+        }
         default:
             // ……待后续补充
             return {};
