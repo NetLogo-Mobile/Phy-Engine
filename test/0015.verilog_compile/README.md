@@ -4,8 +4,8 @@
 
 ## 未实现/限制（综合层面，`pe_synth`）
 
-- `stmt_node::for_stmt` / `stmt_node::while_stmt`：目前只在解释执行器里支持，综合会报 `unsupported statement`（未硬件化展开/综合）。
-- `#delay`（`stmt_node::delay_ticks != 0`）：综合明确拒绝（仿真特性，见 `pe_synth_delay_unsupported.cpp`）。
+- `stmt_node::for_stmt` / `stmt_node::while_stmt`：支持“动态条件”的循环，但采用**有限次展开**（由 `pe_synth_options::loop_unroll_limit` 控制，默认 64）；超过展开上限的迭代不会被建模，电路规模也会随上限快速膨胀。
+- `#delay`（`stmt_node::delay_ticks != 0`）：已支持，语义为“以 `digital_clk()` 为单位的 tick-based transport delay”（实现为 `TICK_DELAY` 1-bit 延迟线）；当前仅支持整数字面量 `#N`（见 `pe_synth_delay.cpp`）。
 - `always_ff` 事件表达式：仅支持 1 个时钟事件，或 “时钟 + 异步复位” 的 2 个事件；不支持 `level` 事件、>2 events、以及更复杂的复位条件/表达式。
 - `always_comb`：要求目标信号在所有路径被赋值；否则按“锁存器推断”处理并报错（不自动推 latch）。
 - 阻塞/非阻塞语义细节：综合建图主要基于信号节点读取，未实现更强的“过程内临时值/调度”语义（例如同一 `always` 内复杂的 `=`/`<=` 混用、以及依赖语句顺序的中间值行为）。
@@ -19,4 +19,3 @@
 - 更完整的语句级综合（循环综合/展开、更多控制结构）。
 - 更完整的可综合算术/位运算/比较运算支持，以及对应的 PE 原件映射（ALU、移位、加减乘除/模等）。
 - 更完整的时序建模与优化（寄存器推断策略、扇出/层级优化、更稳定的传播与收敛策略）。
-

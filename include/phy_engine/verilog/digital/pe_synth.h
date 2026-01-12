@@ -19,6 +19,7 @@
 #include "../../model/models/digital/logical/not.h"
 #include "../../model/models/digital/logical/or.h"
 #include "../../model/models/digital/logical/resolve2.h"
+#include "../../model/models/digital/logical/tick_delay.h"
 #include "../../model/models/digital/logical/tri_state.h"
 #include "../../model/models/digital/logical/xnor.h"
 #include "../../model/models/digital/logical/xor.h"
@@ -34,6 +35,7 @@ namespace phy_engine::verilog::digital
         bool allow_multi_driver{false};
         bool support_always_comb{true};
         bool support_always_ff{true};
+        ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
     };
 
     struct pe_synth_error
@@ -61,6 +63,9 @@ namespace phy_engine::verilog::digital
             }
 
             [[nodiscard]] ::phy_engine::model::node_t* expr(::std::size_t root) noexcept;
+            [[nodiscard]] ::phy_engine::model::node_t* expr_in_env(::std::size_t root,
+                                                                   ::std::vector<::phy_engine::model::node_t*> const& env,
+                                                                   ::std::vector<bool> const* use_env) noexcept;
         };
 
         struct synth_context
@@ -73,6 +78,21 @@ namespace phy_engine::verilog::digital
             // driver count per node (best-effort; does not include any drivers created before synthesis)
             ::std::unordered_map<::phy_engine::model::node_t*, ::std::size_t> driver_count{};
             ::std::unordered_map<int, ::phy_engine::model::node_t*> const_nodes{};
+            ::std::unordered_map<::std::uint64_t, ::phy_engine::model::node_t*> delay_cache{};
+
+            [[nodiscard]] bool try_get_const(::phy_engine::model::node_t* n, ::phy_engine::verilog::digital::logic_t& out) const noexcept
+            {
+                if(n == nullptr) { return false; }
+                for(auto const& kv: const_nodes)
+                {
+                    if(kv.second == n)
+                    {
+                        out = static_cast<::phy_engine::verilog::digital::logic_t>(kv.first);
+                        return true;
+                    }
+                }
+                return false;
+            }
 
             void set_error(char const* msg) noexcept
             {
@@ -154,6 +174,9 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_not(::phy_engine::model::node_t* in) noexcept
             {
+                ::phy_engine::verilog::digital::logic_t iv{};
+                if(try_get_const(in, iv)) { return const_node(::phy_engine::verilog::digital::logic_not(iv)); }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOT{})};
                 (void)pos;
                 if(m == nullptr)
@@ -169,6 +192,32 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_and(::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept
             {
+                ::phy_engine::verilog::digital::logic_t av{};
+                ::phy_engine::verilog::digital::logic_t bv{};
+                bool const aconst{try_get_const(a, av)};
+                bool const bconst{try_get_const(b, bv)};
+                if(aconst && bconst) { return const_node(::phy_engine::verilog::digital::logic_and(av, bv)); }
+                if(aconst)
+                {
+                    av = ::phy_engine::verilog::digital::normalize_z_to_x(av);
+                    if(av == ::phy_engine::verilog::digital::logic_t::false_state)
+                    {
+                        return const_node(::phy_engine::verilog::digital::logic_t::false_state);
+                    }
+                    if(av == ::phy_engine::verilog::digital::logic_t::true_state) { return b; }
+                    if(bconst) { return const_node(::phy_engine::verilog::digital::logic_and(av, bv)); }
+                }
+                if(bconst)
+                {
+                    bv = ::phy_engine::verilog::digital::normalize_z_to_x(bv);
+                    if(bv == ::phy_engine::verilog::digital::logic_t::false_state)
+                    {
+                        return const_node(::phy_engine::verilog::digital::logic_t::false_state);
+                    }
+                    if(bv == ::phy_engine::verilog::digital::logic_t::true_state) { return a; }
+                    if(aconst) { return const_node(::phy_engine::verilog::digital::logic_and(av, bv)); }
+                }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{})};
                 (void)pos;
                 if(m == nullptr)
@@ -185,6 +234,26 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_or(::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept
             {
+                ::phy_engine::verilog::digital::logic_t av{};
+                ::phy_engine::verilog::digital::logic_t bv{};
+                bool const aconst{try_get_const(a, av)};
+                bool const bconst{try_get_const(b, bv)};
+                if(aconst && bconst) { return const_node(::phy_engine::verilog::digital::logic_or(av, bv)); }
+                if(aconst)
+                {
+                    av = ::phy_engine::verilog::digital::normalize_z_to_x(av);
+                    if(av == ::phy_engine::verilog::digital::logic_t::true_state) { return const_node(::phy_engine::verilog::digital::logic_t::true_state); }
+                    if(av == ::phy_engine::verilog::digital::logic_t::false_state) { return b; }
+                    if(bconst) { return const_node(::phy_engine::verilog::digital::logic_or(av, bv)); }
+                }
+                if(bconst)
+                {
+                    bv = ::phy_engine::verilog::digital::normalize_z_to_x(bv);
+                    if(bv == ::phy_engine::verilog::digital::logic_t::true_state) { return const_node(::phy_engine::verilog::digital::logic_t::true_state); }
+                    if(bv == ::phy_engine::verilog::digital::logic_t::false_state) { return a; }
+                    if(aconst) { return const_node(::phy_engine::verilog::digital::logic_or(av, bv)); }
+                }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{})};
                 (void)pos;
                 if(m == nullptr)
@@ -201,6 +270,26 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_xor(::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept
             {
+                ::phy_engine::verilog::digital::logic_t av{};
+                ::phy_engine::verilog::digital::logic_t bv{};
+                bool const aconst{try_get_const(a, av)};
+                bool const bconst{try_get_const(b, bv)};
+                if(aconst && bconst) { return const_node(::phy_engine::verilog::digital::logic_xor(av, bv)); }
+                if(aconst)
+                {
+                    av = ::phy_engine::verilog::digital::normalize_z_to_x(av);
+                    if(av == ::phy_engine::verilog::digital::logic_t::false_state) { return b; }
+                    if(av == ::phy_engine::verilog::digital::logic_t::true_state) { return gate_not(b); }
+                    if(bconst) { return const_node(::phy_engine::verilog::digital::logic_xor(av, bv)); }
+                }
+                if(bconst)
+                {
+                    bv = ::phy_engine::verilog::digital::normalize_z_to_x(bv);
+                    if(bv == ::phy_engine::verilog::digital::logic_t::false_state) { return a; }
+                    if(bv == ::phy_engine::verilog::digital::logic_t::true_state) { return gate_not(a); }
+                    if(aconst) { return const_node(::phy_engine::verilog::digital::logic_xor(av, bv)); }
+                }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::XOR{})};
                 (void)pos;
                 if(m == nullptr)
@@ -217,6 +306,35 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_xnor(::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept
             {
+                ::phy_engine::verilog::digital::logic_t av{};
+                ::phy_engine::verilog::digital::logic_t bv{};
+                bool const aconst{try_get_const(a, av)};
+                bool const bconst{try_get_const(b, bv)};
+                if(aconst && bconst)
+                {
+                    return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv)));
+                }
+                if(aconst)
+                {
+                    av = ::phy_engine::verilog::digital::normalize_z_to_x(av);
+                    if(av == ::phy_engine::verilog::digital::logic_t::false_state) { return gate_not(b); }
+                    if(av == ::phy_engine::verilog::digital::logic_t::true_state) { return b; }
+                    if(bconst)
+                    {
+                        return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv)));
+                    }
+                }
+                if(bconst)
+                {
+                    bv = ::phy_engine::verilog::digital::normalize_z_to_x(bv);
+                    if(bv == ::phy_engine::verilog::digital::logic_t::false_state) { return gate_not(a); }
+                    if(bv == ::phy_engine::verilog::digital::logic_t::true_state) { return a; }
+                    if(aconst)
+                    {
+                        return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv)));
+                    }
+                }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::XNOR{})};
                 (void)pos;
                 if(m == nullptr)
@@ -233,6 +351,13 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_is_unknown(::phy_engine::model::node_t* in) noexcept
             {
+                ::phy_engine::verilog::digital::logic_t iv{};
+                if(try_get_const(in, iv))
+                {
+                    bool const u = ::phy_engine::verilog::digital::is_unknown(iv);
+                    return const_node(u ? ::phy_engine::verilog::digital::logic_t::true_state : ::phy_engine::verilog::digital::logic_t::false_state);
+                }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::IS_UNKNOWN{})};
                 (void)pos;
                 if(m == nullptr)
@@ -248,6 +373,16 @@ namespace phy_engine::verilog::digital
 
             [[nodiscard]] ::phy_engine::model::node_t* gate_case_eq(::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept
             {
+                if(a == b) { return const_node(::phy_engine::verilog::digital::logic_t::true_state); }
+
+                ::phy_engine::verilog::digital::logic_t av{};
+                ::phy_engine::verilog::digital::logic_t bv{};
+                if(try_get_const(a, av) && try_get_const(b, bv))
+                {
+                    bool const eq = (av == bv);
+                    return const_node(eq ? ::phy_engine::verilog::digital::logic_t::true_state : ::phy_engine::verilog::digital::logic_t::false_state);
+                }
+
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::CASE_EQ{})};
                 (void)pos;
                 if(m == nullptr)
@@ -259,6 +394,31 @@ namespace phy_engine::verilog::digital
                 if(!connect_pin(m, 0, a)) { return nullptr; }
                 if(!connect_pin(m, 1, b)) { return nullptr; }
                 if(!connect_driver(m, 2, out)) { return nullptr; }
+                return out;
+            }
+
+            [[nodiscard]] ::phy_engine::model::node_t* tick_delay(::phy_engine::model::node_t* in, ::std::uint64_t ticks) noexcept
+            {
+                if(!ok()) { return nullptr; }
+                if(in == nullptr) { return nullptr; }
+                if(ticks == 0) { return in; }
+
+                // key = (ticks<<32) ^ (ptr>>4) (best-effort)
+                auto const key = (static_cast<::std::uint64_t>(ticks) << 32) ^
+                                 (static_cast<::std::uint64_t>(reinterpret_cast<::std::uintptr_t>(in)) >> 4);
+                if(auto it = delay_cache.find(key); it != delay_cache.end()) { return it->second; }
+
+                auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::TICK_DELAY{static_cast<::std::size_t>(ticks)})};
+                (void)pos;
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create TICK_DELAY");
+                    return nullptr;
+                }
+                auto* out = make_node();
+                if(!connect_pin(m, 0, in)) { return nullptr; }
+                if(!connect_driver(m, 1, out)) { return nullptr; }
+                delay_cache.emplace(key, out);
                 return out;
             }
 
@@ -358,6 +518,111 @@ namespace phy_engine::verilog::digital
 
             expr_cache.emplace(root, res);
             return res;
+        }
+
+        inline ::phy_engine::model::node_t* instance_builder::expr_in_env(::std::size_t root,
+                                                                          ::std::vector<::phy_engine::model::node_t*> const& env,
+                                                                          ::std::vector<bool> const* use_env) noexcept
+        {
+            if(!ctx.ok()) { return nullptr; }
+
+            auto const* m = inst.mod;
+            if(m == nullptr || root >= m->expr_nodes.size())
+            {
+                return ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
+            }
+
+            ::std::unordered_map<::std::size_t, ::phy_engine::model::node_t*> cache{};
+
+            auto rec = [&](auto&& self, ::std::size_t r) noexcept -> ::phy_engine::model::node_t*
+            {
+                if(!ctx.ok()) { return nullptr; }
+                if(auto it = cache.find(r); it != cache.end()) { return it->second; }
+                if(m == nullptr || r >= m->expr_nodes.size())
+                {
+                    auto* res = ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
+                    cache.emplace(r, res);
+                    return res;
+                }
+
+                auto const& n = m->expr_nodes.index_unchecked(r);
+                using ek = ::phy_engine::verilog::digital::expr_kind;
+                ::phy_engine::model::node_t* res{};
+
+                switch(n.kind)
+                {
+                    case ek::literal: res = ctx.const_node(n.literal); break;
+                    case ek::signal:
+                    {
+                        bool subst{false};
+                        if(n.signal < env.size())
+                        {
+                            if(use_env == nullptr) { subst = true; }
+                            else if(n.signal < use_env->size() && (*use_env)[n.signal]) { subst = true; }
+                        }
+                        if(subst)
+                        {
+                            res = env[n.signal];
+                            if(res == nullptr) { res = signal(n.signal); }
+                        }
+                        else
+                        {
+                            res = signal(n.signal);
+                        }
+                        break;
+                    }
+                    case ek::is_unknown:
+                    {
+                        res = ctx.gate_is_unknown(self(self, n.a));
+                        break;
+                    }
+                    case ek::unary_not:
+                    {
+                        res = ctx.gate_not(self(self, n.a));
+                        break;
+                    }
+                    case ek::binary_and:
+                    {
+                        res = ctx.gate_and(self(self, n.a), self(self, n.b));
+                        break;
+                    }
+                    case ek::binary_or:
+                    {
+                        res = ctx.gate_or(self(self, n.a), self(self, n.b));
+                        break;
+                    }
+                    case ek::binary_xor:
+                    {
+                        res = ctx.gate_xor(self(self, n.a), self(self, n.b));
+                        break;
+                    }
+                    case ek::binary_eq:
+                    {
+                        res = ctx.gate_xnor(self(self, n.a), self(self, n.b));
+                        break;
+                    }
+                    case ek::binary_neq:
+                    {
+                        res = ctx.gate_xor(self(self, n.a), self(self, n.b));
+                        break;
+                    }
+                    case ek::binary_case_eq:
+                    {
+                        res = ctx.gate_case_eq(self(self, n.a), self(self, n.b));
+                        break;
+                    }
+                    default:
+                    {
+                        res = ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
+                        break;
+                    }
+                }
+
+                cache.emplace(r, res);
+                return res;
+            };
+
+            return rec(rec, root);
         }
 
         inline bool eval_const_expr_to_logic(instance_builder& b, ::std::size_t root, ::phy_engine::verilog::digital::logic_t& out) noexcept
@@ -523,6 +788,7 @@ namespace phy_engine::verilog::digital
         inline bool synth_stmt_ff(instance_builder& b,
                                   ::fast_io::vector<stmt_node> const& arena,
                                   ::std::size_t stmt_idx,
+                                  ::std::vector<::phy_engine::model::node_t*>& cur,
                                   ::std::vector<::phy_engine::model::node_t*>& next,
                                   ::std::vector<bool> const& targets) noexcept
         {
@@ -540,39 +806,46 @@ namespace phy_engine::verilog::digital
                 {
                     for(auto const s: n.stmts)
                     {
-                        if(!synth_stmt_ff(b, arena, s, next, targets)) { return false; }
+                        if(!synth_stmt_ff(b, arena, s, cur, next, targets)) { return false; }
                     }
                     return true;
                 }
                 case stmt_node::kind::blocking_assign:
                 case stmt_node::kind::nonblocking_assign:
                 {
-                    if(n.delay_ticks != 0)
-                    {
-                        b.ctx.set_error("pe_synth: delays (#) are not supported in synthesis");
-                        return false;
-                    }
                     if(n.lhs_signal >= next.size()) { return true; }
-                    if(n.lhs_signal < targets.size() && targets[n.lhs_signal]) { next[n.lhs_signal] = b.expr(n.expr_root); }
+                    auto* rhs = b.expr_in_env(n.expr_root, cur, nullptr);
+                    if(n.delay_ticks != 0) { rhs = b.ctx.tick_delay(rhs, n.delay_ticks); }
+                    if(n.k == stmt_node::kind::blocking_assign)
+                    {
+                        if(n.lhs_signal < cur.size()) { cur[n.lhs_signal] = rhs; }
+                    }
+                    if(n.lhs_signal < targets.size() && targets[n.lhs_signal]) { next[n.lhs_signal] = rhs; }
                     return true;
                 }
                 case stmt_node::kind::if_stmt:
                 {
-                    auto* raw_cond = b.expr(n.expr_root);
+                    auto* raw_cond = b.expr_in_env(n.expr_root, cur, nullptr);
                     auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
+                    auto then_cur = cur;
                     auto then_next = next;
                     for(auto const s: n.stmts)
                     {
-                        if(!synth_stmt_ff(b, arena, s, then_next, targets)) { return false; }
+                        if(!synth_stmt_ff(b, arena, s, then_cur, then_next, targets)) { return false; }
                     }
 
+                    auto else_cur = cur;
                     auto else_next = next;
                     for(auto const s: n.else_stmts)
                     {
-                        if(!synth_stmt_ff(b, arena, s, else_next, targets)) { return false; }
+                        if(!synth_stmt_ff(b, arena, s, else_cur, else_next, targets)) { return false; }
                     }
 
+                    for(::std::size_t sig{}; sig < cur.size() && sig < then_cur.size() && sig < else_cur.size(); ++sig)
+                    {
+                        cur[sig] = b.ctx.mux2(cond, else_cur[sig], then_cur[sig]);
+                    }
                     for(::std::size_t sig{}; sig < targets.size() && sig < next.size(); ++sig)
                     {
                         if(!targets[sig]) { continue; }
@@ -582,6 +855,7 @@ namespace phy_engine::verilog::digital
                 }
                 case stmt_node::kind::case_stmt:
                 {
+                    auto const base_cur = cur;
                     auto const base_next = next;
 
                     ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
@@ -593,7 +867,7 @@ namespace phy_engine::verilog::digital
                     }
                     else
                     {
-                        for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr(n.case_expr_roots.index_unchecked(i)); }
+                        for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_cur, nullptr); }
                     }
 
                     auto* z = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::high_impedence_state);
@@ -627,7 +901,7 @@ namespace phy_engine::verilog::digital
                         auto* m = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
                         for(::std::size_t i{}; i < w; ++i)
                         {
-                            auto* mb = b.expr(ci.match_roots.index_unchecked(i));
+                            auto* mb = b.expr_in_env(ci.match_roots.index_unchecked(i), base_cur, nullptr);
                             m = b.ctx.gate_and(m, bit_match(key_bits[i], mb));
                         }
                         return m;
@@ -642,12 +916,15 @@ namespace phy_engine::verilog::digital
                         else { items.push_back(__builtin_addressof(ci)); }
                     }
 
+                    auto agg_cur = base_cur;
                     auto agg_next = base_next;
                     if(def != nullptr)
                     {
+                        agg_cur = base_cur;
+                        agg_next = base_next;
                         for(auto const s: def->stmts)
                         {
-                            if(!synth_stmt_ff(b, arena, s, agg_next, targets)) { return false; }
+                            if(!synth_stmt_ff(b, arena, s, agg_cur, agg_next, targets)) { return false; }
                         }
                     }
 
@@ -656,12 +933,17 @@ namespace phy_engine::verilog::digital
                         auto const& ci = *items[items.size() - 1 - rev];
                         auto* match = item_match(ci);
 
+                        auto item_cur = base_cur;
                         auto item_next = base_next;
                         for(auto const s: ci.stmts)
                         {
-                            if(!synth_stmt_ff(b, arena, s, item_next, targets)) { return false; }
+                            if(!synth_stmt_ff(b, arena, s, item_cur, item_next, targets)) { return false; }
                         }
 
+                        for(::std::size_t sig{}; sig < agg_cur.size() && sig < item_cur.size(); ++sig)
+                        {
+                            agg_cur[sig] = b.ctx.mux2(match, agg_cur[sig], item_cur[sig]);
+                        }
                         for(::std::size_t sig{}; sig < targets.size() && sig < agg_next.size(); ++sig)
                         {
                             if(!targets[sig]) { continue; }
@@ -669,7 +951,90 @@ namespace phy_engine::verilog::digital
                         }
                     }
 
+                    cur = ::std::move(agg_cur);
                     next = ::std::move(agg_next);
+                    return true;
+                }
+                case stmt_node::kind::for_stmt:
+                {
+                    auto const max_iter{b.ctx.opt.loop_unroll_limit};
+                    if(max_iter == 0)
+                    {
+                        b.ctx.set_error("pe_synth: loop_unroll_limit is 0 (loops disabled)");
+                        return false;
+                    }
+                    if(n.init_stmt != SIZE_MAX)
+                    {
+                        if(!synth_stmt_ff(b, arena, n.init_stmt, cur, next, targets)) { return false; }
+                    }
+
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        auto* raw_cond = b.expr_in_env(n.expr_root, cur, nullptr);
+                        auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        auto then_cur = cur;
+                        auto then_next = next;
+                        if(n.body_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_ff(b, arena, n.body_stmt, then_cur, then_next, targets)) { return false; }
+                        }
+                        if(n.step_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_ff(b, arena, n.step_stmt, then_cur, then_next, targets)) { return false; }
+                        }
+
+                        auto else_cur = cur;
+                        auto else_next = next;
+
+                        for(::std::size_t sig{}; sig < cur.size() && sig < then_cur.size() && sig < else_cur.size(); ++sig)
+                        {
+                            cur[sig] = b.ctx.mux2(cond, else_cur[sig], then_cur[sig]);
+                        }
+                        for(::std::size_t sig{}; sig < targets.size() && sig < next.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            next[sig] = b.ctx.mux2(cond, else_next[sig], then_next[sig]);
+                        }
+                    }
+
+                    return true;
+                }
+                case stmt_node::kind::while_stmt:
+                {
+                    auto const max_iter{b.ctx.opt.loop_unroll_limit};
+                    if(max_iter == 0)
+                    {
+                        b.ctx.set_error("pe_synth: loop_unroll_limit is 0 (loops disabled)");
+                        return false;
+                    }
+
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        auto* raw_cond = b.expr_in_env(n.expr_root, cur, nullptr);
+
+                        auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        auto then_cur = cur;
+                        auto then_next = next;
+                        if(n.body_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_ff(b, arena, n.body_stmt, then_cur, then_next, targets)) { return false; }
+                        }
+
+                        auto else_cur = cur;
+                        auto else_next = next;
+
+                        for(::std::size_t sig{}; sig < cur.size() && sig < then_cur.size() && sig < else_cur.size(); ++sig)
+                        {
+                            cur[sig] = b.ctx.mux2(cond, else_cur[sig], then_cur[sig]);
+                        }
+                        for(::std::size_t sig{}; sig < targets.size() && sig < next.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            next[sig] = b.ctx.mux2(cond, else_next[sig], then_next[sig]);
+                        }
+                    }
                     return true;
                 }
                 default:
@@ -708,22 +1073,19 @@ namespace phy_engine::verilog::digital
                 case stmt_node::kind::blocking_assign:
                 case stmt_node::kind::nonblocking_assign:
                 {
-                    if(n.delay_ticks != 0)
-                    {
-                        b.ctx.set_error("pe_synth: delays (#) are not supported in synthesis");
-                        return false;
-                    }
                     if(n.lhs_signal >= value.size() || n.lhs_signal >= assigned.size()) { return true; }
                     if(n.lhs_signal < targets.size() && targets[n.lhs_signal])
                     {
-                        value[n.lhs_signal] = b.expr(n.expr_root);
+                        auto* rhs = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                        if(n.delay_ticks != 0) { rhs = b.ctx.tick_delay(rhs, n.delay_ticks); }
+                        value[n.lhs_signal] = rhs;
                         assigned[n.lhs_signal] = true;
                     }
                     return true;
                 }
                 case stmt_node::kind::if_stmt:
                 {
-                    auto* raw_cond = b.expr(n.expr_root);
+                    auto* raw_cond = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
                     auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
                     auto then_value = value;
@@ -768,7 +1130,10 @@ namespace phy_engine::verilog::digital
                     }
                     else
                     {
-                        for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr(n.case_expr_roots.index_unchecked(i)); }
+                        for(::std::size_t i{}; i < w; ++i)
+                        {
+                            key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_value, __builtin_addressof(base_assigned));
+                        }
                     }
 
                     auto* z = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::high_impedence_state);
@@ -802,7 +1167,7 @@ namespace phy_engine::verilog::digital
                         auto* m = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
                         for(::std::size_t i{}; i < w; ++i)
                         {
-                            auto* mb = b.expr(ci.match_roots.index_unchecked(i));
+                            auto* mb = b.expr_in_env(ci.match_roots.index_unchecked(i), base_value, __builtin_addressof(base_assigned));
                             m = b.ctx.gate_and(m, bit_match(key_bits[i], mb));
                         }
                         return m;
@@ -855,6 +1220,92 @@ namespace phy_engine::verilog::digital
 
                     value = ::std::move(agg_value);
                     assigned = ::std::move(agg_assigned);
+                    return true;
+                }
+                case stmt_node::kind::for_stmt:
+                {
+                    auto const max_iter{b.ctx.opt.loop_unroll_limit};
+                    if(max_iter == 0)
+                    {
+                        b.ctx.set_error("pe_synth: loop_unroll_limit is 0 (loops disabled)");
+                        return false;
+                    }
+                    if(n.init_stmt != SIZE_MAX)
+                    {
+                        if(!synth_stmt_comb(b, arena, n.init_stmt, value, assigned, targets)) { return false; }
+                    }
+
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        auto* raw_cond = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                        auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        auto then_value = value;
+                        auto then_assigned = assigned;
+                        if(n.body_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_comb(b, arena, n.body_stmt, then_value, then_assigned, targets)) { return false; }
+                        }
+                        if(n.step_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_comb(b, arena, n.step_stmt, then_value, then_assigned, targets)) { return false; }
+                        }
+
+                        auto else_value = value;
+                        auto else_assigned = assigned;
+
+                        for(::std::size_t sig{}; sig < targets.size() && sig < value.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            if(then_assigned[sig] != else_assigned[sig])
+                            {
+                                b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
+                                return false;
+                            }
+                            if(!then_assigned[sig]) { continue; }
+                            value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
+                            assigned[sig] = true;
+                        }
+                    }
+                    return true;
+                }
+                case stmt_node::kind::while_stmt:
+                {
+                    auto const max_iter{b.ctx.opt.loop_unroll_limit};
+                    if(max_iter == 0)
+                    {
+                        b.ctx.set_error("pe_synth: loop_unroll_limit is 0 (loops disabled)");
+                        return false;
+                    }
+
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        auto* raw_cond = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                        auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        auto then_value = value;
+                        auto then_assigned = assigned;
+                        if(n.body_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_comb(b, arena, n.body_stmt, then_value, then_assigned, targets)) { return false; }
+                        }
+
+                        auto else_value = value;
+                        auto else_assigned = assigned;
+
+                        for(::std::size_t sig{}; sig < targets.size() && sig < value.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            if(then_assigned[sig] != else_assigned[sig])
+                            {
+                                b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
+                                return false;
+                            }
+                            if(!then_assigned[sig]) { continue; }
+                            value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
+                            assigned[sig] = true;
+                        }
+                    }
                     return true;
                 }
                 default:
@@ -1242,10 +1693,11 @@ namespace phy_engine::verilog::digital
                         return false;
                     }
 
+                    auto cur = b.sig_nodes;
                     auto next = b.sig_nodes;
                     for(auto const root: ff.roots)
                     {
-                        if(!synth_stmt_ff(b, ff.stmt_nodes, root, next, targets)) { return false; }
+                        if(!synth_stmt_ff(b, ff.stmt_nodes, root, cur, next, targets)) { return false; }
                     }
 
                     for(::std::size_t sig{}; sig < targets.size(); ++sig)
