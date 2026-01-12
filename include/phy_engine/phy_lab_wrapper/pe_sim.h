@@ -224,6 +224,7 @@ inline std::size_t expected_prop_arity(int element_code)
         case PHY_ENGINE_E_DIGITAL_TFF: return 0;
         case PHY_ENGINE_E_DIGITAL_T_BAR_FF: return 0;
         case PHY_ENGINE_E_DIGITAL_JKFF: return 0;
+        case PHY_ENGINE_E_DIGITAL_COUNTER4: return 1;
         default: throw std::runtime_error("unknown property arity for PE element code: " + std::to_string(element_code));
     }
 }
@@ -518,77 +519,25 @@ private:
             auto const pl_id = e.identifier();
             auto const model_id = e.data().value("ModelID", "");
 
-            // ---- Macro: 4-bit ripple counter (Counter) ----
+            // ---- PE primitive: 4-bit counter (Counter) ----
+            // Implemented via `PHY_ENGINE_E_DIGITAL_COUNTER4` (COUNTER4), not a hand-built macro,
+            // so behavior matches PE's digital model library.
             // PL pins (by convention in physicsLab):
             //   outputs: 0=o_up(MSB),1=o_upmid,2=o_lowmid,3=o_low(LSB)
-            //   inputs : 4=i_up(clock),5=i_low(enable/reset; treated as enable if connected)
+            //   inputs : 4=i_up(clock),5=i_low(enable; if unconnected, treated as enable=1)
             if (model_id == "Counter")
             {
-                bool enable_connected = pl_pin_used[pl_id][5];
+                auto ctr = add_pe_element(PHY_ENGINE_E_DIGITAL_COUNTER4, {0.0}, "");
 
-                // const1: DIGITAL_INPUT state=1, output pin 0
-                auto const1 = add_pe_element(PHY_ENGINE_E_DIGITAL_INPUT, {1.0}, "");
+                // outputs (MSB..LSB): COUNTER4 pins 0..3 are q3..q0.
+                pin_map[pl_id][0] = endpoint{ctr, 0};
+                pin_map[pl_id][1] = endpoint{ctr, 1};
+                pin_map[pl_id][2] = endpoint{ctr, 2};
+                pin_map[pl_id][3] = endpoint{ctr, 3};
 
-                // Shared T node
-                auto ff0 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
-                auto ff1 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
-                auto ff2 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
-                auto ff3 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
-
-                // NOT gates to convert falling edge to rising edge
-                auto n0 = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
-                auto n1 = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
-                auto n2 = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
-
-                endpoint ff0_t{ff0, 0};
-                endpoint ff0_clk{ff0, 1};
-                endpoint ff0_q{ff0, 2};
-
-                endpoint ff1_t{ff1, 0};
-                endpoint ff1_clk{ff1, 1};
-                endpoint ff1_q{ff1, 2};
-
-                endpoint ff2_t{ff2, 0};
-                endpoint ff2_clk{ff2, 1};
-                endpoint ff2_q{ff2, 2};
-
-                endpoint ff3_t{ff3, 0};
-                endpoint ff3_clk{ff3, 1};
-                endpoint ff3_q{ff3, 2};
-
-                // Drive T (toggle enable): default 1 if pin5 unconnected, else from external pin5.
-                if (!enable_connected)
-                {
-                    add_wire(endpoint{const1, 0}, ff0_t);
-                }
-                // Share T node across all TFFs
-                add_wire(ff0_t, ff1_t);
-                add_wire(ff0_t, ff2_t);
-                add_wire(ff0_t, ff3_t);
-
-                // Ripple clocks: clk0 is external, clk1..3 are NOT(prev Q).
-                add_wire(ff0_q, endpoint{n0, 0});
-                add_wire(endpoint{n0, 1}, ff1_clk);
-
-                add_wire(ff1_q, endpoint{n1, 0});
-                add_wire(endpoint{n1, 1}, ff2_clk);
-
-                add_wire(ff2_q, endpoint{n2, 0});
-                add_wire(endpoint{n2, 1}, ff3_clk);
-
-                // Expose pins:
-                // outputs (MSB..LSB)
-                pin_map[pl_id][0] = ff3_q;
-                pin_map[pl_id][1] = ff2_q;
-                pin_map[pl_id][2] = ff1_q;
-                pin_map[pl_id][3] = ff0_q;
-                // clock
-                pin_map[pl_id][4] = ff0_clk;
-                // enable (optional): if connected, it drives ff0.t shared node
-                if (enable_connected)
-                {
-                    pin_map[pl_id][5] = ff0_t;
-                }
+                // clock/en
+                pin_map[pl_id][4] = endpoint{ctr, 4};
+                pin_map[pl_id][5] = endpoint{ctr, 5};
                 continue;
             }
 
