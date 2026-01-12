@@ -414,6 +414,26 @@ namespace phy_engine::verilog::digital
                     for(auto const s: n.else_stmts) { collect_assigned_signals(arena, s, out); }
                     return;
                 }
+                case stmt_node::kind::case_stmt:
+                {
+                    for(auto const& ci: n.case_items)
+                    {
+                        for(auto const s: ci.stmts) { collect_assigned_signals(arena, s, out); }
+                    }
+                    return;
+                }
+                case stmt_node::kind::for_stmt:
+                {
+                    if(n.init_stmt != SIZE_MAX) { collect_assigned_signals(arena, n.init_stmt, out); }
+                    if(n.step_stmt != SIZE_MAX) { collect_assigned_signals(arena, n.step_stmt, out); }
+                    if(n.body_stmt != SIZE_MAX) { collect_assigned_signals(arena, n.body_stmt, out); }
+                    return;
+                }
+                case stmt_node::kind::while_stmt:
+                {
+                    if(n.body_stmt != SIZE_MAX) { collect_assigned_signals(arena, n.body_stmt, out); }
+                    return;
+                }
                 default: return;
             }
         }
@@ -527,13 +547,19 @@ namespace phy_engine::verilog::digital
                 case stmt_node::kind::blocking_assign:
                 case stmt_node::kind::nonblocking_assign:
                 {
+                    if(n.delay_ticks != 0)
+                    {
+                        b.ctx.set_error("pe_synth: delays (#) are not supported in synthesis");
+                        return false;
+                    }
                     if(n.lhs_signal >= next.size()) { return true; }
                     if(n.lhs_signal < targets.size() && targets[n.lhs_signal]) { next[n.lhs_signal] = b.expr(n.expr_root); }
                     return true;
                 }
                 case stmt_node::kind::if_stmt:
                 {
-                    auto* cond = b.expr(n.expr_root);
+                    auto* raw_cond = b.expr(n.expr_root);
+                    auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
                     auto then_next = next;
                     for(auto const s: n.stmts)
@@ -552,6 +578,98 @@ namespace phy_engine::verilog::digital
                         if(!targets[sig]) { continue; }
                         next[sig] = b.ctx.mux2(cond, else_next[sig], then_next[sig]);
                     }
+                    return true;
+                }
+                case stmt_node::kind::case_stmt:
+                {
+                    auto const base_next = next;
+
+                    ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
+                    ::std::vector<::phy_engine::model::node_t*> key_bits{};
+                    key_bits.resize(w);
+                    if(n.case_expr_roots.empty())
+                    {
+                        key_bits[0] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
+                    }
+                    else
+                    {
+                        for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr(n.case_expr_roots.index_unchecked(i)); }
+                    }
+
+                    auto* z = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::high_impedence_state);
+
+                    auto bit_match = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* bb) noexcept
+                        -> ::phy_engine::model::node_t*
+                    {
+                        auto* eq = b.ctx.gate_case_eq(a, bb);
+                        switch(n.ck)
+                        {
+                            case stmt_node::case_kind::normal: return eq;
+                            case stmt_node::case_kind::casez:
+                            {
+                                auto* az = b.ctx.gate_case_eq(a, z);
+                                auto* bz = b.ctx.gate_case_eq(bb, z);
+                                return b.ctx.gate_or(eq, b.ctx.gate_or(az, bz));
+                            }
+                            case stmt_node::case_kind::casex:
+                            {
+                                auto* ua = b.ctx.gate_is_unknown(a);
+                                auto* ub = b.ctx.gate_is_unknown(bb);
+                                return b.ctx.gate_or(eq, b.ctx.gate_or(ua, ub));
+                            }
+                            default: return eq;
+                        }
+                    };
+
+                    auto item_match = [&](case_item const& ci) noexcept -> ::phy_engine::model::node_t*
+                    {
+                        if(ci.match_roots.size() != w) { return b.ctx.const_node(::phy_engine::verilog::digital::logic_t::false_state); }
+                        auto* m = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
+                        for(::std::size_t i{}; i < w; ++i)
+                        {
+                            auto* mb = b.expr(ci.match_roots.index_unchecked(i));
+                            m = b.ctx.gate_and(m, bit_match(key_bits[i], mb));
+                        }
+                        return m;
+                    };
+
+                    case_item const* def{};
+                    ::std::vector<case_item const*> items{};
+                    items.reserve(n.case_items.size());
+                    for(auto const& ci: n.case_items)
+                    {
+                        if(ci.is_default) { def = __builtin_addressof(ci); }
+                        else { items.push_back(__builtin_addressof(ci)); }
+                    }
+
+                    auto agg_next = base_next;
+                    if(def != nullptr)
+                    {
+                        for(auto const s: def->stmts)
+                        {
+                            if(!synth_stmt_ff(b, arena, s, agg_next, targets)) { return false; }
+                        }
+                    }
+
+                    for(::std::size_t rev{}; rev < items.size(); ++rev)
+                    {
+                        auto const& ci = *items[items.size() - 1 - rev];
+                        auto* match = item_match(ci);
+
+                        auto item_next = base_next;
+                        for(auto const s: ci.stmts)
+                        {
+                            if(!synth_stmt_ff(b, arena, s, item_next, targets)) { return false; }
+                        }
+
+                        for(::std::size_t sig{}; sig < targets.size() && sig < agg_next.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            agg_next[sig] = b.ctx.mux2(match, agg_next[sig], item_next[sig]);
+                        }
+                    }
+
+                    next = ::std::move(agg_next);
                     return true;
                 }
                 default:
@@ -590,6 +708,11 @@ namespace phy_engine::verilog::digital
                 case stmt_node::kind::blocking_assign:
                 case stmt_node::kind::nonblocking_assign:
                 {
+                    if(n.delay_ticks != 0)
+                    {
+                        b.ctx.set_error("pe_synth: delays (#) are not supported in synthesis");
+                        return false;
+                    }
                     if(n.lhs_signal >= value.size() || n.lhs_signal >= assigned.size()) { return true; }
                     if(n.lhs_signal < targets.size() && targets[n.lhs_signal])
                     {
@@ -600,7 +723,8 @@ namespace phy_engine::verilog::digital
                 }
                 case stmt_node::kind::if_stmt:
                 {
-                    auto* cond = b.expr(n.expr_root);
+                    auto* raw_cond = b.expr(n.expr_root);
+                    auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
                     auto then_value = value;
                     auto then_assigned = assigned;
@@ -628,6 +752,109 @@ namespace phy_engine::verilog::digital
                         value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
                         assigned[sig] = true;
                     }
+                    return true;
+                }
+                case stmt_node::kind::case_stmt:
+                {
+                    auto const base_value = value;
+                    auto const base_assigned = assigned;
+
+                    ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
+                    ::std::vector<::phy_engine::model::node_t*> key_bits{};
+                    key_bits.resize(w);
+                    if(n.case_expr_roots.empty())
+                    {
+                        key_bits[0] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
+                    }
+                    else
+                    {
+                        for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr(n.case_expr_roots.index_unchecked(i)); }
+                    }
+
+                    auto* z = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::high_impedence_state);
+
+                    auto bit_match = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* bb) noexcept
+                        -> ::phy_engine::model::node_t*
+                    {
+                        auto* eq = b.ctx.gate_case_eq(a, bb);
+                        switch(n.ck)
+                        {
+                            case stmt_node::case_kind::normal: return eq;
+                            case stmt_node::case_kind::casez:
+                            {
+                                auto* az = b.ctx.gate_case_eq(a, z);
+                                auto* bz = b.ctx.gate_case_eq(bb, z);
+                                return b.ctx.gate_or(eq, b.ctx.gate_or(az, bz));
+                            }
+                            case stmt_node::case_kind::casex:
+                            {
+                                auto* ua = b.ctx.gate_is_unknown(a);
+                                auto* ub = b.ctx.gate_is_unknown(bb);
+                                return b.ctx.gate_or(eq, b.ctx.gate_or(ua, ub));
+                            }
+                            default: return eq;
+                        }
+                    };
+
+                    auto item_match = [&](case_item const& ci) noexcept -> ::phy_engine::model::node_t*
+                    {
+                        if(ci.match_roots.size() != w) { return b.ctx.const_node(::phy_engine::verilog::digital::logic_t::false_state); }
+                        auto* m = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
+                        for(::std::size_t i{}; i < w; ++i)
+                        {
+                            auto* mb = b.expr(ci.match_roots.index_unchecked(i));
+                            m = b.ctx.gate_and(m, bit_match(key_bits[i], mb));
+                        }
+                        return m;
+                    };
+
+                    case_item const* def{};
+                    ::std::vector<case_item const*> items{};
+                    items.reserve(n.case_items.size());
+                    for(auto const& ci: n.case_items)
+                    {
+                        if(ci.is_default) { def = __builtin_addressof(ci); }
+                        else { items.push_back(__builtin_addressof(ci)); }
+                    }
+
+                    auto agg_value = base_value;
+                    auto agg_assigned = base_assigned;
+                    if(def != nullptr)
+                    {
+                        for(auto const s: def->stmts)
+                        {
+                            if(!synth_stmt_comb(b, arena, s, agg_value, agg_assigned, targets)) { return false; }
+                        }
+                    }
+
+                    for(::std::size_t rev{}; rev < items.size(); ++rev)
+                    {
+                        auto const& ci = *items[items.size() - 1 - rev];
+                        auto* match = item_match(ci);
+
+                        auto item_value = base_value;
+                        auto item_assigned = base_assigned;
+                        for(auto const s: ci.stmts)
+                        {
+                            if(!synth_stmt_comb(b, arena, s, item_value, item_assigned, targets)) { return false; }
+                        }
+
+                        for(::std::size_t sig{}; sig < targets.size() && sig < agg_value.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            if(item_assigned[sig] != agg_assigned[sig])
+                            {
+                                b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
+                                return false;
+                            }
+                            if(!item_assigned[sig]) { continue; }
+                            agg_value[sig] = b.ctx.mux2(match, agg_value[sig], item_value[sig]);
+                            agg_assigned[sig] = true;
+                        }
+                    }
+
+                    value = ::std::move(agg_value);
+                    assigned = ::std::move(agg_assigned);
                     return true;
                 }
                 default:
