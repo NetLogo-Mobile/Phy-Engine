@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
+#include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -46,6 +48,18 @@ struct options
     // If true, include unknown/unsupported PE digital models as placeholders.
     // Default is false because PE->PL is expected to be explicit about what is supported.
     bool keep_unknown_as_placeholders{false};
+
+    struct placement_context
+    {
+        std::string_view pe_model_name;      // e.g. "OUTPUT"
+        std::string_view pe_instance_name;   // e.g. "pix[0]" (may be empty)
+        std::string_view pl_model_id;        // e.g. "Logic Output"
+        bool is_big_element{};
+    };
+
+    // Optional hook to override per-element placement (no auto-placer is provided here).
+    // Return std::nullopt to fall back to `fixed_pos`.
+    std::function<std::optional<position>(placement_context const&)> element_placer{};
 };
 
 struct result
@@ -58,6 +72,11 @@ struct result
 namespace detail
 {
 inline std::string u8sv_to_string(::fast_io::u8string_view v)
+{
+    return std::string(reinterpret_cast<char const*>(v.data()), v.size());
+}
+
+inline std::string u8str_to_string(::fast_io::u8string const& v)
 {
     return std::string(reinterpret_cast<char const*>(v.data()), v.size());
 }
@@ -199,6 +218,12 @@ inline void try_set_pl_properties_for_element(experiment& ex,
     if(mb.ptr == nullptr) { return; }
     auto const name = u8sv_to_string(mb.ptr->get_model_name());
 
+    // Keep PE instance name for downstream layout / debug.
+    if(!mb.name.empty())
+    {
+        ex.get_element(element_id).data()["Properties"]["名称"] = u8str_to_string(mb.name);
+    }
+
     if(name == "INPUT")
     {
         auto v = mb.ptr->get_attribute(0);
@@ -246,7 +271,24 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
                 throw std::runtime_error("pe_to_pl: unsupported conversion for PE digital model: " + name);
             }
 
-            auto id = out.ex.add_circuit_element(mapping.model_id, opt.fixed_pos, opt.element_xyz_coords, mapping.is_big_element);
+            position pos = opt.fixed_pos;
+            if(opt.element_placer)
+            {
+                auto const pe_model_name = detail::u8sv_to_string(m->ptr->get_model_name());
+                auto const pe_instance_name = detail::u8str_to_string(m->name);
+                options::placement_context ctx{
+                    .pe_model_name = pe_model_name,
+                    .pe_instance_name = pe_instance_name,
+                    .pl_model_id = mapping.model_id,
+                    .is_big_element = mapping.is_big_element,
+                };
+                if(auto p = opt.element_placer(ctx))
+                {
+                    pos = *p;
+                }
+            }
+
+            auto id = out.ex.add_circuit_element(mapping.model_id, pos, opt.element_xyz_coords, mapping.is_big_element);
             model_map.emplace(m, mapped_element{std::move(id), std::move(mapping.pe_to_pl_pin)});
 
             detail::try_set_pl_properties_for_element(out.ex, model_map[m].element_id, *m, out.warnings);

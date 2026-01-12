@@ -479,7 +479,7 @@ public:
             {"ModelID", std::move(model_id)},
             {"Identifier", detail::rand_string(33)},
             {"IsBroken", false},
-            {"IsLocked", false},
+            {"IsLocked", true},
             {"Properties", json::object()},
             {"Statistics", json::object()},
             {"Position", ""},
