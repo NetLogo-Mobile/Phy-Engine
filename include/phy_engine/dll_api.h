@@ -112,6 +112,8 @@ enum phy_engine_element_code : int
 
     // Verilog module (only supported via `create_circuit_ex`)
     PHY_ENGINE_E_VERILOG_MODULE = 300,
+    // Verilog module synthesized into PE digital primitives (supported via `create_circuit_ex`)
+    PHY_ENGINE_E_VERILOG_NETLIST = 301,
 };
 
 // Create a circuit from element codes + wire connections.

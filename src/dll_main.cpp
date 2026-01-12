@@ -27,6 +27,9 @@
 
 #include <phy_engine/model/models/digital/logical/yes.h>
 #include <phy_engine/model/models/digital/logical/tri_state.h>
+#include <phy_engine/model/models/digital/verilog_ports.h>
+
+#include <phy_engine/verilog/digital/pe_synth.h>
 
 // 并查集查找函数
 static int uf_find(int x, int* parent, int* visited)
@@ -549,6 +552,7 @@ namespace
 {
     // Extended element code for Verilog module creation through create_circuit_ex().
     inline constexpr int PE_ELEMENT_VERILOG_MODULE = 300;
+    inline constexpr int PE_ELEMENT_VERILOG_NETLIST = 301;
 
     struct verilog_text_tables
     {
@@ -946,6 +950,15 @@ extern "C" void* create_circuit_ex(int* elements,
 
     auto& nl{c->get_netlist()};
 
+    struct verilog_netlist_job
+    {
+        ::phy_engine::netlist::model_pos stub_pos{};
+        ::std::shared_ptr<::phy_engine::verilog::digital::compiled_design> design{};
+        ::phy_engine::verilog::digital::instance_state top{};
+    };
+
+    ::std::vector<verilog_netlist_job> verilog_jobs{};
+
     phy_engine::netlist::model_pos* model_pos_arr = (phy_engine::netlist::model_pos*)malloc(ele_size * sizeof(phy_engine::netlist::model_pos));
     if(model_pos_arr == nullptr)
     {
@@ -961,7 +974,82 @@ extern "C" void* create_circuit_ex(int* elements,
     {
         if(elements[i])
         {
-            auto [ele, ele_pos]{add_model_via_code_ex(nl, elements[i], &curr_prop, &vt, i)};
+            ::phy_engine::netlist::add_model_retstr ret{};
+
+            if(elements[i] == PE_ELEMENT_VERILOG_NETLIST)
+            {
+                auto const src = get_verilog_src(vt, i);
+                if(src.empty())
+                {
+                    ::std::free(model_pos_arr);
+                    destroy_circuit(c, *vec_pos, *chunk_pos);
+                    *vec_pos = nullptr;
+                    *chunk_pos = nullptr;
+                    return nullptr;
+                }
+
+                auto top = get_verilog_top(vt, i);
+                if(top.empty())
+                {
+                    static constexpr char8_t fallback_top[] = u8"top";
+                    top = ::fast_io::u8string_view{fallback_top, sizeof(fallback_top) - 1};
+                }
+
+                ::phy_engine::verilog::digital::compile_options opt{};
+                auto cr = ::phy_engine::verilog::digital::compile(src, opt);
+                if(!cr.errors.empty() || cr.modules.empty())
+                {
+                    ::std::free(model_pos_arr);
+                    destroy_circuit(c, *vec_pos, *chunk_pos);
+                    *vec_pos = nullptr;
+                    *chunk_pos = nullptr;
+                    return nullptr;
+                }
+
+                auto design = ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
+                if(design->modules.empty())
+                {
+                    ::std::free(model_pos_arr);
+                    destroy_circuit(c, *vec_pos, *chunk_pos);
+                    *vec_pos = nullptr;
+                    *chunk_pos = nullptr;
+                    return nullptr;
+                }
+
+                auto const* chosen = ::phy_engine::verilog::digital::find_module(*design, top);
+                if(chosen == nullptr) { chosen = __builtin_addressof(design->modules.front_unchecked()); }
+
+                auto top_inst = ::phy_engine::verilog::digital::elaborate(*design, *chosen);
+
+                ::fast_io::vector<::fast_io::u8string> pin_names{};
+                if(top_inst.mod != nullptr)
+                {
+                    pin_names.reserve(top_inst.mod->ports.size());
+                    for(auto const& p: top_inst.mod->ports) { pin_names.push_back(p.name); }
+                }
+
+                ret = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::VERILOG_PORTS{::std::move(pin_names)});
+                if(ret.mod == nullptr)
+                {
+                    ::std::free(model_pos_arr);
+                    destroy_circuit(c, *vec_pos, *chunk_pos);
+                    *vec_pos = nullptr;
+                    *chunk_pos = nullptr;
+                    return nullptr;
+                }
+
+                verilog_jobs.push_back(verilog_netlist_job{
+                    .stub_pos = ret.mod_pos,
+                    .design = ::std::move(design),
+                    .top = ::std::move(top_inst),
+                });
+            }
+            else
+            {
+                ret = add_model_via_code_ex(nl, elements[i], &curr_prop, &vt, i);
+            }
+
+            auto [ele, ele_pos]{ret};
             if(ele == nullptr)
             {
                 ::std::free(model_pos_arr);
@@ -980,6 +1068,52 @@ extern "C" void* create_circuit_ex(int* elements,
 
     int const wire_count = static_cast<int>(wires_size / 4);
     if(wires != nullptr && wire_count > 0) { build_netlist_from_wires(nl, elements, static_cast<int>(ele_size), wires, wire_count, model_pos_arr); }
+
+    // Expand synthesized Verilog modules into PE digital primitives and wire them to the already-connected port stub pins.
+    for(auto& job: verilog_jobs)
+    {
+        auto* stub = ::phy_engine::netlist::get_model(nl, job.stub_pos);
+        if(stub == nullptr || stub->ptr == nullptr)
+        {
+            ::std::free(model_pos_arr);
+            destroy_circuit(c, *vec_pos, *chunk_pos);
+            *vec_pos = nullptr;
+            *chunk_pos = nullptr;
+            return nullptr;
+        }
+
+        auto pv = stub->ptr->generate_pin_view();
+        ::std::vector<::phy_engine::model::node_t*> port_nodes{};
+        port_nodes.reserve(pv.size);
+        for(::std::size_t pi{}; pi < pv.size; ++pi)
+        {
+            auto* n = pv.pins[pi].nodes;
+            if(n == nullptr)
+            {
+                auto& created = ::phy_engine::netlist::create_node(nl);
+                if(!::phy_engine::netlist::add_to_node(nl, *stub, pi, created))
+                {
+                    ::std::free(model_pos_arr);
+                    destroy_circuit(c, *vec_pos, *chunk_pos);
+                    *vec_pos = nullptr;
+                    *chunk_pos = nullptr;
+                    return nullptr;
+                }
+                n = __builtin_addressof(created);
+            }
+            port_nodes.push_back(n);
+        }
+
+        ::phy_engine::verilog::digital::pe_synth_error syn_err{};
+        if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err))
+        {
+            ::std::free(model_pos_arr);
+            destroy_circuit(c, *vec_pos, *chunk_pos);
+            *vec_pos = nullptr;
+            *chunk_pos = nullptr;
+            return nullptr;
+        }
+    }
 
     ::std::free(model_pos_arr);
     return c;
