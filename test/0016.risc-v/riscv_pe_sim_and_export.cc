@@ -54,8 +54,33 @@ int main()
 
     auto& nl = c.get_netlist();
 
-    // Compile + elaborate.
-    auto cr = ::phy_engine::verilog::digital::compile(src);
+    // Compile + elaborate (enable `include` relative to the source directory).
+    struct include_ctx
+    {
+        std::filesystem::path base;
+    } inc{src_path.parent_path()};
+
+    auto include_resolver = [](void* user, ::fast_io::u8string_view path, ::fast_io::u8string& out_text) noexcept -> bool {
+        try
+        {
+            auto* ctx = static_cast<include_ctx*>(user);
+            std::string rel(reinterpret_cast<char const*>(path.data()), path.size());
+            auto full = ctx->base / rel;
+            auto s = read_file_text(full);
+            out_text = ::fast_io::u8string{::fast_io::u8string_view{reinterpret_cast<char8_t const*>(s.data()), s.size()}};
+            return true;
+        }
+        catch(...)
+        {
+            return false;
+        }
+    };
+
+    ::phy_engine::verilog::digital::compile_options copt{};
+    copt.preprocess.user = &inc;
+    copt.preprocess.include_resolver = include_resolver;
+
+    auto cr = ::phy_engine::verilog::digital::compile(src, copt);
     if(!cr.errors.empty() || cr.modules.empty())
     {
         // Surface the first error (best-effort).
@@ -74,7 +99,7 @@ int main()
     auto top_inst = ::phy_engine::verilog::digital::elaborate(design, *mod);
     if(top_inst.mod == nullptr) { return 3; }
 
-    // Port nodes in module port order: clk, rst_n, done.
+    // Port nodes in module port order.
     std::vector<::phy_engine::model::node_t*> ports{};
     ports.reserve(top_inst.mod->ports.size());
     for(std::size_t i{}; i < top_inst.mod->ports.size(); ++i)
@@ -82,7 +107,21 @@ int main()
         auto& n = ::phy_engine::netlist::create_node(nl);
         ports.push_back(__builtin_addressof(n));
     }
-    if(ports.size() != 3) { return 4; }
+
+    auto find_port = [&](char const* name) -> std::size_t {
+        for(std::size_t i{}; i < top_inst.mod->ports.size(); ++i)
+        {
+            auto const& pn = top_inst.mod->ports.index_unchecked(i).name;
+            std::string s(reinterpret_cast<char const*>(pn.data()), pn.size());
+            if(s == name) { return i; }
+        }
+        return static_cast<std::size_t>(-1);
+    };
+
+    auto const idx_clk = find_port("clk");
+    auto const idx_rstn = find_port("rst_n");
+    auto const idx_done = find_port("done");
+    if(idx_clk == static_cast<std::size_t>(-1) || idx_rstn == static_cast<std::size_t>(-1) || idx_done == static_cast<std::size_t>(-1)) { return 4; }
 
     // External IO models.
     auto [in_clk, p0] =
@@ -95,9 +134,9 @@ int main()
     (void)p2;
     if(in_clk == nullptr || in_rstn == nullptr || out_done == nullptr) { return 5; }
 
-    if(!::phy_engine::netlist::add_to_node(nl, *in_clk, 0, *ports[0])) { return 6; }
-    if(!::phy_engine::netlist::add_to_node(nl, *in_rstn, 0, *ports[1])) { return 7; }
-    if(!::phy_engine::netlist::add_to_node(nl, *out_done, 0, *ports[2])) { return 8; }
+    if(!::phy_engine::netlist::add_to_node(nl, *in_clk, 0, *ports[idx_clk])) { return 6; }
+    if(!::phy_engine::netlist::add_to_node(nl, *in_rstn, 0, *ports[idx_rstn])) { return 7; }
+    if(!::phy_engine::netlist::add_to_node(nl, *out_done, 0, *ports[idx_done])) { return 8; }
 
     // Synthesize to PE netlist (digital primitives).
     ::phy_engine::verilog::digital::pe_synth_error err{};
@@ -148,7 +187,7 @@ int main()
     {
         set_clk(true);
         c.digital_clk();  // posedge
-        done = (ports[2]->node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state);
+        done = (ports[idx_done]->node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state);
         if(done) { break; }
 
         set_clk(false);
@@ -158,4 +197,3 @@ int main()
     assert(done && "riscv program did not set done within cycle budget");
     return 0;
 }
-

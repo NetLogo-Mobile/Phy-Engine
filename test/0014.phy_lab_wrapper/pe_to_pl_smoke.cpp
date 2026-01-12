@@ -32,7 +32,7 @@ int main()
     auto r = phy_lab_wrapper::pe_to_pl::convert(nl);
 
     assert(r.ex.type() == phy_lab_wrapper::experiment_type::circuit);
-    assert(r.ex.wires().empty());
+    assert(r.ex.wires().size() == 2);
     assert(r.ex.elements().size() == 3);
 
     bool has_logic_input{};

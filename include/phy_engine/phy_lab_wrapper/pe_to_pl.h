@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -38,6 +39,9 @@ struct options
 
     // Keep higher-level PL macro elements when possible (e.g., COUNTER4 -> "Counter").
     bool keep_pl_macros{true};
+
+    // If true, generate PL wires for each PE net (node) from collected endpoints.
+    bool generate_wires{true};
 
     // If true, include unknown/unsupported PE digital models as placeholders.
     // Default is false because PE->PL is expected to be explicit about what is supported.
@@ -280,6 +284,29 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
     out.nets.reserve(node_eps.size());
     for(auto& kv: node_eps)
     {
+        // De-duplicate endpoints (same element/pin can appear multiple times if the PE side re-attaches).
+        auto& eps = kv.second;
+        std::sort(eps.begin(), eps.end(), [](pl_endpoint const& a, pl_endpoint const& b) {
+            if(a.element_identifier != b.element_identifier) { return a.element_identifier < b.element_identifier; }
+            return a.pin < b.pin;
+        });
+        eps.erase(std::unique(eps.begin(), eps.end(), [](pl_endpoint const& a, pl_endpoint const& b) {
+                      return a.element_identifier == b.element_identifier && a.pin == b.pin;
+                  }),
+                  eps.end());
+
+        if(opt.generate_wires && eps.size() >= 2)
+        {
+            // Create a star topology: connect the first endpoint to all others.
+            // This preserves net connectivity without needing geometry-based routing.
+            auto const& root = eps.front();
+            for(std::size_t i{1}; i < eps.size(); ++i)
+            {
+                auto const& e = eps[i];
+                out.ex.connect(root.element_identifier, root.pin, e.element_identifier, e.pin);
+            }
+        }
+
         out.nets.push_back(net{kv.first, std::move(kv.second)});
     }
     return out;
