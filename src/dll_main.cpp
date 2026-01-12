@@ -676,6 +676,67 @@ extern "C" int circuit_sample(void* circuit_ptr,
     return 0;
 }
 
+extern "C" int circuit_sample_u8(void* circuit_ptr,
+                                 ::std::size_t* vec_pos,
+                                 ::std::size_t* chunk_pos,
+                                 ::std::size_t comp_size,
+                                 double* voltage,
+                                 ::std::size_t* voltage_ord,
+                                 double* current,
+                                 ::std::size_t* current_ord,
+                                 ::std::uint8_t* digital,
+                                 ::std::size_t* digital_ord)
+{
+    if(circuit_ptr == nullptr || vec_pos == nullptr || chunk_pos == nullptr || voltage == nullptr || voltage_ord == nullptr || current == nullptr ||
+       current_ord == nullptr || digital == nullptr || digital_ord == nullptr)
+    {
+        return 1;
+    }
+
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    auto& nl{c->get_netlist()};
+
+    voltage_ord[0] = current_ord[0] = digital_ord[0] = 0;
+    for(::std::size_t i{}; i < comp_size; ++i)
+    {
+        phy_engine::model::model_base* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos[i], chunk_pos[i]});
+        if(model == nullptr || model->ptr == nullptr)
+        {
+            voltage_ord[i + 1] = voltage_ord[i];
+            current_ord[i + 1] = current_ord[i];
+            digital_ord[i + 1] = digital_ord[i];
+            continue;
+        }
+
+        auto const model_pin_view{model->ptr->generate_pin_view()};
+        auto const model_branch_view{model->ptr->generate_branch_view()};
+
+        for(::std::size_t j{}; j < model_pin_view.size; ++j)
+        {
+            auto const* node{model_pin_view.pins[j].nodes};
+            voltage[j + voltage_ord[i]] = (node != nullptr) ? node->node_information.an.voltage.real() : 0.0;
+        }
+        voltage_ord[i + 1] = voltage_ord[i] + model_pin_view.size;
+
+        for(::std::size_t j{}; j < model_branch_view.size; ++j) { current[j + current_ord[i]] = model_branch_view.branches[j].current.real(); }
+        current_ord[i + 1] = current_ord[i] + model_branch_view.size;
+
+        for(::std::size_t j{}; j < model_pin_view.size; ++j)
+        {
+            auto const* node{model_pin_view.pins[j].nodes};
+            ::std::uint8_t v{};
+            if(node != nullptr && node->num_of_analog_node == 0)
+            {
+                v = (node->node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state) ? 1 : 0;
+            }
+            digital[j + digital_ord[i]] = v;
+        }
+        digital_ord[i + 1] = digital_ord[i] + model_pin_view.size;
+    }
+
+    return 0;
+}
+
 extern "C" int circuit_set_model_digital(void* circuit_ptr, ::std::size_t vec_pos, ::std::size_t chunk_pos, ::std::size_t attribute_index, ::std::uint8_t state)
 {
     if(circuit_ptr == nullptr) { return 1; }

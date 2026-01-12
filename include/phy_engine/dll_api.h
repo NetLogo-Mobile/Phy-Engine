@@ -160,6 +160,19 @@ int circuit_sample(void* circuit_ptr,
                    bool* digital,
                    size_t* digital_ord);
 
+// Like `circuit_sample`, but writes digital pin states as bytes (0/1).
+// This is friendlier for FFI/wasm bindings and avoids `std::vector<bool>` issues in C++ callers.
+int circuit_sample_u8(void* circuit_ptr,
+                      size_t* vec_pos,
+                      size_t* chunk_pos,
+                      size_t comp_size,
+                      double* voltage,
+                      size_t* voltage_ord,
+                      double* current,
+                      size_t* current_ord,
+                      uint8_t* digital,
+                      size_t* digital_ord);
+
 // Set a model's digital attribute (commonly used for `PHY_ENGINE_E_DIGITAL_INPUT` at attribute_index=0).
 int circuit_set_model_digital(void* circuit_ptr, size_t vec_pos, size_t chunk_pos, size_t attribute_index, uint8_t state);
 
