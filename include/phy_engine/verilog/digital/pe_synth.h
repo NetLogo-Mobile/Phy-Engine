@@ -12,6 +12,7 @@
 
 #include "../../model/models/digital/combinational/d_ff.h"
 #include "../../model/models/digital/combinational/d_ff_arstn.h"
+#include "../../model/models/digital/combinational/d_latch.h"
 #include "../../model/models/digital/logical/and.h"
 #include "../../model/models/digital/logical/case_eq.h"
 #include "../../model/models/digital/logical/input.h"
@@ -425,6 +426,7 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] ::phy_engine::model::node_t*
                 mux2(::phy_engine::model::node_t* sel, ::phy_engine::model::node_t* d0, ::phy_engine::model::node_t* d1) noexcept
             {
+                if(d0 == d1) { return d0; }
                 // y = (sel & d1) | (~sel & d0)
                 auto* n_sel = sel;
                 auto* n_d0 = d0;
@@ -785,6 +787,45 @@ namespace phy_engine::verilog::digital
             }
         }
 
+        inline bool try_collect_async_reset_values(instance_builder& b,
+                                                   ::fast_io::vector<stmt_node> const& arena,
+                                                   ::std::size_t stmt_idx,
+                                                   ::std::vector<::phy_engine::verilog::digital::logic_t>& reset_values,
+                                                   ::std::vector<bool>& has_reset,
+                                                   ::std::vector<bool> const& targets) noexcept
+        {
+            if(!b.ctx.ok()) { return false; }
+            if(stmt_idx >= arena.size()) { return false; }
+
+            auto const& n = arena.index_unchecked(stmt_idx);
+            switch(n.k)
+            {
+                case stmt_node::kind::empty: return true;
+                case stmt_node::kind::block:
+                {
+                    for(auto const s: n.stmts)
+                    {
+                        if(!try_collect_async_reset_values(b, arena, s, reset_values, has_reset, targets)) { return false; }
+                    }
+                    return true;
+                }
+                case stmt_node::kind::blocking_assign:
+                case stmt_node::kind::nonblocking_assign:
+                {
+                    if(n.lhs_signal >= reset_values.size() || n.lhs_signal >= has_reset.size()) { return true; }
+                    if(n.lhs_signal < targets.size() && targets[n.lhs_signal])
+                    {
+                        ::phy_engine::verilog::digital::logic_t v{};
+                        if(!eval_const_expr_to_logic(b, n.expr_root, v)) { return false; }
+                        reset_values[n.lhs_signal] = v;
+                        has_reset[n.lhs_signal] = true;
+                    }
+                    return true;
+                }
+                default: return false;
+            }
+        }
+
         inline bool synth_stmt_ff(instance_builder& b,
                                   ::fast_io::vector<stmt_node> const& arena,
                                   ::std::size_t stmt_idx,
@@ -1049,7 +1090,7 @@ namespace phy_engine::verilog::digital
                                     ::fast_io::vector<stmt_node> const& arena,
                                     ::std::size_t stmt_idx,
                                     ::std::vector<::phy_engine::model::node_t*>& value,
-                                    ::std::vector<bool>& assigned,
+                                    ::std::vector<::phy_engine::model::node_t*>& assigned_cond,
                                     ::std::vector<bool> const& targets) noexcept
         {
             if(!b.ctx.ok()) { return false; }
@@ -1066,37 +1107,37 @@ namespace phy_engine::verilog::digital
                 {
                     for(auto const s: n.stmts)
                     {
-                        if(!synth_stmt_comb(b, arena, s, value, assigned, targets)) { return false; }
+                        if(!synth_stmt_comb(b, arena, s, value, assigned_cond, targets)) { return false; }
                     }
                     return true;
                 }
                 case stmt_node::kind::blocking_assign:
                 case stmt_node::kind::nonblocking_assign:
                 {
-                    if(n.lhs_signal >= value.size() || n.lhs_signal >= assigned.size()) { return true; }
+                    if(n.lhs_signal >= value.size() || n.lhs_signal >= assigned_cond.size()) { return true; }
                     if(n.lhs_signal < targets.size() && targets[n.lhs_signal])
                     {
-                        auto* rhs = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                        auto* rhs = b.expr_in_env(n.expr_root, value, nullptr);
                         if(n.delay_ticks != 0) { rhs = b.ctx.tick_delay(rhs, n.delay_ticks); }
                         value[n.lhs_signal] = rhs;
-                        assigned[n.lhs_signal] = true;
+                        assigned_cond[n.lhs_signal] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
                     }
                     return true;
                 }
                 case stmt_node::kind::if_stmt:
                 {
-                    auto* raw_cond = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                    auto* raw_cond = b.expr_in_env(n.expr_root, value, nullptr);
                     auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
                     auto then_value = value;
-                    auto then_assigned = assigned;
+                    auto then_assigned = assigned_cond;
                     for(auto const s: n.stmts)
                     {
                         if(!synth_stmt_comb(b, arena, s, then_value, then_assigned, targets)) { return false; }
                     }
 
                     auto else_value = value;
-                    auto else_assigned = assigned;
+                    auto else_assigned = assigned_cond;
                     for(auto const s: n.else_stmts)
                     {
                         if(!synth_stmt_comb(b, arena, s, else_value, else_assigned, targets)) { return false; }
@@ -1105,21 +1146,15 @@ namespace phy_engine::verilog::digital
                     for(::std::size_t sig{}; sig < targets.size() && sig < value.size(); ++sig)
                     {
                         if(!targets[sig]) { continue; }
-                        if(then_assigned[sig] != else_assigned[sig])
-                        {
-                            b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
-                            return false;
-                        }
-                        if(!then_assigned[sig]) { continue; }
                         value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
-                        assigned[sig] = true;
+                        assigned_cond[sig] = b.ctx.mux2(cond, else_assigned[sig], then_assigned[sig]);
                     }
                     return true;
                 }
                 case stmt_node::kind::case_stmt:
                 {
                     auto const base_value = value;
-                    auto const base_assigned = assigned;
+                    auto const base_assigned = assigned_cond;
 
                     ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
                     ::std::vector<::phy_engine::model::node_t*> key_bits{};
@@ -1132,7 +1167,7 @@ namespace phy_engine::verilog::digital
                     {
                         for(::std::size_t i{}; i < w; ++i)
                         {
-                            key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_value, __builtin_addressof(base_assigned));
+                            key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_value, nullptr);
                         }
                     }
 
@@ -1167,7 +1202,7 @@ namespace phy_engine::verilog::digital
                         auto* m = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
                         for(::std::size_t i{}; i < w; ++i)
                         {
-                            auto* mb = b.expr_in_env(ci.match_roots.index_unchecked(i), base_value, __builtin_addressof(base_assigned));
+                            auto* mb = b.expr_in_env(ci.match_roots.index_unchecked(i), base_value, nullptr);
                             m = b.ctx.gate_and(m, bit_match(key_bits[i], mb));
                         }
                         return m;
@@ -1207,19 +1242,13 @@ namespace phy_engine::verilog::digital
                         for(::std::size_t sig{}; sig < targets.size() && sig < agg_value.size(); ++sig)
                         {
                             if(!targets[sig]) { continue; }
-                            if(item_assigned[sig] != agg_assigned[sig])
-                            {
-                                b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
-                                return false;
-                            }
-                            if(!item_assigned[sig]) { continue; }
                             agg_value[sig] = b.ctx.mux2(match, agg_value[sig], item_value[sig]);
-                            agg_assigned[sig] = true;
+                            agg_assigned[sig] = b.ctx.mux2(match, agg_assigned[sig], item_assigned[sig]);
                         }
                     }
 
                     value = ::std::move(agg_value);
-                    assigned = ::std::move(agg_assigned);
+                    assigned_cond = ::std::move(agg_assigned);
                     return true;
                 }
                 case stmt_node::kind::for_stmt:
@@ -1232,16 +1261,16 @@ namespace phy_engine::verilog::digital
                     }
                     if(n.init_stmt != SIZE_MAX)
                     {
-                        if(!synth_stmt_comb(b, arena, n.init_stmt, value, assigned, targets)) { return false; }
+                        if(!synth_stmt_comb(b, arena, n.init_stmt, value, assigned_cond, targets)) { return false; }
                     }
 
                     for(::std::size_t iter{}; iter < max_iter; ++iter)
                     {
-                        auto* raw_cond = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                        auto* raw_cond = b.expr_in_env(n.expr_root, value, nullptr);
                         auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
                         auto then_value = value;
-                        auto then_assigned = assigned;
+                        auto then_assigned = assigned_cond;
                         if(n.body_stmt != SIZE_MAX)
                         {
                             if(!synth_stmt_comb(b, arena, n.body_stmt, then_value, then_assigned, targets)) { return false; }
@@ -1252,19 +1281,13 @@ namespace phy_engine::verilog::digital
                         }
 
                         auto else_value = value;
-                        auto else_assigned = assigned;
+                        auto else_assigned = assigned_cond;
 
                         for(::std::size_t sig{}; sig < targets.size() && sig < value.size(); ++sig)
                         {
                             if(!targets[sig]) { continue; }
-                            if(then_assigned[sig] != else_assigned[sig])
-                            {
-                                b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
-                                return false;
-                            }
-                            if(!then_assigned[sig]) { continue; }
                             value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
-                            assigned[sig] = true;
+                            assigned_cond[sig] = b.ctx.mux2(cond, else_assigned[sig], then_assigned[sig]);
                         }
                     }
                     return true;
@@ -1280,30 +1303,24 @@ namespace phy_engine::verilog::digital
 
                     for(::std::size_t iter{}; iter < max_iter; ++iter)
                     {
-                        auto* raw_cond = b.expr_in_env(n.expr_root, value, __builtin_addressof(assigned));
+                        auto* raw_cond = b.expr_in_env(n.expr_root, value, nullptr);
                         auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
                         auto then_value = value;
-                        auto then_assigned = assigned;
+                        auto then_assigned = assigned_cond;
                         if(n.body_stmt != SIZE_MAX)
                         {
                             if(!synth_stmt_comb(b, arena, n.body_stmt, then_value, then_assigned, targets)) { return false; }
                         }
 
                         auto else_value = value;
-                        auto else_assigned = assigned;
+                        auto else_assigned = assigned_cond;
 
                         for(::std::size_t sig{}; sig < targets.size() && sig < value.size(); ++sig)
                         {
                             if(!targets[sig]) { continue; }
-                            if(then_assigned[sig] != else_assigned[sig])
-                            {
-                                b.ctx.set_error("pe_synth: latch inferred in always_comb (not supported)");
-                                return false;
-                            }
-                            if(!then_assigned[sig]) { continue; }
                             value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
-                            assigned[sig] = true;
+                            assigned_cond[sig] = b.ctx.mux2(cond, else_assigned[sig], then_assigned[sig]);
                         }
                     }
                     return true;
@@ -1460,33 +1477,50 @@ namespace phy_engine::verilog::digital
                     ::std::vector<bool> targets(m.signal_names.size(), false);
                     for(auto const root: comb.roots) { collect_assigned_signals(comb.stmt_nodes, root, targets); }
 
-                    ::std::vector<::phy_engine::model::node_t*> values(m.signal_names.size(), nullptr);
-                    ::std::vector<bool> assigned(m.signal_names.size(), false);
+                    ::std::vector<::phy_engine::model::node_t*> values = b.sig_nodes;
+                    ::std::vector<::phy_engine::model::node_t*> assigned_cond(m.signal_names.size(),
+                                                                              const_node(::phy_engine::verilog::digital::logic_t::false_state));
                     for(auto const root: comb.roots)
                     {
-                        if(!synth_stmt_comb(b, comb.stmt_nodes, root, values, assigned, targets)) { return false; }
+                        if(!synth_stmt_comb(b, comb.stmt_nodes, root, values, assigned_cond, targets)) { return false; }
                     }
 
                     for(::std::size_t sig{}; sig < targets.size(); ++sig)
                     {
                         if(!targets[sig]) { continue; }
-                        if(!assigned[sig])
-                        {
-                            set_error("pe_synth: always_comb did not assign all targets");
-                            return false;
-                        }
                         auto* lhs = b.sig_nodes[sig];
                         auto* rhs = values[sig];
                         if(lhs == nullptr || rhs == nullptr) { continue; }
-                        auto [buf, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{})};
-                        (void)pos;
-                        if(buf == nullptr)
+
+                        ::phy_engine::verilog::digital::logic_t av{};
+                        bool const always_assigned = try_get_const(assigned_cond[sig], av) &&
+                                                     (av == ::phy_engine::verilog::digital::logic_t::true_state);
+
+                        if(always_assigned)
                         {
-                            set_error("pe_synth: failed to create YES");
-                            return false;
+                            auto [buf, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{})};
+                            (void)pos;
+                            if(buf == nullptr)
+                            {
+                                set_error("pe_synth: failed to create YES");
+                                return false;
+                            }
+                            if(!connect_pin(buf, 0, rhs)) { return false; }
+                            if(!connect_driver(buf, 1, lhs)) { return false; }
                         }
-                        if(!connect_pin(buf, 0, rhs)) { return false; }
-                        if(!connect_driver(buf, 1, lhs)) { return false; }
+                        else
+                        {
+                            auto [lat, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::DLATCH{})};
+                            (void)pos;
+                            if(lat == nullptr)
+                            {
+                                set_error("pe_synth: failed to create DLATCH");
+                                return false;
+                            }
+                            if(!connect_pin(lat, 0, rhs)) { return false; }
+                            if(!connect_pin(lat, 1, assigned_cond[sig])) { return false; }
+                            if(!connect_driver(lat, 2, lhs)) { return false; }
+                        }
                     }
                 }
             }
@@ -1525,11 +1559,6 @@ namespace phy_engine::verilog::digital
                     if(ff.events.size() == 1)
                     {
                         auto const ev = ff.events.front_unchecked();
-                        if(ev.k == sensitivity_event::kind::level)
-                        {
-                            set_error("pe_synth: level-sensitive always_ff not supported");
-                            return false;
-                        }
                         if(ev.signal >= b.sig_nodes.size())
                         {
                             set_error("pe_synth: always_ff clock signal out of range");
@@ -1541,9 +1570,10 @@ namespace phy_engine::verilog::digital
                             set_error("pe_synth: null clk node");
                             return false;
                         }
+                        // Treat level event as posedge for this synthesis subset.
                         if(ev.k == sensitivity_event::kind::negedge) { clk = gate_not(clk); }
                     }
-                    else if(ff.events.size() == 2)
+                    else if(ff.events.size() >= 2)
                     {
                         ::std::size_t if_stmt{};
                         if(!find_async_reset_if_stmt(ff.stmt_nodes, ff.roots, if_stmt))
@@ -1553,111 +1583,25 @@ namespace phy_engine::verilog::digital
                         }
                         auto const& ifn = ff.stmt_nodes.index_unchecked(if_stmt);
 
-                        // Extract reset condition as (rst) or (!rst) or (rst == 0/1) / (rst != 0/1).
-                        ::std::size_t rst_sig{SIZE_MAX};
-                        bool cond_inverted{};
-                        if(inst.mod == nullptr)
+                        // Identify clock: first edge event, or fall back to first level event.
+                        ::std::size_t clk_idx{SIZE_MAX};
+                        for(::std::size_t i{}; i < ff.events.size(); ++i)
                         {
-                            set_error("pe_synth: instance has no module");
-                            return false;
-                        }
-                        auto const& cm = *inst.mod;
-                        if(ifn.expr_root >= cm.expr_nodes.size())
-                        {
-                            set_error("pe_synth: reset condition expr out of range");
-                            return false;
-                        }
-                        auto const& cexpr = cm.expr_nodes.index_unchecked(ifn.expr_root);
-                        using ek = ::phy_engine::verilog::digital::expr_kind;
-                        auto parse_reset_sig = [&](::std::size_t sig, bool inv) noexcept -> bool
-                        {
-                            rst_sig = sig;
-                            cond_inverted = inv;
-                            return true;
-                        };
-
-                        if(cexpr.kind == ek::signal) { (void)parse_reset_sig(cexpr.signal, false); }
-                        else if(cexpr.kind == ek::unary_not)
-                        {
-                            if(cexpr.a >= cm.expr_nodes.size() || cm.expr_nodes.index_unchecked(cexpr.a).kind != ek::signal)
+                            auto const ev = ff.events.index_unchecked(i);
+                            if(ev.k == sensitivity_event::kind::posedge || ev.k == sensitivity_event::kind::negedge)
                             {
-                                set_error("pe_synth: unsupported reset condition (expected !signal)");
-                                return false;
-                            }
-                            (void)parse_reset_sig(cm.expr_nodes.index_unchecked(cexpr.a).signal, true);
-                        }
-                        else if(cexpr.kind == ek::binary_eq || cexpr.kind == ek::binary_neq)
-                        {
-                            auto const is_eq = (cexpr.kind == ek::binary_eq);
-                            auto const try_parse = [&](::std::size_t a, ::std::size_t b0) noexcept -> bool
-                            {
-                                if(a >= cm.expr_nodes.size() || b0 >= cm.expr_nodes.size()) { return false; }
-                                auto const& ea = cm.expr_nodes.index_unchecked(a);
-                                auto const& eb = cm.expr_nodes.index_unchecked(b0);
-                                if(ea.kind != ek::signal || eb.kind != ek::literal) { return false; }
-                                if(eb.literal != ::phy_engine::verilog::digital::logic_t::false_state &&
-                                   eb.literal != ::phy_engine::verilog::digital::logic_t::true_state)
-                                {
-                                    return false;
-                                }
-
-                                bool inv{};
-                                if(eb.literal == ::phy_engine::verilog::digital::logic_t::false_state)
-                                {
-                                    // (sig == 0) => !sig, (sig != 0) => sig
-                                    inv = is_eq;
-                                }
-                                else
-                                {
-                                    // (sig == 1) => sig, (sig != 1) => !sig
-                                    inv = !is_eq;
-                                }
-                                return parse_reset_sig(ea.signal, inv);
-                            };
-
-                            if(!try_parse(cexpr.a, cexpr.b) && !try_parse(cexpr.b, cexpr.a))
-                            {
-                                set_error("pe_synth: unsupported reset condition (expected signal == 0/1)");
-                                return false;
+                                clk_idx = i;
+                                break;
                             }
                         }
-                        else
+                        if(clk_idx == SIZE_MAX) { clk_idx = 0; }
+
+                        auto const clk_ev = ff.events.index_unchecked(clk_idx);
+                        if(clk_ev.signal >= b.sig_nodes.size())
                         {
-                            set_error("pe_synth: unsupported reset condition in async-reset always_ff");
+                            set_error("pe_synth: always_ff clock signal out of range");
                             return false;
                         }
-
-                        if(rst_sig == SIZE_MAX)
-                        {
-                            set_error("pe_synth: failed to resolve async reset signal");
-                            return false;
-                        }
-
-                        auto const ev0 = ff.events.index_unchecked(0);
-                        auto const ev1 = ff.events.index_unchecked(1);
-                        if(ev0.k == sensitivity_event::kind::level || ev1.k == sensitivity_event::kind::level)
-                        {
-                            set_error("pe_synth: level-sensitive always_ff not supported");
-                            return false;
-                        }
-
-                        bool const ev0_is_rst = (ev0.signal == rst_sig);
-                        bool const ev1_is_rst = (ev1.signal == rst_sig);
-                        if(ev0_is_rst == ev1_is_rst)
-                        {
-                            set_error("pe_synth: async reset condition does not match sensitivity list");
-                            return false;
-                        }
-
-                        auto const rst_ev = ev0_is_rst ? ev0 : ev1;
-                        auto const clk_ev = ev0_is_rst ? ev1 : ev0;
-
-                        if(clk_ev.signal >= b.sig_nodes.size() || rst_ev.signal >= b.sig_nodes.size())
-                        {
-                            set_error("pe_synth: always_ff event signal out of range");
-                            return false;
-                        }
-
                         clk = b.sig_nodes[clk_ev.signal];
                         if(clk == nullptr)
                         {
@@ -1666,30 +1610,69 @@ namespace phy_engine::verilog::digital
                         }
                         if(clk_ev.k == sensitivity_event::kind::negedge) { clk = gate_not(clk); }
 
-                        auto* rst_node = b.sig_nodes[rst_ev.signal];
-                        if(rst_node == nullptr)
+                        // Reset condition is an arbitrary (supported) boolean expression.
+                        auto* raw_cond = b.expr_in_env(ifn.expr_root, b.sig_nodes, nullptr);
+                        auto* cond_true = gate_case_eq(raw_cond, const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        // Decide whether reset is in then-branch or else-branch by checking which side contains only constant assignments.
+                        auto then_reset_values = reset_values;
+                        auto else_reset_values = reset_values;
+                        auto then_has_reset = has_reset;
+                        auto else_has_reset = has_reset;
+
+                        bool then_ok{true};
+                        for(auto const s: ifn.stmts)
                         {
-                            set_error("pe_synth: null rst node");
+                            if(!try_collect_async_reset_values(b, ff.stmt_nodes, s, then_reset_values, then_has_reset, targets))
+                            {
+                                then_ok = false;
+                                break;
+                            }
+                        }
+                        bool else_ok{true};
+                        for(auto const s: ifn.else_stmts)
+                        {
+                            if(!try_collect_async_reset_values(b, ff.stmt_nodes, s, else_reset_values, else_has_reset, targets))
+                            {
+                                else_ok = false;
+                                break;
+                            }
+                        }
+
+                        bool reset_is_then{};
+                        if(then_ok && !else_ok) { reset_is_then = true; }
+                        else if(!then_ok && else_ok) { reset_is_then = false; }
+                        else if(then_ok && else_ok)
+                        {
+                            bool same{true};
+                            for(::std::size_t sig{}; sig < targets.size() && sig < then_has_reset.size() && sig < else_has_reset.size(); ++sig)
+                            {
+                                if(!targets[sig]) { continue; }
+                                if(then_has_reset[sig] != else_has_reset[sig]) { same = false; break; }
+                                if(then_has_reset[sig] && then_reset_values[sig] != else_reset_values[sig]) { same = false; break; }
+                            }
+                            if(!same)
+                            {
+                                set_error("pe_synth: ambiguous async reset branch (both sides constant but differ)");
+                                return false;
+                            }
+                            reset_is_then = true;
+                        }
+                        else
+                        {
+                            set_error("pe_synth: async reset requires one branch to be constant-only");
                             return false;
                         }
 
-                        // DFF_ARSTN uses an active-low reset pin.
-                        arst_n = rst_node;
-                        if(rst_ev.k == sensitivity_event::kind::posedge) { arst_n = gate_not(rst_node); }
+                        auto* rst_active = reset_is_then ? cond_true : gate_not(cond_true);
+                        arst_n = gate_not(rst_active);  // DFF_ARSTN expects active-low
 
-                        bool const rst_active_high = (rst_ev.k == sensitivity_event::kind::posedge);
-                        bool reset_branch_is_then = rst_active_high;
-                        if(cond_inverted) { reset_branch_is_then = !reset_branch_is_then; }
-
-                        auto const& reset_stmts = reset_branch_is_then ? ifn.stmts : ifn.else_stmts;
-                        for(auto const s: reset_stmts)
-                        {
-                            if(!collect_async_reset_values(b, ff.stmt_nodes, s, reset_values, has_reset, targets)) { return false; }
-                        }
+                        reset_values = reset_is_then ? std::move(then_reset_values) : std::move(else_reset_values);
+                        has_reset = reset_is_then ? std::move(then_has_reset) : std::move(else_has_reset);
                     }
                     else
                     {
-                        set_error("pe_synth: always_ff with more than 2 events not supported");
+                        set_error("pe_synth: always_ff requires at least 1 event");
                         return false;
                     }
 
@@ -1707,13 +1690,8 @@ namespace phy_engine::verilog::digital
                         auto* d = next[sig];
                         if(q == nullptr || d == nullptr) { continue; }
 
-                        if(ff.events.size() == 2 && has_reset[sig])
+                        if(arst_n != nullptr && has_reset[sig])
                         {
-                            if(arst_n == nullptr)
-                            {
-                                set_error("pe_synth: null arst_n");
-                                return false;
-                            }
                             auto [dff, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::DFF_ARSTN{.reset_value = reset_values[sig]})};
                             (void)pos;
                             if(dff == nullptr)

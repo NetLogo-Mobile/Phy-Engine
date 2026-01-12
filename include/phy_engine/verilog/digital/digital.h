@@ -5165,8 +5165,24 @@ namespace phy_engine::verilog::digital
             return idx;
         }
 
-        inline ::std::uint64_t parse_delay_ticks(parser& p) noexcept
+        inline ::std::uint64_t parse_delay_ticks(parser& p, compiled_module& m) noexcept
         {
+            // Support: #N and #(const_expr)
+            if(p.accept_sym(u8'('))
+            {
+                expr_parser ep{&p, &m};
+                auto const v = ep.parse_expr();
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after delay expression"); }
+
+                ::std::uint64_t out{};
+                if(!ep.try_eval_const_uint64(v, out))
+                {
+                    p.err(p.peek(), u8"delay expression must be a constant non-negative integer in this subset");
+                    return 0;
+                }
+                return out;
+            }
+
             auto const& t{p.peek()};
             if(t.kind != token_kind::number)
             {
@@ -5191,7 +5207,7 @@ namespace phy_engine::verilog::digital
             if(p.accept_sym(u8';')) { return add_stmt(arena, {}); }
 
             ::std::uint64_t delay{};
-            if(p.accept_sym(u8'#')) { delay = parse_delay_ticks(p); }
+            if(p.accept_sym(u8'#')) { delay = parse_delay_ticks(p, m); }
 
             if(p.accept_kw(u8"begin"))
             {
