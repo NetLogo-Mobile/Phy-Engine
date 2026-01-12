@@ -138,9 +138,22 @@ int main()
             if(m == nullptr || m->ptr == nullptr) { return 4; }
             m->name = p.name;
             if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *ports[pi])) { return 5; }
+            if(port_name == "clk" || port_name == "rst_n")
+            {
+                auto [pm, ppos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OUTPUT{});
+                (void)ppos;
+                if(pm == nullptr || pm->ptr == nullptr) { return 6; }
+                pm->name.clear();
+                pm->name.append(u8"probe_");
+                pm->name.append(p.name);
+                if(!::phy_engine::netlist::add_to_node(nl, *pm, 0, *ports[pi])) { return 7; }
+            }
+
             input_by_name.emplace(std::move(port_name), m);
             continue;
         }
+
+            
 
         if(p.dir == ::phy_engine::verilog::digital::port_dir::output)
         {
@@ -189,6 +202,9 @@ int main()
 
             if(ctx.pl_model_id == pl_model_id::logic_output)
             {
+                if(ctx.pe_instance_name == "probe_clk") return position{-0.7, 1.0, 0.0};
+                if(ctx.pe_instance_name == "probe_rst_n") return position{-0.7, 0.85, 0.0};
+
                 auto idx = parse_bit_index(ctx.pe_instance_name, "pix");
                 if(!idx || *idx >= 64) { return std::nullopt; }
 
@@ -204,6 +220,10 @@ int main()
 
             if(ctx.pl_model_id == pl_model_id::logic_input)
             {
+                // Clock/reset inputs (top-left)
+                if(ctx.pe_instance_name == "clk") return position{-1.0, 1.0, 0.0};
+                if(ctx.pe_instance_name == "rst_n") return position{-1.0, 0.85, 0.0};
+
                 // Buttons on the left half (x=-1), y from top to bottom (z is height).
                 if(ctx.pe_instance_name == "btn_left") return position{-1.0, 0.6, 0.0};
                 if(ctx.pe_instance_name == "btn_right") return position{-1.0, 0.2, 0.0};
