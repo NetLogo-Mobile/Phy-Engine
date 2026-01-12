@@ -52,5 +52,11 @@ inline constexpr ::std::string_view d_flipflop = "D Flipflop";
 inline constexpr ::std::string_view t_flipflop = "T Flipflop";
 inline constexpr ::std::string_view real_t_flipflop = "Real-T Flipflop";
 inline constexpr ::std::string_view jk_flipflop = "JK Flipflop";
-}  // namespace phy_engine::phy_lab_wrapper::pl_model_id
 
+// Higher-level logic components (not native PE models; typically expanded/mapped).
+inline constexpr ::std::string_view counter = "Counter";
+inline constexpr ::std::string_view random_generator = "Random Generator";
+inline constexpr ::std::string_view eight_bit_input = "8bit Input";
+inline constexpr ::std::string_view eight_bit_display = "8bit Display";
+inline constexpr ::std::string_view schmitt_trigger = "Schmitt Trigger";
+}  // namespace phy_engine::phy_lab_wrapper::pl_model_id

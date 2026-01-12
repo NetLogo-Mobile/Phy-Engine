@@ -24,6 +24,12 @@ namespace phy_engine::phy_lab_wrapper::pe
 {
 using json = nlohmann::json;
 
+struct endpoint
+{
+    std::size_t element_index{};
+    int pin{};
+};
+
 struct sample
 {
     std::vector<double> pin_voltage;
@@ -172,6 +178,12 @@ inline std::pair<int, std::vector<double>> to_phy_engine_code_and_props(json con
     if (model_id == "T Flipflop") return {PHY_ENGINE_E_DIGITAL_TFF, {}};
     if (model_id == "Real-T Flipflop") return {PHY_ENGINE_E_DIGITAL_T_BAR_FF, {}};
     if (model_id == "JK Flipflop") return {PHY_ENGINE_E_DIGITAL_JKFF, {}};
+
+    // Higher-level modules are expanded by the adapter (see `circuit::build_`).
+    if (model_id == "Counter" || model_id == "Random Generator" || model_id == "8bit Input" || model_id == "8bit Display")
+    {
+        throw std::runtime_error("internal: high-level module should be expanded by adapter: " + model_id);
+    }
 
     throw std::runtime_error("Phy-Engine backend does not support element ModelID=" + model_id);
 }
@@ -385,6 +397,10 @@ public:
             {
                 continue;
             }
+            if (comp_element_ids_[i].empty())
+            {
+                continue;
+            }
 
             auto const& el = ex.get_element(comp_element_ids_[i]).data();
             int state01 = detail::get_required_int01(el, "开关") ? 1 : 0;
@@ -405,6 +421,11 @@ public:
 
         for (std::size_t i{}; i < comp_size_; ++i)
         {
+            if (comp_element_ids_[i].empty())
+            {
+                continue;
+            }
+
             auto& el = ex.get_element(comp_element_ids_[i]).data();
             auto pins_n = s.pin_voltage_ord[i + 1] - s.pin_voltage_ord[i];
             auto branches_n = s.branch_current_ord[i + 1] - s.branch_current_ord[i];
@@ -442,23 +463,25 @@ private:
             throw std::runtime_error("experiment has no elements");
         }
 
-        std::unordered_map<std::string, std::size_t> id_to_idx;
-        id_to_idx.reserve(els.size());
+        std::unordered_map<std::string, std::size_t> pl_id_to_pl_index;
+        pl_id_to_pl_index.reserve(els.size());
         for (std::size_t i{}; i < els.size(); ++i)
         {
-            id_to_idx.emplace(els[i].identifier(), i);
+            pl_id_to_pl_index.emplace(els[i].identifier(), i);
         }
 
-        std::vector<int> element_codes;
-        element_codes.reserve(els.size());
+        std::unordered_map<std::string, std::unordered_map<int, endpoint>> pin_map;
+        pin_map.reserve(els.size());
 
+        std::vector<int> element_codes;
         std::vector<double> properties;
         std::vector<std::string> comp_element_ids;
         std::vector<int> comp_codes;
 
-        for (auto const& e : els)
-        {
-            auto [code, props] = detail::to_phy_engine_code_and_props(e.data());
+        std::vector<int> internal_wires_flat;
+
+        auto add_pe_element = [&](int code, std::vector<double> props, std::string bind_id) -> std::size_t {
+            std::size_t idx = element_codes.size();
             element_codes.push_back(code);
             if (code != 0)
             {
@@ -468,26 +491,212 @@ private:
                     throw std::runtime_error("element has wrong property count for PE code=" + std::to_string(code));
                 }
                 properties.insert(properties.end(), props.begin(), props.end());
-                comp_element_ids.push_back(e.identifier());
                 comp_codes.push_back(code);
+                comp_element_ids.push_back(std::move(bind_id));  // may be empty for internal elements
+            }
+            return idx;
+        };
+
+        auto add_wire = [&](endpoint a, endpoint b) {
+            internal_wires_flat.push_back(static_cast<int>(a.element_index));
+            internal_wires_flat.push_back(a.pin);
+            internal_wires_flat.push_back(static_cast<int>(b.element_index));
+            internal_wires_flat.push_back(b.pin);
+        };
+
+        // For optional pins on "macro" elements, determine whether they are connected by scanning wires.
+        std::unordered_map<std::string, std::unordered_map<int, bool>> pl_pin_used;
+        for (auto const& w : ex.wires())
+        {
+            pl_pin_used[w.source.element_identifier][w.source.pin] = true;
+            pl_pin_used[w.target.element_identifier][w.target.pin] = true;
+        }
+
+        // Expand PL elements into PE elements (some are 1:1, some are macro expansions).
+        for (auto const& e : els)
+        {
+            auto const pl_id = e.identifier();
+            auto const model_id = e.data().value("ModelID", "");
+
+            // ---- Macro: 4-bit ripple counter (Counter) ----
+            // PL pins (by convention in physicsLab):
+            //   outputs: 0=o_up(MSB),1=o_upmid,2=o_lowmid,3=o_low(LSB)
+            //   inputs : 4=i_up(clock),5=i_low(enable/reset; treated as enable if connected)
+            if (model_id == "Counter")
+            {
+                bool enable_connected = pl_pin_used[pl_id][5];
+
+                // const1: DIGITAL_INPUT state=1, output pin 0
+                auto const1 = add_pe_element(PHY_ENGINE_E_DIGITAL_INPUT, {1.0}, "");
+
+                // Shared T node
+                auto ff0 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
+                auto ff1 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
+                auto ff2 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
+                auto ff3 = add_pe_element(PHY_ENGINE_E_DIGITAL_TFF, {}, "");
+
+                // NOT gates to convert falling edge to rising edge
+                auto n0 = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
+                auto n1 = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
+                auto n2 = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
+
+                endpoint ff0_t{ff0, 0};
+                endpoint ff0_clk{ff0, 1};
+                endpoint ff0_q{ff0, 2};
+
+                endpoint ff1_t{ff1, 0};
+                endpoint ff1_clk{ff1, 1};
+                endpoint ff1_q{ff1, 2};
+
+                endpoint ff2_t{ff2, 0};
+                endpoint ff2_clk{ff2, 1};
+                endpoint ff2_q{ff2, 2};
+
+                endpoint ff3_t{ff3, 0};
+                endpoint ff3_clk{ff3, 1};
+                endpoint ff3_q{ff3, 2};
+
+                // Drive T (toggle enable): default 1 if pin5 unconnected, else from external pin5.
+                if (!enable_connected)
+                {
+                    add_wire(endpoint{const1, 0}, ff0_t);
+                }
+                // Share T node across all TFFs
+                add_wire(ff0_t, ff1_t);
+                add_wire(ff0_t, ff2_t);
+                add_wire(ff0_t, ff3_t);
+
+                // Ripple clocks: clk0 is external, clk1..3 are NOT(prev Q).
+                add_wire(ff0_q, endpoint{n0, 0});
+                add_wire(endpoint{n0, 1}, ff1_clk);
+
+                add_wire(ff1_q, endpoint{n1, 0});
+                add_wire(endpoint{n1, 1}, ff2_clk);
+
+                add_wire(ff2_q, endpoint{n2, 0});
+                add_wire(endpoint{n2, 1}, ff3_clk);
+
+                // Expose pins:
+                // outputs (MSB..LSB)
+                pin_map[pl_id][0] = ff3_q;
+                pin_map[pl_id][1] = ff2_q;
+                pin_map[pl_id][2] = ff1_q;
+                pin_map[pl_id][3] = ff0_q;
+                // clock
+                pin_map[pl_id][4] = ff0_clk;
+                // enable (optional): if connected, it drives ff0.t shared node
+                if (enable_connected)
+                {
+                    pin_map[pl_id][5] = ff0_t;
+                }
+                continue;
+            }
+
+            // ---- Macro: 4-bit LFSR-like generator (Random Generator) ----
+            // PL pins:
+            //   outputs: 0=o_up(MSB),1=o_upmid,2=o_lowmid,3=o_low(LSB)
+            //   inputs : 4=i_up(clock),5=i_low(seed/enable; if unconnected, uses const1 to avoid all-zero lock)
+            if (model_id == "Random Generator")
+            {
+                bool seed_connected = pl_pin_used[pl_id][5];
+
+                auto const1 = add_pe_element(PHY_ENGINE_E_DIGITAL_INPUT, {1.0}, "");
+
+                auto d0 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
+                auto d1 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
+                auto d2 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
+                auto d3 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
+
+                // feedback = q3 XOR q2
+                auto x0 = add_pe_element(PHY_ENGINE_E_DIGITAL_XOR, {}, "");
+                // new_msb = feedback XOR seed
+                auto x1 = add_pe_element(PHY_ENGINE_E_DIGITAL_XOR, {}, "");
+
+                endpoint d0_d{d0, 0}, d0_clk{d0, 1}, d0_q{d0, 2};
+                endpoint d1_d{d1, 0}, d1_clk{d1, 1}, d1_q{d1, 2};
+                endpoint d2_d{d2, 0}, d2_clk{d2, 1}, d2_q{d2, 2};
+                endpoint d3_d{d3, 0}, d3_clk{d3, 1}, d3_q{d3, 2};
+
+                // Shared clock node: expose via pin4, and wire to all DFF clocks.
+                pin_map[pl_id][4] = d0_clk;
+                add_wire(d0_clk, d1_clk);
+                add_wire(d0_clk, d2_clk);
+                add_wire(d0_clk, d3_clk);
+
+                // Shift: q3->d2, q2->d1, q1->d0
+                add_wire(d3_q, d2_d);
+                add_wire(d2_q, d1_d);
+                add_wire(d1_q, d0_d);
+
+                // feedback XOR chain: x0 = q3 XOR q2, x1 = x0 XOR seed
+                add_wire(d3_q, endpoint{x0, 0});
+                add_wire(d2_q, endpoint{x0, 1});
+                add_wire(endpoint{x0, 2}, endpoint{x1, 0});
+
+                if (seed_connected)
+                {
+                    pin_map[pl_id][5] = endpoint{x1, 1};
+                }
+                else
+                {
+                    add_wire(endpoint{const1, 0}, endpoint{x1, 1});
+                }
+
+                add_wire(endpoint{x1, 2}, d3_d);
+
+                // outputs (MSB..LSB)
+                pin_map[pl_id][0] = d3_q;
+                pin_map[pl_id][1] = d2_q;
+                pin_map[pl_id][2] = d1_q;
+                pin_map[pl_id][3] = d0_q;
+                continue;
+            }
+
+            // 1:1 element mapping
+            auto [code, props] = detail::to_phy_engine_code_and_props(e.data());
+            auto idx = add_pe_element(code, std::move(props), pl_id);
+
+            // Default: PL pin numbering matches PE pin numbering for currently mapped 1:1 elements.
+            // We only record pins that appear in wires to avoid hardcoding pin counts.
+            auto& pm = pin_map[pl_id];
+            if (auto it_used = pl_pin_used.find(pl_id); it_used != pl_pin_used.end())
+            {
+                for (auto const& [pin, used] : it_used->second)
+                {
+                    if (used)
+                    {
+                        pm[pin] = endpoint{idx, pin};
+                    }
+                }
             }
         }
 
+        // Translate PL wires into PE wires via the pin map.
         std::vector<int> wires_flat;
-        wires_flat.reserve(ex.wires().size() * 4);
+        wires_flat.reserve(ex.wires().size() * 4 + internal_wires_flat.size());
         for (auto const& w : ex.wires())
         {
-            auto it_s = id_to_idx.find(w.source.element_identifier);
-            auto it_t = id_to_idx.find(w.target.element_identifier);
-            if (it_s == id_to_idx.end() || it_t == id_to_idx.end())
+            auto it_s_el = pin_map.find(w.source.element_identifier);
+            auto it_t_el = pin_map.find(w.target.element_identifier);
+            if (it_s_el == pin_map.end() || it_t_el == pin_map.end())
             {
                 continue;
             }
-            wires_flat.push_back(static_cast<int>(it_s->second));
-            wires_flat.push_back(w.source.pin);
-            wires_flat.push_back(static_cast<int>(it_t->second));
-            wires_flat.push_back(w.target.pin);
+
+            auto it_s_pin = it_s_el->second.find(w.source.pin);
+            auto it_t_pin = it_t_el->second.find(w.target.pin);
+            if (it_s_pin == it_s_el->second.end() || it_t_pin == it_t_el->second.end())
+            {
+                throw std::runtime_error("wire references unmapped pin");
+            }
+
+            wires_flat.push_back(static_cast<int>(it_s_pin->second.element_index));
+            wires_flat.push_back(it_s_pin->second.pin);
+            wires_flat.push_back(static_cast<int>(it_t_pin->second.element_index));
+            wires_flat.push_back(it_t_pin->second.pin);
         }
+
+        wires_flat.insert(wires_flat.end(), internal_wires_flat.begin(), internal_wires_flat.end());
 
         // Ensure non-null pointers for create_circuit().
         std::vector<double> prop_buf = properties;
