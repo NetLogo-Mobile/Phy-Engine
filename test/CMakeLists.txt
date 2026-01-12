@@ -22,7 +22,10 @@ else()
     endif()
 endif()
 
-file(GLOB_RECURSE test_srcs CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
+file(GLOB_RECURSE test_srcs CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_LIST_DIR}/*.cpp"
+     "${CMAKE_CURRENT_LIST_DIR}/*.cc"
+     "${CMAKE_CURRENT_LIST_DIR}/*.cxx")
 
 include_directories(${CMAKE_SOURCE_DIR}/../include)
 if (WIN32)
