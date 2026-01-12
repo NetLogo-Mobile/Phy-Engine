@@ -169,7 +169,15 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
     }
 
 // Sequential blocks
-    if(name == "DFF") { return identity_mapping(std::string(pl_model_id::d_flipflop), 3); }
+    if(name == "DFF")
+    {
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::d_flipflop);
+        m.is_big_element = true;
+        // PE(DFF): d, clk, q  ->  PL(D Flipflop): o_up(Q), o_low(~Q), i_up(D), i_low(CLK)
+        m.pe_to_pl_pin = {{0, 2}, {1, 3}, {2, 0}};
+        return m;
+    }
     if(name == "TFF") { return identity_mapping(std::string(pl_model_id::t_flipflop), 3); }
     if(name == "T_BAR_FF") { return identity_mapping(std::string(pl_model_id::real_t_flipflop), 3); }
     if(name == "JKFF") { return identity_mapping(std::string(pl_model_id::jk_flipflop), 4); }
@@ -216,16 +224,23 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
     if(name == "DLATCH")
     {
         warnings.push_back("pe_to_pl: degrading DLATCH -> D Flipflop (treats en as clk)");
-        return identity_mapping(std::string(pl_model_id::d_flipflop), 3);
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::d_flipflop);
+        m.is_big_element = true;
+        // PE(DLATCH): d, en, q  ->  PL(D Flipflop): o_up(Q), o_low(~Q), i_up(D), i_low(CLK=en)
+        m.pe_to_pl_pin = {{0, 2}, {1, 3}, {2, 0}};
+        return m;
     }
     if(name == "DFF_ARSTN")
     {
         warnings.push_back("pe_to_pl: degrading DFF_ARSTN -> D Flipflop (drops async reset pin)");
         pl_model_mapping m{};
         m.model_id = std::string(pl_model_id::d_flipflop);
-        m.pe_to_pl_pin.emplace(0, 0);  // d
-        m.pe_to_pl_pin.emplace(1, 1);  // clk
-        m.pe_to_pl_pin.emplace(3, 2);  // q
+        m.is_big_element = true;
+        // PE(DFF_ARSTN): d, clk, arst_n, q  ->  PL(D Flipflop): o_up(Q), o_low(~Q), i_up(D), i_low(CLK)
+        m.pe_to_pl_pin.emplace(0, 2);  // d
+        m.pe_to_pl_pin.emplace(1, 3);  // clk
+        m.pe_to_pl_pin.emplace(3, 0);  // q
         return m;
     }
     if(name == "TICK_DELAY")

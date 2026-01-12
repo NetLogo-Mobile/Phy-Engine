@@ -601,7 +601,44 @@ private:
                 continue;
             }
 
-            // 1:1 element mapping
+            
+
+            // ---- PL macro: D Flipflop (DFF + optional ~Q inverter) ----
+            // physicsLab pin order:
+            //   outputs: 0=o_up(Q), 1=o_low(~Q)
+            //   inputs : 2=i_up(D), 3=i_low(CLK)
+            // PE DFF pins: 0=d, 1=clk, 2=q
+            if (model_id == "D Flipflop")
+            {
+                auto dff = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, pl_id);
+                endpoint d{dff, 0};
+                endpoint clk{dff, 1};
+                endpoint q{dff, 2};
+
+                pin_map[pl_id][2] = d;
+                pin_map[pl_id][3] = clk;
+                pin_map[pl_id][0] = q;
+
+                bool nq_used{};
+                if (auto it_used = pl_pin_used.find(pl_id); it_used != pl_pin_used.end())
+                {
+                    if (auto it = it_used->second.find(1); it != it_used->second.end() && it->second)
+                    {
+                        nq_used = true;
+                    }
+                }
+
+                if (nq_used)
+                {
+                    auto inv = add_pe_element(PHY_ENGINE_E_DIGITAL_NOT, {}, "");
+                    // NOT pins: 0=i, 1=o
+                    add_wire(q, endpoint{inv, 0});
+                    pin_map[pl_id][1] = endpoint{inv, 1};
+                }
+
+                continue;
+            }
+// 1:1 element mapping
             auto [code, props] = detail::to_phy_engine_code_and_props(e.data());
             auto idx = add_pe_element(code, std::move(props), pl_id);
 
