@@ -11,12 +11,14 @@
 #include "../../netlist/operation.h"
 
 #include "../../model/models/digital/combinational/d_ff.h"
+#include "../../model/models/digital/combinational/d_ff_arstn.h"
 #include "../../model/models/digital/logical/and.h"
 #include "../../model/models/digital/logical/case_eq.h"
 #include "../../model/models/digital/logical/input.h"
 #include "../../model/models/digital/logical/is_unknown.h"
 #include "../../model/models/digital/logical/not.h"
 #include "../../model/models/digital/logical/or.h"
+#include "../../model/models/digital/logical/resolve2.h"
 #include "../../model/models/digital/logical/tri_state.h"
 #include "../../model/models/digital/logical/xnor.h"
 #include "../../model/models/digital/logical/xor.h"
@@ -79,7 +81,9 @@ namespace phy_engine::verilog::digital
                 if(err)
                 {
                     auto const n = ::std::strlen(msg);
-                    err->message = ::fast_io::u8string{::fast_io::u8string_view{reinterpret_cast<char8_t const*>(msg), n}};
+                    err->message = ::fast_io::u8string{
+                        ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(msg), n}
+                    };
                 }
             }
 
@@ -152,7 +156,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOT{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create NOT"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create NOT");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, in)) { return nullptr; }
                 if(!connect_driver(m, 1, out)) { return nullptr; }
@@ -163,7 +171,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create AND"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create AND");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, a)) { return nullptr; }
                 if(!connect_pin(m, 1, b)) { return nullptr; }
@@ -175,7 +187,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create OR"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create OR");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, a)) { return nullptr; }
                 if(!connect_pin(m, 1, b)) { return nullptr; }
@@ -187,7 +203,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::XOR{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create XOR"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create XOR");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, a)) { return nullptr; }
                 if(!connect_pin(m, 1, b)) { return nullptr; }
@@ -199,7 +219,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::XNOR{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create XNOR"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create XNOR");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, a)) { return nullptr; }
                 if(!connect_pin(m, 1, b)) { return nullptr; }
@@ -211,7 +235,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::IS_UNKNOWN{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create IS_UNKNOWN"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create IS_UNKNOWN");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, in)) { return nullptr; }
                 if(!connect_driver(m, 1, out)) { return nullptr; }
@@ -222,7 +250,11 @@ namespace phy_engine::verilog::digital
             {
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::CASE_EQ{})};
                 (void)pos;
-                if(m == nullptr) { set_error("pe_synth: failed to create CASE_EQ"); return nullptr; }
+                if(m == nullptr)
+                {
+                    set_error("pe_synth: failed to create CASE_EQ");
+                    return nullptr;
+                }
                 auto* out = make_node();
                 if(!connect_pin(m, 0, a)) { return nullptr; }
                 if(!connect_pin(m, 1, b)) { return nullptr; }
@@ -230,9 +262,8 @@ namespace phy_engine::verilog::digital
                 return out;
             }
 
-            [[nodiscard]] ::phy_engine::model::node_t* mux2(::phy_engine::model::node_t* sel,
-                                                            ::phy_engine::model::node_t* d0,
-                                                            ::phy_engine::model::node_t* d1) noexcept
+            [[nodiscard]] ::phy_engine::model::node_t*
+                mux2(::phy_engine::model::node_t* sel, ::phy_engine::model::node_t* d0, ::phy_engine::model::node_t* d1) noexcept
             {
                 // y = (sel & d1) | (~sel & d0)
                 auto* n_sel = sel;
@@ -253,6 +284,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] bool synth_instance(::phy_engine::verilog::digital::instance_state const& inst,
                                               instance_builder const* parent,
                                               ::std::vector<::phy_engine::model::node_t*> const& top_ports) noexcept;
+
+            [[nodiscard]] bool resolve_multi_driver_digital_nets() noexcept;
         };
 
         inline ::phy_engine::model::node_t* instance_builder::expr(::std::size_t root) noexcept
@@ -327,9 +360,38 @@ namespace phy_engine::verilog::digital
             return res;
         }
 
-        inline void collect_assigned_signals(::fast_io::vector<stmt_node> const& arena,
-                                             ::std::size_t stmt_idx,
-                                             ::std::vector<bool>& out) noexcept
+        inline bool eval_const_expr_to_logic(instance_builder& b, ::std::size_t root, ::phy_engine::verilog::digital::logic_t& out) noexcept
+        {
+            if(!b.ctx.ok()) { return false; }
+            if(b.inst.mod == nullptr) { return false; }
+            auto const& m = *b.inst.mod;
+            if(root >= m.expr_nodes.size()) { return false; }
+
+            auto const& n = m.expr_nodes.index_unchecked(root);
+            using ek = ::phy_engine::verilog::digital::expr_kind;
+            switch(n.kind)
+            {
+                case ek::literal: out = n.literal; return true;
+                case ek::signal:
+                {
+                    bool const is_const = (n.signal < m.signal_is_const.size()) ? m.signal_is_const.index_unchecked(n.signal) : false;
+                    if(!is_const) { return false; }
+                    if(n.signal >= b.inst.state.values.size()) { return false; }
+                    out = b.inst.state.values.index_unchecked(n.signal);
+                    return true;
+                }
+                case ek::unary_not:
+                {
+                    ::phy_engine::verilog::digital::logic_t a{};
+                    if(!eval_const_expr_to_logic(b, n.a, a)) { return false; }
+                    out = ::phy_engine::verilog::digital::logic_not(a);
+                    return true;
+                }
+                default: return false;
+            }
+        }
+
+        inline void collect_assigned_signals(::fast_io::vector<stmt_node> const& arena, ::std::size_t stmt_idx, ::std::vector<bool>& out) noexcept
         {
             if(stmt_idx >= arena.size()) { return; }
             auto const& n = arena.index_unchecked(stmt_idx);
@@ -353,6 +415,88 @@ namespace phy_engine::verilog::digital
                     return;
                 }
                 default: return;
+            }
+        }
+
+        inline bool find_async_reset_if_stmt(::fast_io::vector<stmt_node> const& arena,
+                                             ::fast_io::vector<::std::size_t> const& roots,
+                                             ::std::size_t& out_if_stmt) noexcept
+        {
+            if(roots.size() != 1) { return false; }
+            auto const root = roots.front_unchecked();
+            if(root >= arena.size()) { return false; }
+            auto const& n = arena.index_unchecked(root);
+            if(n.k == stmt_node::kind::if_stmt)
+            {
+                out_if_stmt = root;
+                return true;
+            }
+            if(n.k != stmt_node::kind::block) { return false; }
+
+            ::std::size_t picked{SIZE_MAX};
+            for(auto const s: n.stmts)
+            {
+                if(s >= arena.size()) { continue; }
+                auto const& sn = arena.index_unchecked(s);
+                if(sn.k == stmt_node::kind::empty) { continue; }
+                if(picked != SIZE_MAX) { return false; }
+                picked = s;
+            }
+            if(picked == SIZE_MAX) { return false; }
+            if(picked >= arena.size()) { return false; }
+            if(arena.index_unchecked(picked).k != stmt_node::kind::if_stmt) { return false; }
+            out_if_stmt = picked;
+            return true;
+        }
+
+        inline bool collect_async_reset_values(instance_builder& b,
+                                               ::fast_io::vector<stmt_node> const& arena,
+                                               ::std::size_t stmt_idx,
+                                               ::std::vector<::phy_engine::verilog::digital::logic_t>& reset_values,
+                                               ::std::vector<bool>& has_reset,
+                                               ::std::vector<bool> const& targets) noexcept
+        {
+            if(!b.ctx.ok()) { return false; }
+            if(stmt_idx >= arena.size())
+            {
+                b.ctx.set_error("pe_synth: stmt index out of range");
+                return false;
+            }
+
+            auto const& n = arena.index_unchecked(stmt_idx);
+            switch(n.k)
+            {
+                case stmt_node::kind::empty: return true;
+                case stmt_node::kind::block:
+                {
+                    for(auto const s: n.stmts)
+                    {
+                        if(!collect_async_reset_values(b, arena, s, reset_values, has_reset, targets)) { return false; }
+                    }
+                    return true;
+                }
+                case stmt_node::kind::blocking_assign:
+                case stmt_node::kind::nonblocking_assign:
+                {
+                    if(n.lhs_signal >= reset_values.size() || n.lhs_signal >= has_reset.size()) { return true; }
+                    if(n.lhs_signal < targets.size() && targets[n.lhs_signal])
+                    {
+                        ::phy_engine::verilog::digital::logic_t v{};
+                        if(!eval_const_expr_to_logic(b, n.expr_root, v))
+                        {
+                            b.ctx.set_error("pe_synth: async reset assignment must be constant");
+                            return false;
+                        }
+                        reset_values[n.lhs_signal] = v;
+                        has_reset[n.lhs_signal] = true;
+                    }
+                    return true;
+                }
+                default:
+                {
+                    b.ctx.set_error("pe_synth: unsupported statement in async reset branch");
+                    return false;
+                }
             }
         }
 
@@ -384,10 +528,7 @@ namespace phy_engine::verilog::digital
                 case stmt_node::kind::nonblocking_assign:
                 {
                     if(n.lhs_signal >= next.size()) { return true; }
-                    if(n.lhs_signal < targets.size() && targets[n.lhs_signal])
-                    {
-                        next[n.lhs_signal] = b.expr(n.expr_root);
-                    }
+                    if(n.lhs_signal < targets.size() && targets[n.lhs_signal]) { next[n.lhs_signal] = b.expr(n.expr_root); }
                     return true;
                 }
                 case stmt_node::kind::if_stmt:
@@ -576,10 +717,7 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                if(node == nullptr)
-                {
-                    node = make_node();
-                }
+                if(node == nullptr) { node = make_node(); }
                 b.sig_nodes[p.signal] = node;
             }
 
@@ -612,7 +750,11 @@ namespace phy_engine::verilog::digital
                     auto* en = b.expr(a.guard_root);
                     auto [tri, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::TRI{})};
                     (void)pos;
-                    if(tri == nullptr) { set_error("pe_synth: failed to create TRI"); return false; }
+                    if(tri == nullptr)
+                    {
+                        set_error("pe_synth: failed to create TRI");
+                        return false;
+                    }
                     if(!connect_pin(tri, 0, rhs)) { return false; }
                     if(!connect_pin(tri, 1, en)) { return false; }
                     if(!connect_driver(tri, 2, lhs)) { return false; }
@@ -621,7 +763,11 @@ namespace phy_engine::verilog::digital
                 {
                     auto [buf, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{})};
                     (void)pos;
-                    if(buf == nullptr) { set_error("pe_synth: failed to create YES"); return false; }
+                    if(buf == nullptr)
+                    {
+                        set_error("pe_synth: failed to create YES");
+                        return false;
+                    }
                     if(!connect_pin(buf, 0, rhs)) { return false; }
                     if(!connect_driver(buf, 1, lhs)) { return false; }
                 }
@@ -656,7 +802,11 @@ namespace phy_engine::verilog::digital
                         if(lhs == nullptr || rhs == nullptr) { continue; }
                         auto [buf, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{})};
                         (void)pos;
-                        if(buf == nullptr) { set_error("pe_synth: failed to create YES"); return false; }
+                        if(buf == nullptr)
+                        {
+                            set_error("pe_synth: failed to create YES");
+                            return false;
+                        }
                         if(!connect_pin(buf, 0, rhs)) { return false; }
                         if(!connect_driver(buf, 1, lhs)) { return false; }
                     }
@@ -668,34 +818,11 @@ namespace phy_engine::verilog::digital
                 return false;
             }
 
-            // always_ff blocks (restricted subset, no async reset yet).
+            // always_ff blocks (restricted subset).
             if(opt.support_always_ff)
             {
                 for(auto const& ff: m.always_ffs)
                 {
-                    if(ff.events.size() != 1)
-                    {
-                        set_error("pe_synth: always_ff with multiple events (async reset) not supported yet");
-                        return false;
-                    }
-                    auto const ev = ff.events.front_unchecked();
-                    if(ev.k == sensitivity_event::kind::level)
-                    {
-                        set_error("pe_synth: level-sensitive always_ff not supported");
-                        return false;
-                    }
-                    if(ev.signal >= b.sig_nodes.size())
-                    {
-                        set_error("pe_synth: always_ff clock signal out of range");
-                        return false;
-                    }
-                    auto* clk = b.sig_nodes[ev.signal];
-                    if(clk == nullptr) { set_error("pe_synth: null clk node"); return false; }
-                    if(ev.k == sensitivity_event::kind::negedge)
-                    {
-                        clk = gate_not(clk);
-                    }
-
                     ::std::vector<bool> targets(m.signal_names.size(), false);
                     for(auto const root: ff.roots) { collect_assigned_signals(ff.stmt_nodes, root, targets); }
 
@@ -711,6 +838,183 @@ namespace phy_engine::verilog::digital
                         }
                     }
 
+                    ::phy_engine::model::node_t* clk{};
+                    ::phy_engine::model::node_t* arst_n{};
+                    ::std::vector<::phy_engine::verilog::digital::logic_t> reset_values(m.signal_names.size(),
+                                                                                        ::phy_engine::verilog::digital::logic_t::indeterminate_state);
+                    ::std::vector<bool> has_reset(m.signal_names.size(), false);
+
+                    if(ff.events.size() == 1)
+                    {
+                        auto const ev = ff.events.front_unchecked();
+                        if(ev.k == sensitivity_event::kind::level)
+                        {
+                            set_error("pe_synth: level-sensitive always_ff not supported");
+                            return false;
+                        }
+                        if(ev.signal >= b.sig_nodes.size())
+                        {
+                            set_error("pe_synth: always_ff clock signal out of range");
+                            return false;
+                        }
+                        clk = b.sig_nodes[ev.signal];
+                        if(clk == nullptr)
+                        {
+                            set_error("pe_synth: null clk node");
+                            return false;
+                        }
+                        if(ev.k == sensitivity_event::kind::negedge) { clk = gate_not(clk); }
+                    }
+                    else if(ff.events.size() == 2)
+                    {
+                        ::std::size_t if_stmt{};
+                        if(!find_async_reset_if_stmt(ff.stmt_nodes, ff.roots, if_stmt))
+                        {
+                            set_error("pe_synth: async-reset always_ff requires a single top-level if");
+                            return false;
+                        }
+                        auto const& ifn = ff.stmt_nodes.index_unchecked(if_stmt);
+
+                        // Extract reset condition as (rst) or (!rst) or (rst == 0/1) / (rst != 0/1).
+                        ::std::size_t rst_sig{SIZE_MAX};
+                        bool cond_inverted{};
+                        if(inst.mod == nullptr)
+                        {
+                            set_error("pe_synth: instance has no module");
+                            return false;
+                        }
+                        auto const& cm = *inst.mod;
+                        if(ifn.expr_root >= cm.expr_nodes.size())
+                        {
+                            set_error("pe_synth: reset condition expr out of range");
+                            return false;
+                        }
+                        auto const& cexpr = cm.expr_nodes.index_unchecked(ifn.expr_root);
+                        using ek = ::phy_engine::verilog::digital::expr_kind;
+                        auto parse_reset_sig = [&](::std::size_t sig, bool inv) noexcept -> bool
+                        {
+                            rst_sig = sig;
+                            cond_inverted = inv;
+                            return true;
+                        };
+
+                        if(cexpr.kind == ek::signal) { (void)parse_reset_sig(cexpr.signal, false); }
+                        else if(cexpr.kind == ek::unary_not)
+                        {
+                            if(cexpr.a >= cm.expr_nodes.size() || cm.expr_nodes.index_unchecked(cexpr.a).kind != ek::signal)
+                            {
+                                set_error("pe_synth: unsupported reset condition (expected !signal)");
+                                return false;
+                            }
+                            (void)parse_reset_sig(cm.expr_nodes.index_unchecked(cexpr.a).signal, true);
+                        }
+                        else if(cexpr.kind == ek::binary_eq || cexpr.kind == ek::binary_neq)
+                        {
+                            auto const is_eq = (cexpr.kind == ek::binary_eq);
+                            auto const try_parse = [&](::std::size_t a, ::std::size_t b0) noexcept -> bool
+                            {
+                                if(a >= cm.expr_nodes.size() || b0 >= cm.expr_nodes.size()) { return false; }
+                                auto const& ea = cm.expr_nodes.index_unchecked(a);
+                                auto const& eb = cm.expr_nodes.index_unchecked(b0);
+                                if(ea.kind != ek::signal || eb.kind != ek::literal) { return false; }
+                                if(eb.literal != ::phy_engine::verilog::digital::logic_t::false_state &&
+                                   eb.literal != ::phy_engine::verilog::digital::logic_t::true_state)
+                                {
+                                    return false;
+                                }
+
+                                bool inv{};
+                                if(eb.literal == ::phy_engine::verilog::digital::logic_t::false_state)
+                                {
+                                    // (sig == 0) => !sig, (sig != 0) => sig
+                                    inv = is_eq;
+                                }
+                                else
+                                {
+                                    // (sig == 1) => sig, (sig != 1) => !sig
+                                    inv = !is_eq;
+                                }
+                                return parse_reset_sig(ea.signal, inv);
+                            };
+
+                            if(!try_parse(cexpr.a, cexpr.b) && !try_parse(cexpr.b, cexpr.a))
+                            {
+                                set_error("pe_synth: unsupported reset condition (expected signal == 0/1)");
+                                return false;
+                            }
+                        }
+                        else
+                        {
+                            set_error("pe_synth: unsupported reset condition in async-reset always_ff");
+                            return false;
+                        }
+
+                        if(rst_sig == SIZE_MAX)
+                        {
+                            set_error("pe_synth: failed to resolve async reset signal");
+                            return false;
+                        }
+
+                        auto const ev0 = ff.events.index_unchecked(0);
+                        auto const ev1 = ff.events.index_unchecked(1);
+                        if(ev0.k == sensitivity_event::kind::level || ev1.k == sensitivity_event::kind::level)
+                        {
+                            set_error("pe_synth: level-sensitive always_ff not supported");
+                            return false;
+                        }
+
+                        bool const ev0_is_rst = (ev0.signal == rst_sig);
+                        bool const ev1_is_rst = (ev1.signal == rst_sig);
+                        if(ev0_is_rst == ev1_is_rst)
+                        {
+                            set_error("pe_synth: async reset condition does not match sensitivity list");
+                            return false;
+                        }
+
+                        auto const rst_ev = ev0_is_rst ? ev0 : ev1;
+                        auto const clk_ev = ev0_is_rst ? ev1 : ev0;
+
+                        if(clk_ev.signal >= b.sig_nodes.size() || rst_ev.signal >= b.sig_nodes.size())
+                        {
+                            set_error("pe_synth: always_ff event signal out of range");
+                            return false;
+                        }
+
+                        clk = b.sig_nodes[clk_ev.signal];
+                        if(clk == nullptr)
+                        {
+                            set_error("pe_synth: null clk node");
+                            return false;
+                        }
+                        if(clk_ev.k == sensitivity_event::kind::negedge) { clk = gate_not(clk); }
+
+                        auto* rst_node = b.sig_nodes[rst_ev.signal];
+                        if(rst_node == nullptr)
+                        {
+                            set_error("pe_synth: null rst node");
+                            return false;
+                        }
+
+                        // DFF_ARSTN uses an active-low reset pin.
+                        arst_n = rst_node;
+                        if(rst_ev.k == sensitivity_event::kind::posedge) { arst_n = gate_not(rst_node); }
+
+                        bool const rst_active_high = (rst_ev.k == sensitivity_event::kind::posedge);
+                        bool reset_branch_is_then = rst_active_high;
+                        if(cond_inverted) { reset_branch_is_then = !reset_branch_is_then; }
+
+                        auto const& reset_stmts = reset_branch_is_then ? ifn.stmts : ifn.else_stmts;
+                        for(auto const s: reset_stmts)
+                        {
+                            if(!collect_async_reset_values(b, ff.stmt_nodes, s, reset_values, has_reset, targets)) { return false; }
+                        }
+                    }
+                    else
+                    {
+                        set_error("pe_synth: always_ff with more than 2 events not supported");
+                        return false;
+                    }
+
                     auto next = b.sig_nodes;
                     for(auto const root: ff.roots)
                     {
@@ -724,12 +1028,38 @@ namespace phy_engine::verilog::digital
                         auto* d = next[sig];
                         if(q == nullptr || d == nullptr) { continue; }
 
-                        auto [dff, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::DFF{})};
-                        (void)pos;
-                        if(dff == nullptr) { set_error("pe_synth: failed to create DFF"); return false; }
-                        if(!connect_pin(dff, 0, d)) { return false; }
-                        if(!connect_pin(dff, 1, clk)) { return false; }
-                        if(!connect_driver(dff, 2, q)) { return false; }
+                        if(ff.events.size() == 2 && has_reset[sig])
+                        {
+                            if(arst_n == nullptr)
+                            {
+                                set_error("pe_synth: null arst_n");
+                                return false;
+                            }
+                            auto [dff, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::DFF_ARSTN{.reset_value = reset_values[sig]})};
+                            (void)pos;
+                            if(dff == nullptr)
+                            {
+                                set_error("pe_synth: failed to create DFF_ARSTN");
+                                return false;
+                            }
+                            if(!connect_pin(dff, 0, d)) { return false; }
+                            if(!connect_pin(dff, 1, clk)) { return false; }
+                            if(!connect_pin(dff, 2, arst_n)) { return false; }
+                            if(!connect_driver(dff, 3, q)) { return false; }
+                        }
+                        else
+                        {
+                            auto [dff, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::DFF{})};
+                            (void)pos;
+                            if(dff == nullptr)
+                            {
+                                set_error("pe_synth: failed to create DFF");
+                                return false;
+                            }
+                            if(!connect_pin(dff, 0, d)) { return false; }
+                            if(!connect_pin(dff, 1, clk)) { return false; }
+                            if(!connect_driver(dff, 2, q)) { return false; }
+                        }
                     }
                 }
             }
@@ -742,8 +1072,160 @@ namespace phy_engine::verilog::digital
             // Children.
             for(auto const& child: inst.children)
             {
-                if(child) { if(!synth_instance(*child, __builtin_addressof(b), {})) { return false; } }
+                if(child)
+                {
+                    if(!synth_instance(*child, __builtin_addressof(b), {})) { return false; }
+                }
             }
+            return ok();
+        }
+
+        inline bool is_digital_output_pin(::phy_engine::model::model_base const& m, ::std::size_t pin_index) noexcept
+        {
+            if(m.ptr == nullptr) { return false; }
+            if(m.ptr->get_device_type() != ::phy_engine::model::model_device_type::digital) { return false; }
+
+            auto const id = m.ptr->get_identification_name();
+
+            // Single-output primitives.
+            if(id == u8"INPUT") { return pin_index == 0; }
+            if(id == u8"YES") { return pin_index == 1; }
+            if(id == u8"NOT") { return pin_index == 1; }
+            if(id == u8"IS_UNKNOWN") { return pin_index == 1; }
+            if(id == u8"SCHMITT_TRIGGER") { return pin_index == 1; }
+
+            if(id == u8"AND" || id == u8"OR" || id == u8"XOR" || id == u8"XNOR" || id == u8"NAND" || id == u8"NOR" || id == u8"IMP" || id == u8"NIMP" ||
+               id == u8"TRI" || id == u8"CASE_EQ")
+            {
+                return pin_index == 2;
+            }
+
+            // FFs/counters.
+            if(id == u8"DFF") { return pin_index == 2; }
+            if(id == u8"DFF_ARSTN") { return pin_index == 3; }
+            if(id == u8"TFF") { return pin_index == 2; }
+            if(id == u8"T_BAR_FF") { return pin_index == 2; }
+            if(id == u8"JKFF") { return pin_index == 3; }
+            if(id == u8"COUNTER4" || id == u8"RANDOM_GENERATOR4") { return pin_index < 4; }
+
+            // Multi-output combinational blocks.
+            if(id == u8"HA" || id == u8"HS") { return pin_index == 2 || pin_index == 3; }
+            if(id == u8"FA" || id == u8"FS") { return pin_index == 3 || pin_index == 4; }
+            if(id == u8"M2") { return pin_index >= 4 && pin_index < 8; }
+
+            // IO blocks.
+            if(id == u8"EIGHT_BIT_INPUT") { return pin_index < 8; }
+
+            // Resolver itself.
+            if(id == u8"RESOLVE2") { return pin_index == 2; }
+
+            // Known sink/stub blocks.
+            if(id == u8"OUTPUT" || id == u8"EIGHT_BIT_DISPLAY" || id == u8"VERILOG_PORTS") { return false; }
+
+            return false;
+        }
+
+        inline bool synth_context::resolve_multi_driver_digital_nets() noexcept
+        {
+            if(!ok()) { return false; }
+            if(!opt.allow_multi_driver) { return true; }
+
+            struct pin_meta
+            {
+                ::phy_engine::model::model_base* model{};
+                ::std::size_t pin_index{};
+            };
+
+            ::std::unordered_map<::phy_engine::model::pin*, pin_meta> pin_to_meta{};
+
+            // Scan models once to build pin->(model,index) metadata.
+            for(auto& mb: nl.models)
+            {
+                for(auto* m = mb.begin; m != mb.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal) { continue; }
+                    if(m->ptr == nullptr) { continue; }
+
+                    auto pv = m->ptr->generate_pin_view();
+                    for(::std::size_t pi{}; pi < pv.size; ++pi)
+                    {
+                        auto* p = __builtin_addressof(pv.pins[pi]);
+                        pin_to_meta.emplace(p, pin_meta{m, pi});
+                    }
+                }
+            }
+
+            struct driver_pin
+            {
+                ::phy_engine::model::pin* pin{};
+                ::phy_engine::model::model_base* model{};
+                ::std::size_t pin_index{};
+            };
+
+            // Rewrite each digital node to have at most one driver by inserting a RESOLVE2 chain.
+            for(auto& nb: nl.nodes)
+            {
+                for(auto* node = nb.begin; node != nb.curr; ++node)
+                {
+                    if(node->num_of_analog_node != 0) { continue; }
+                    if(node->pins.size() < 2) { continue; }
+
+                    ::std::vector<driver_pin> drivers{};
+                    drivers.reserve(node->pins.size());
+
+                    for(auto* p: node->pins)
+                    {
+                        auto it = pin_to_meta.find(p);
+                        if(it == pin_to_meta.end()) { continue; }
+                        auto* model = it->second.model;
+                        if(model == nullptr) { continue; }
+                        if(!is_digital_output_pin(*model, it->second.pin_index)) { continue; }
+                        drivers.push_back(driver_pin{p, model, it->second.pin_index});
+                    }
+
+                    if(drivers.size() <= 1) { continue; }
+
+                    ::std::vector<::phy_engine::model::node_t*> drv_nodes{};
+                    drv_nodes.reserve(drivers.size());
+
+                    // Detach each driver from the shared node and reattach it to its own intermediate node.
+                    for(auto const& d: drivers)
+                    {
+                        auto* p = d.pin;
+                        if(p == nullptr) { continue; }
+
+                        p->nodes = nullptr;
+                        node->pins.erase(p);
+
+                        auto* dn = make_node();
+                        p->nodes = dn;
+                        dn->pins.insert(p);
+                        drv_nodes.push_back(dn);
+                    }
+
+                    if(drv_nodes.size() <= 1) { continue; }
+
+                    auto* resolved = drv_nodes.front();
+                    for(::std::size_t i{1}; i < drv_nodes.size(); ++i)
+                    {
+                        auto [res, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::RESOLVE2{})};
+                        (void)pos;
+                        if(res == nullptr)
+                        {
+                            set_error("pe_synth: failed to create RESOLVE2");
+                            return false;
+                        }
+
+                        if(!connect_pin(res, 0, resolved)) { return false; }
+                        if(!connect_pin(res, 1, drv_nodes[i])) { return false; }
+
+                        auto* out = (i + 1 == drv_nodes.size()) ? node : make_node();
+                        if(!connect_pin(res, 2, out)) { return false; }
+                        resolved = out;
+                    }
+                }
+            }
+
             return ok();
         }
     }  // namespace details
@@ -755,6 +1237,8 @@ namespace phy_engine::verilog::digital
                                          pe_synth_options const& opt = {}) noexcept
     {
         details::synth_context ctx{nl, opt, err};
-        return ctx.synth_instance(top, nullptr, top_port_nodes);
+        if(!ctx.synth_instance(top, nullptr, top_port_nodes)) { return false; }
+        if(!ctx.resolve_multi_driver_digital_nets()) { return false; }
+        return ctx.ok();
     }
 }  // namespace phy_engine::verilog::digital

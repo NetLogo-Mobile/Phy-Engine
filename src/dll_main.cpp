@@ -1105,7 +1105,11 @@ extern "C" void* create_circuit_ex(int* elements,
         }
 
         ::phy_engine::verilog::digital::pe_synth_error syn_err{};
-        if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err))
+        ::phy_engine::verilog::digital::pe_synth_options syn_opt{
+            .allow_inout = true,
+            .allow_multi_driver = true,
+        };
+        if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err, syn_opt))
         {
             ::std::free(model_pos_arr);
             destroy_circuit(c, *vec_pos, *chunk_pos);

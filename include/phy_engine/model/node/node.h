@@ -190,7 +190,7 @@ namespace phy_engine::model
             }
             case ::phy_engine::model::digital_node_statement_t::true_state:
             {
-                return ::phy_engine::model::digital_node_statement_t::true_state;
+                return ::phy_engine::model::digital_node_statement_t::false_state;
             }
             case ::phy_engine::model::digital_node_statement_t::indeterminate_state: [[fallthrough]];
             case ::phy_engine::model::digital_node_statement_t::high_impedence_state:
