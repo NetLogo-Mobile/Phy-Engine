@@ -122,13 +122,53 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
     if(name == "NIMP") { return identity_mapping(std::string(pl_model_id::nimp_gate), 3); }
 
     // Arithmetic blocks
-    if(name == "HALF_ADDER") { return identity_mapping(std::string(pl_model_id::half_adder), 4); }
-    if(name == "FULL_ADDER") { return identity_mapping(std::string(pl_model_id::full_adder), 5); }
-    if(name == "HALF_SUB") { return identity_mapping(std::string(pl_model_id::half_subtractor), 4); }
-    if(name == "FULL_SUB") { return identity_mapping(std::string(pl_model_id::full_subtractor), 5); }
-    if(name == "MUL2") { return identity_mapping(std::string(pl_model_id::multiplier), 8); }
+    if(name == "HALF_ADDER")
+    {
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::half_adder);
+        m.is_big_element = true;
+        // PE(HALF_ADDER): ia, ib, s, c  ->  PL(Half Adder): o_up, o_low, i_up, i_low
+        m.pe_to_pl_pin = {{0, 2}, {1, 3}, {2, 1}, {3, 0}};
+        return m;
+    }
+    if(name == "FULL_ADDER")
+    {
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::full_adder);
+        m.is_big_element = true;
+        // PE(FULL_ADDER): ia, ib, cin, s, cout  ->  PL(Full Adder): o_up, o_low, i_up, i_mid, i_low
+        m.pe_to_pl_pin = {{0, 3}, {1, 4}, {2, 2}, {3, 1}, {4, 0}};
+        return m;
+    }
+    if(name == "HALF_SUB")
+    {
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::half_subtractor);
+        m.is_big_element = true;
+        // PE(HALF_SUB): ia, ib, d, b  ->  PL(Half Subtractor): o_up, o_low, i_up, i_low
+        m.pe_to_pl_pin = {{0, 2}, {1, 3}, {2, 1}, {3, 0}};
+        return m;
+    }
+    if(name == "FULL_SUB")
+    {
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::full_subtractor);
+        m.is_big_element = true;
+        // PE(FULL_SUB): ia, ib, bin, d, bout  ->  PL(Full Subtractor): o_up, o_low, i_up, i_mid, i_low
+        m.pe_to_pl_pin = {{0, 3}, {1, 4}, {2, 2}, {3, 1}, {4, 0}};
+        return m;
+    }
+    if(name == "MUL2")
+    {
+        pl_model_mapping m{};
+        m.model_id = std::string(pl_model_id::multiplier);
+        m.is_big_element = true;
+        // PE(MUL2): a0, a1, b0, b1, p0, p1, p2, p3  ->  PL(Multiplier): o_up..o_low, i_up..i_low
+        m.pe_to_pl_pin = {{0, 5}, {1, 4}, {2, 7}, {3, 6}, {4, 3}, {5, 2}, {6, 1}, {7, 0}};
+        return m;
+    }
 
-    // Sequential blocks
+// Sequential blocks
     if(name == "DFF") { return identity_mapping(std::string(pl_model_id::d_flipflop), 3); }
     if(name == "TFF") { return identity_mapping(std::string(pl_model_id::t_flipflop), 3); }
     if(name == "T_BAR_FF") { return identity_mapping(std::string(pl_model_id::real_t_flipflop), 3); }
@@ -221,7 +261,7 @@ inline void try_set_pl_properties_for_element(experiment& ex,
     // Keep PE instance name for downstream layout / debug.
     if(!mb.name.empty())
     {
-        ex.get_element(element_id).data()["Properties"]["名称"] = u8str_to_string(mb.name);
+        ex.get_element(element_id).data()["Label"] = u8str_to_string(mb.name);
     }
 
     if(name == "INPUT")
@@ -236,7 +276,7 @@ inline void try_set_pl_properties_for_element(experiment& ex,
             warnings.push_back("pe_to_pl: Logic Input initial state is X/Z; defaulting to 0");
             sw = 0;
         }
-        ex.get_element(element_id).data()["Properties"]["开关"] = sw;
+        ex.get_element(element_id).data()["Properties"]["开关"] = static_cast<double>(sw);
     }
 }
 }  // namespace detail

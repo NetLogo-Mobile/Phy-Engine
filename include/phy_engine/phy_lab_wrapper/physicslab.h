@@ -475,17 +475,54 @@ public:
                            bool is_big_element = false)
     {
         element e;
+
+        std::string_view const mid = model_id;
+        json props = json::object();
+        json stats = json::object();
+
+        // Fill minimal defaults for common digital elements so exported .sav matches physicsLab expectations.
+        if (mid == "Logic Input")
+        {
+            props = json{{"高电平", 3.0}, {"低电平", 0.0}, {"锁定", 1.0}, {"开关", 0.0}};
+            stats = json{{"电流", 0.0}, {"电压", 0.0}, {"功率", 0.0}};
+        }
+        else if (mid == "Logic Output")
+        {
+            props = json{{"状态", 0.0}, {"高电平", 3.0}, {"低电平", 0.0}, {"锁定", 1.0}};
+        }
+        else if (mid == "Yes Gate" || mid == "No Gate" || mid == "And Gate" || mid == "Or Gate" || mid == "Xor Gate" ||
+                 mid == "Xnor Gate" || mid == "Nand Gate" || mid == "Nor Gate" || mid == "Imp Gate" || mid == "Nimp Gate")
+        {
+            props = json{{"高电平", 3.0}, {"低电平", 0.0}, {"最大电流", 0.1}, {"锁定", 1.0}};
+        }
+        else if (mid == "Half Adder" || mid == "Full Adder" || mid == "Half Subtractor" || mid == "Full Subtractor" ||
+                 mid == "Multiplier" || mid == "D Flipflop" || mid == "T Flipflop" || mid == "Real-T Flipflop" ||
+                 mid == "JK Flipflop" || mid == "Counter" || mid == "Random Generator")
+        {
+            props = json{{"高电平", 3.0}, {"低电平", 0.0}, {"锁定", 1.0}};
+        }
+        else if (mid == "8bit Input")
+        {
+            props = json{{"高电平", 3.0}, {"低电平", 0.0}, {"十进制", 0.0}, {"锁定", 1.0}};
+        }
+        else if (mid == "8bit Display")
+        {
+            props = json{{"高电平", 3.0}, {"低电平", 0.0}, {"状态", 0.0}, {"锁定", 1.0}};
+            stats = json{{"7", 0.0}, {"6", 0.0}, {"5", 0.0}, {"4", 0.0}, {"3", 0.0}, {"2", 0.0}, {"1", 0.0}, {"0", 0.0}, {"十进制", 0.0}};
+        }
+
         e.data_ = json{
             {"ModelID", std::move(model_id)},
             {"Identifier", detail::rand_string(33)},
+            {"Label", nullptr},
             {"IsBroken", false},
-            {"IsLocked", true},
-            {"Properties", json::object()},
-            {"Statistics", json::object()},
+            {"IsLocked", false},
+            {"Properties", std::move(props)},
+            {"Statistics", std::move(stats)},
             {"Position", ""},
             {"Rotation", "0,180,0"},
             {"DiagramCached", false},
-            {"DiagramPosition", {{"X", 0}, {"Y", 0}, {"Z", 0}, {"Magnitude", 0.0}}},
+            {"DiagramPosition", {{"X", 0}, {"Y", 0}, {"Magnitude", 0.0}}},
             {"DiagramRotation", 0},
         };
         e.pos_ = pos;
@@ -591,10 +628,36 @@ public:
         ex.type_ = type;
         ex.plsav_ = detail::default_plsav_template(type);
         ex.camera_save_ = json::object();
-        ex.camera_save_["VisionCenter"] = detail::pack_xyz({0.0, 0.0, 0.0});
-        ex.camera_save_["TargetRotation"] = detail::pack_xyz({0.0, 0.0, 0.0});
-        ex.vision_center_ = {0.0, 0.0, 0.0};
-        ex.target_rotation_ = {0.0, 0.0, 0.0};
+
+        // Match physicsLab defaults so generated .sav opens in the official client.
+        switch (type)
+        {
+            case experiment_type::circuit:
+                ex.camera_save_["Mode"] = 0;
+                ex.camera_save_["Distance"] = 2.7;
+                ex.vision_center_ = {0.0, -0.45, 1.08};
+                ex.target_rotation_ = {50.0, 0.0, 0.0};
+                break;
+            case experiment_type::celestial:
+                ex.camera_save_["Mode"] = 2;
+                ex.camera_save_["Distance"] = 2.75;
+                ex.vision_center_ = {0.0, 0.0, 1.08};
+                ex.target_rotation_ = {90.0, 0.0, 0.0};
+                break;
+            case experiment_type::electromagnetism:
+                ex.camera_save_["Mode"] = 0;
+                ex.camera_save_["Distance"] = 3.25;
+                ex.vision_center_ = {0.0, 0.0, 0.88};
+                ex.target_rotation_ = {90.0, 0.0, 0.0};
+                break;
+            default:
+                ex.vision_center_ = {0.0, 0.0, 0.0};
+                ex.target_rotation_ = {0.0, 0.0, 0.0};
+                break;
+        }
+
+        ex.camera_save_["VisionCenter"] = detail::pack_xyz(ex.vision_center_);
+        ex.camera_save_["TargetRotation"] = detail::pack_xyz(ex.target_rotation_);
         ex.element_xyz_enabled_ = false;
         ex.element_xyz_origin_ = {0.0, 0.0, 0.0};
         return ex;
