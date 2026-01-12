@@ -183,22 +183,32 @@ int main()
         popt.keep_pl_macros = true;
 
         popt.element_placer = [&](::phy_engine::phy_lab_wrapper::pe_to_pl::options::placement_context const& ctx) -> std::optional<position> {
+            // Table boundary is a square: x,z in [-1, 1]. Keep y=0.
+            // - Logic outputs (pix[0..63]) occupy the right half.
+            // - Logic inputs (buttons) occupy the left half.
+
             if(ctx.pl_model_id == pl_model_id::logic_output)
             {
                 auto idx = parse_bit_index(ctx.pe_instance_name, "pix");
                 if(!idx || *idx >= 64) { return std::nullopt; }
-                auto const x = static_cast<double>(*idx % kW);
-                auto const y = static_cast<double>(*idx / kW);
-                return position{x, y, 0.0};
+
+                auto const col = static_cast<double>(*idx % kW);
+                auto const row = static_cast<double>(*idx / kW);
+
+                // Map to x in [0, 1], z in [1, -1]
+                double const x = (kW <= 1) ? 1.0 : (col / static_cast<double>(kW - 1));
+                double const z = (kH <= 1) ? 0.0 : (1.0 - 2.0 * (row / static_cast<double>(kH - 1)));
+
+                return position{x, 0.0, z};
             }
 
             if(ctx.pl_model_id == pl_model_id::logic_input)
             {
-                // Simple "game console" layout (D-pad on the left, buttons on the right).
-                if(ctx.pe_instance_name == "btn_left") return position{-6.0, 1.0, 0.0};
-                if(ctx.pe_instance_name == "btn_right") return position{-4.0, 1.0, 0.0};
-                if(ctx.pe_instance_name == "btn_rot") return position{4.0, 1.0, 0.0};
-                if(ctx.pe_instance_name == "btn_drop") return position{6.0, 1.0, 0.0};
+                // Buttons on the left half (x=-1), z from top to bottom.
+                if(ctx.pe_instance_name == "btn_left") return position{-1.0, 0.0, 0.6};
+                if(ctx.pe_instance_name == "btn_right") return position{-1.0, 0.0, 0.2};
+                if(ctx.pe_instance_name == "btn_rot") return position{-1.0, 0.0, -0.2};
+                if(ctx.pe_instance_name == "btn_drop") return position{-1.0, 0.0, -0.6};
             }
 
             return std::nullopt;
@@ -237,7 +247,15 @@ int main()
         for(auto const& e : r.ex.elements())
         {
             auto const mid = e.data().value("ModelID", "");
-            auto const name = e.data().value("Properties", nlohmann::json::object()).value("名称", "");
+            std::string name;
+            if(auto it = e.data().find("Label"); it != e.data().end() && it->is_string())
+            {
+                name = it->get<std::string>();
+            }
+            else
+            {
+                name.clear();
+            }
             if(!mid.empty() && !name.empty())
             {
                 pos_by_kind_and_name.emplace(key{mid, name}, e.element_position());
@@ -246,7 +264,11 @@ int main()
 
         for(std::size_t idx{}; idx < 64; ++idx)
         {
-            auto const expected = position{static_cast<double>(idx % kW), static_cast<double>(idx / kW), 0.0};
+            auto const col = static_cast<double>(idx % kW);
+            auto const row = static_cast<double>(idx / kW);
+            double const expected_x = (kW <= 1) ? 1.0 : (col / static_cast<double>(kW - 1));
+            double const expected_z = (kH <= 1) ? 0.0 : (1.0 - 2.0 * (row / static_cast<double>(kH - 1)));
+            auto const expected = position{expected_x, 0.0, expected_z};
             auto const name = "pix[" + std::to_string(idx) + "]";
 
             auto it = pos_by_kind_and_name.find(key{std::string(pl_model_id::logic_output), name});
@@ -262,10 +284,10 @@ int main()
             position pos;
         };
         constexpr io_expect ios[] = {
-            {"btn_left", {-6.0, 1.0, 0.0}},
-            {"btn_right", {-4.0, 1.0, 0.0}},
-            {"btn_rot", {4.0, 1.0, 0.0}},
-            {"btn_drop", {6.0, 1.0, 0.0}},
+            {"btn_left", {-1.0, 0.0, 0.6}},
+            {"btn_right", {-1.0, 0.0, 0.2}},
+            {"btn_rot", {-1.0, 0.0, -0.2}},
+            {"btn_drop", {-1.0, 0.0, -0.6}},
         };
         for(auto const& io : ios)
         {
