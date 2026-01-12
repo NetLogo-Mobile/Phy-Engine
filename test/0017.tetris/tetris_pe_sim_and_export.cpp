@@ -195,20 +195,20 @@ int main()
                 auto const col = static_cast<double>(*idx % kW);
                 auto const row = static_cast<double>(*idx / kW);
 
-                // Map to x in [0, 1], z in [1, -1]
+                // Map to x in [0, 1], y in [1, -1] (z is height)
                 double const x = (kW <= 1) ? 1.0 : (col / static_cast<double>(kW - 1));
-                double const z = (kH <= 1) ? 0.0 : (1.0 - 2.0 * (row / static_cast<double>(kH - 1)));
+                double const y = (kH <= 1) ? 0.0 : (1.0 - 2.0 * (row / static_cast<double>(kH - 1)));
 
-                return position{x, 0.0, z};
+                return position{x, y, 0.0};
             }
 
             if(ctx.pl_model_id == pl_model_id::logic_input)
             {
-                // Buttons on the left half (x=-1), z from top to bottom.
-                if(ctx.pe_instance_name == "btn_left") return position{-1.0, 0.0, 0.6};
-                if(ctx.pe_instance_name == "btn_right") return position{-1.0, 0.0, 0.2};
-                if(ctx.pe_instance_name == "btn_rot") return position{-1.0, 0.0, -0.2};
-                if(ctx.pe_instance_name == "btn_drop") return position{-1.0, 0.0, -0.6};
+                // Buttons on the left half (x=-1), y from top to bottom (z is height).
+                if(ctx.pe_instance_name == "btn_left") return position{-1.0, 0.6, 0.0};
+                if(ctx.pe_instance_name == "btn_right") return position{-1.0, 0.2, 0.0};
+                if(ctx.pe_instance_name == "btn_rot") return position{-1.0, -0.2, 0.0};
+                if(ctx.pe_instance_name == "btn_drop") return position{-1.0, -0.6, 0.0};
             }
 
             return std::nullopt;
@@ -267,8 +267,8 @@ int main()
             auto const col = static_cast<double>(idx % kW);
             auto const row = static_cast<double>(idx / kW);
             double const expected_x = (kW <= 1) ? 1.0 : (col / static_cast<double>(kW - 1));
-            double const expected_z = (kH <= 1) ? 0.0 : (1.0 - 2.0 * (row / static_cast<double>(kH - 1)));
-            auto const expected = position{expected_x, 0.0, expected_z};
+            double const expected_y = (kH <= 1) ? 0.0 : (1.0 - 2.0 * (row / static_cast<double>(kH - 1)));
+            auto const expected = position{expected_x, expected_y, 0.0};
             auto const name = "pix[" + std::to_string(idx) + "]";
 
             auto it = pos_by_kind_and_name.find(key{std::string(pl_model_id::logic_output), name});
@@ -284,10 +284,10 @@ int main()
             position pos;
         };
         constexpr io_expect ios[] = {
-            {"btn_left", {-1.0, 0.0, 0.6}},
-            {"btn_right", {-1.0, 0.0, 0.2}},
-            {"btn_rot", {-1.0, 0.0, -0.2}},
-            {"btn_drop", {-1.0, 0.0, -0.6}},
+            {"btn_left", {-1.0, 0.6, 0.0}},
+            {"btn_right", {-1.0, 0.2, 0.0}},
+            {"btn_rot", {-1.0, -0.2, 0.0}},
+            {"btn_drop", {-1.0, -0.6, 0.0}},
         };
         for(auto const& io : ios)
         {
