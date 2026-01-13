@@ -13,6 +13,10 @@ namespace phy_engine::digital
 
     struct digital_node_update_table
     {
+        // Nodes that must be processed every digital tick (e.g. hybrid analog/digital nodes).
+        ::std::set<::phy_engine::model::node_t*> always_tables{};
+
+        // Pending nodes scheduled for update in the current tick.
         ::std::set<::phy_engine::model::node_t*> tables{};
     };
 

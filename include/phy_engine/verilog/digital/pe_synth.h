@@ -1576,6 +1576,46 @@ namespace phy_engine::verilog::digital
                 }
             }
 
+            // Child output/inout ports drive parent nets via `instance_state::output_drives`.
+            // Note: `instance_state::bindings` only covers input (and inout-as-input) ports.
+            if(parent != nullptr)
+            {
+                for(auto const& d : inst.output_drives)
+                {
+                    if(!ok()) { return false; }
+                    if(d.parent_signal == SIZE_MAX) { continue; }
+
+                    auto* dst = parent->signal(d.parent_signal);
+                    if(dst == nullptr)
+                    {
+                        set_error("pe_synth: output_drives parent_signal out of range");
+                        return false;
+                    }
+
+                    ::phy_engine::model::node_t* src{};
+                    if(d.src_is_literal)
+                    {
+                        src = const_node(d.literal);
+                    }
+                    else
+                    {
+                        if(d.child_signal == SIZE_MAX) { continue; }
+                        src = b.signal(d.child_signal);
+                    }
+                    if(src == nullptr) { continue; }
+
+                    auto [buf, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{})};
+                    (void)pos;
+                    if(buf == nullptr)
+                    {
+                        set_error("pe_synth: failed to create YES for output drive");
+                        return false;
+                    }
+                    if(!connect_pin(buf, 0, src)) { return false; }
+                    if(!connect_driver(buf, 1, dst)) { return false; }
+                }
+            }
+
             // always_comb blocks (restricted subset).
             if(opt.support_always_comb)
             {

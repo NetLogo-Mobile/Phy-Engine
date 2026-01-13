@@ -291,9 +291,24 @@ namespace phy_engine
 
         void update_table_digital_clk() noexcept
         {
-            for(auto i: digital_update_tables.tables)
+            // Seed the queue with nodes that must always be processed (hybrid analog/digital nodes).
+            if(!digital_update_tables.always_tables.empty())
             {
-                for(auto p: i->pins)
+                digital_update_tables.tables.insert(digital_update_tables.always_tables.begin(), digital_update_tables.always_tables.end());
+            }
+
+            // Process pending nodes until the queue is empty (combinational settle in one tick).
+            // Use an iteration budget to avoid hanging on oscillating combinational loops.
+            std::size_t iter_budget{10'000'000};
+            while(!digital_update_tables.tables.empty())
+            {
+                if(iter_budget-- == 0) { break; }
+
+                auto it = digital_update_tables.tables.begin();
+                auto* node = *it;
+                digital_update_tables.tables.erase(it);
+
+                for(auto p: node->pins)
                 {
                     auto model{p->model};
                     if(model->ptr->get_device_type() == ::phy_engine::model::model_device_type::digital) [[likely]]
@@ -419,6 +434,7 @@ namespace phy_engine
             last_step = 0.0;
 
             digital_out.clear();
+            digital_update_tables.always_tables.clear();
             digital_update_tables.tables.clear();
 
             for(auto i: size_t_to_node_p) { i->node_information.an.voltage = {}; }
@@ -436,6 +452,7 @@ namespace phy_engine
         // private:
         void prepare() noexcept
         {
+            digital_update_tables.always_tables.clear();
             digital_update_tables.tables.clear();
 
             // node
@@ -461,7 +478,7 @@ namespace phy_engine
                     {
                         if(c->num_of_analog_node != c->pins.size())  // hybrid
                         {
-                            digital_update_tables.tables.emplace(c);
+                            digital_update_tables.always_tables.emplace(c);
                         }
 
                         // analog
