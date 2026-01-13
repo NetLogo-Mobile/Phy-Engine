@@ -87,8 +87,8 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
     // 扩展数组：增加一个地节点槽位
     int const GROUND_NODE_ID = total_nodes;  // 地节点的索引
 
-    int* parent = (int*)malloc((static_cast<::std::size_t>(total_nodes) + 1) * sizeof(int));  // +1 给地节点
-    int* visited = (int*)calloc(static_cast<::std::size_t>(total_nodes) + 1, sizeof(int));
+    int* parent = static_cast<int*>(malloc((static_cast<::std::size_t>(total_nodes) + 1) * sizeof(int)));  // +1 给地节点
+    int* visited = static_cast<int*>(calloc(static_cast<::std::size_t>(total_nodes) + 1, sizeof(int)));
     if(parent == nullptr || visited == nullptr)
     {
         ::std::free(base_offset);
@@ -816,8 +816,8 @@ extern "C" void* create_circuit(int* elements,
     *chunk_pos = nullptr;
     *comp_size = 0;
     if(elements == nullptr || properties == nullptr) { return nullptr; }
-    *vec_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
-    *chunk_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
+    *vec_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
+    *chunk_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     if(*vec_pos == nullptr || *chunk_pos == nullptr)
     {
         ::std::free(*vec_pos);
@@ -826,7 +826,7 @@ extern "C" void* create_circuit(int* elements,
         *chunk_pos = nullptr;
         return nullptr;
     }
-    ::phy_engine::circult* c = reinterpret_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
+    ::phy_engine::circult* c = static_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
     if(c == nullptr) [[unlikely]] { ::fast_io::fast_terminate(); }
     ::std::construct_at(c);
 
@@ -839,7 +839,7 @@ extern "C" void* create_circuit(int* elements,
 
     auto& nl{c->get_netlist()};
 
-    phy_engine::netlist::model_pos* model_pos_arr = (phy_engine::netlist::model_pos*)malloc(ele_size * sizeof(phy_engine::netlist::model_pos));
+    phy_engine::netlist::model_pos* model_pos_arr = static_cast<phy_engine::netlist::model_pos*>(malloc(ele_size * sizeof(phy_engine::netlist::model_pos)));
     if(model_pos_arr == nullptr)
     {
         destroy_circuit(c, *vec_pos, *chunk_pos);
@@ -928,8 +928,8 @@ extern "C" void* create_circuit_ex(int* elements,
         .ele_size = ele_size,
     };
 
-    *vec_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
-    *chunk_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
+    *vec_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
+    *chunk_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     if(*vec_pos == nullptr || *chunk_pos == nullptr)
     {
         ::std::free(*vec_pos);
@@ -939,7 +939,7 @@ extern "C" void* create_circuit_ex(int* elements,
         return nullptr;
     }
 
-    ::phy_engine::circult* c = reinterpret_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
+    ::phy_engine::circult* c = static_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
     if(c == nullptr) [[unlikely]] { ::fast_io::fast_terminate(); }
     ::std::construct_at(c);
 
@@ -959,7 +959,7 @@ extern "C" void* create_circuit_ex(int* elements,
 
     ::std::vector<verilog_netlist_job> verilog_jobs{};
 
-    phy_engine::netlist::model_pos* model_pos_arr = (phy_engine::netlist::model_pos*)malloc(ele_size * sizeof(phy_engine::netlist::model_pos));
+    phy_engine::netlist::model_pos* model_pos_arr = static_cast<phy_engine::netlist::model_pos*>(malloc(ele_size * sizeof(phy_engine::netlist::model_pos)));
     if(model_pos_arr == nullptr)
     {
         destroy_circuit(c, *vec_pos, *chunk_pos);
