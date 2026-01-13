@@ -31,7 +31,7 @@
 
 #include <phy_engine/verilog/digital/pe_synth.h>
 
-// 并查集查找函数
+// Union-Find find function
 static int uf_find(int x, int* parent, int* visited)
 {
     if(parent[x] != x) { parent[x] = uf_find(parent[x], parent, visited); }
@@ -39,7 +39,7 @@ static int uf_find(int x, int* parent, int* visited)
     return parent[x];
 }
 
-// 从导线构建网表
+// Build netlist from wires
 void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
                               int* elements,
                               int ele_size,
@@ -84,11 +84,11 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
 
     int const total_nodes = static_cast<int>(base_offset[ele_size]);
 
-    // 扩展数组：增加一个地节点槽位
-    int const GROUND_NODE_ID = total_nodes;  // 地节点的索引
+    // Extended array: add a ground node slot
+    int const GROUND_NODE_ID = total_nodes;  // Ground node index
 
-    int* parent = (int*)malloc((static_cast<::std::size_t>(total_nodes) + 1) * sizeof(int));  // +1 给地节点
-    int* visited = (int*)calloc(static_cast<::std::size_t>(total_nodes) + 1, sizeof(int));
+    int* parent = static_cast<int*>(malloc((static_cast<::std::size_t>(total_nodes) + 1) * sizeof(int)));  // +1 for ground node
+    int* visited = static_cast<int*>(calloc(static_cast<::std::size_t>(total_nodes) + 1, sizeof(int)));
     if(parent == nullptr || visited == nullptr)
     {
         ::std::free(base_offset);
@@ -98,10 +98,10 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
         return;
     }
 
-    // 初始化并查集
+    // Initialize Union-Find
     for(int i = 0; i <= total_nodes; i++) { parent[i] = i; }
 
-    // 处理所有导线连接
+    // Process all wire connections
     for(int i = 0; i < wire_count; i++)
     {
         int ele1 = wires[i * 4];
@@ -111,12 +111,12 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
 
         if(ele1 < 0 || ele2 < 0 || ele1 >= ele_size || ele2 >= ele_size) { continue; }
 
-        // 检查是否是接地元件
+        // Check if it's a ground element
         int node1, node2;
 
         if(!elements[ele1])
         {
-            node1 = GROUND_NODE_ID;  // 连接到地节点
+            node1 = GROUND_NODE_ID;  // Connect to ground node
         }
         else
         {
@@ -126,7 +126,7 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
 
         if(!elements[ele2])
         {
-            node2 = GROUND_NODE_ID;  // 连接到地节点
+            node2 = GROUND_NODE_ID;  // Connect to ground node
         }
         else
         {
@@ -138,50 +138,50 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
         int root2 = uf_find(node2, parent, visited);
         if(root1 != root2)
         {
-            // 确保地节点总是根节点
+            // Ensure ground node is always root
             if(root1 == GROUND_NODE_ID)
             {
-                parent[root2] = root1;  // 其他节点连接到地
+                parent[root2] = root1;  // Other nodes connect to ground
             }
             else if(root2 == GROUND_NODE_ID)
             {
-                parent[root1] = root2;  // 其他节点连接到地
+                parent[root1] = root2;  // Other nodes connect to ground
             }
             else
             {
-                parent[root2] = root1;  // 普通节点合并
+                parent[root2] = root1;  // Regular node merge
             }
         }
     }
 
-    // 创建节点映射表
+    // Create node mapping table
     ::std::unordered_map<int, ::phy_engine::model::node_t*> node_map;
 
-    // 为每个连通分量创建node_t（排除地节点）
+    // Create node_t for each connected component (excluding ground node)
     for(int i = 0; i < total_nodes; i++)
-    {  // 注意：不包括GROUND_NODE_ID
+    {  // Note: excluding GROUND_NODE_ID
         if(parent[i] == i && visited[i])
         {
-            // 检查是否连接到地节点
+            // Check if connected to ground node
             int root = uf_find(i, parent, visited);
             if(root == GROUND_NODE_ID)
             {
-                // 连接到地的节点直接使用地节点
+                // Nodes connected to ground use ground node directly
                 node_map[i] = &get_ground_node(nl);
             }
             else
             {
-                // 创建新的普通节点
+                // Create new regular node
                 auto& node = create_node(nl);
                 node_map[i] = &node;
             }
         }
     }
 
-    // 添加地节点到映射表
+    // Add ground node to mapping table
     node_map[GROUND_NODE_ID] = &get_ground_node(nl);
 
-    // 连接所有引脚到对应的节点
+    // Connect all pins to corresponding nodes
     int comp_id = 0;
     for(int ele_id = 0; ele_id < ele_size; ++ele_id)
     {
@@ -200,7 +200,7 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
 
             node_id = static_cast<int>(base_offset[ele_id] + pin_id);
 
-            // 只处理实际被使用的引脚
+            // Only process actually used pins
             if(visited[node_id])
             {
                 int root = uf_find(node_id, parent, visited);
@@ -219,13 +219,13 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
 
 ::phy_engine::netlist::add_model_retstr add_model_via_code(phy_engine::netlist::netlist& nl, int element_code, double** curr_prop_ptr)
 {
-    // element_code是元件的code
+    // element_code is the component code
     if(curr_prop_ptr == nullptr || *curr_prop_ptr == nullptr) { return {}; }
     switch(element_code)
     {
-        // 对每个case，语法应该是
-        // add_model(nl, ::phy_engine::model::[model名]{.[属性1] = *((*curr_prop_ptr)++), .[属性2] = *((*curr_prop_ptr)++), ...});
-        // 后面那一坨会自动++
+        // For each case, the syntax should be
+        // add_model(nl, ::phy_engine::model::[model_name]{.[attribute1] = *((*curr_prop_ptr)++), .[attribute2] = *((*curr_prop_ptr)++), ...});
+        // The rest will auto-increment
         case 1:
             // Resistor
             return add_model(nl, ::phy_engine::model::resistance{.r = *((*curr_prop_ptr)++)});
@@ -543,7 +543,7 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
             return add_model(nl, ::std::move(s));
         }
         default:
-            // ……待后续补充
+            // ...to be continued later
             return {};
     }
 }
@@ -810,14 +810,14 @@ extern "C" void* create_circuit(int* elements,
                                 ::std::size_t** chunk_pos,
                                 ::std::size_t* comp_size)
 {
-    // TODO 在以后的版本中，或许应该在elements里面就不允许出现0（接地元件）
+    // TODO In future versions, perhaps 0 (ground element) should not be allowed in elements
     if(vec_pos == nullptr || chunk_pos == nullptr || comp_size == nullptr) { return nullptr; }
     *vec_pos = nullptr;
     *chunk_pos = nullptr;
     *comp_size = 0;
     if(elements == nullptr || properties == nullptr) { return nullptr; }
-    *vec_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
-    *chunk_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
+    *vec_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
+    *chunk_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     if(*vec_pos == nullptr || *chunk_pos == nullptr)
     {
         ::std::free(*vec_pos);
@@ -826,20 +826,20 @@ extern "C" void* create_circuit(int* elements,
         *chunk_pos = nullptr;
         return nullptr;
     }
-    ::phy_engine::circult* c = reinterpret_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
+    ::phy_engine::circult* c = static_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
     if(c == nullptr) [[unlikely]] { ::fast_io::fast_terminate(); }
     ::std::construct_at(c);
 
     c->set_analyze_type(::phy_engine::analyze_type::TR);
     auto& setting{c->get_analyze_setting()};
 
-    // 步长设置
+    // Step size setting
     setting.tr.t_step = 1e-6;
     setting.tr.t_stop = 1e-6;
 
     auto& nl{c->get_netlist()};
 
-    phy_engine::netlist::model_pos* model_pos_arr = (phy_engine::netlist::model_pos*)malloc(ele_size * sizeof(phy_engine::netlist::model_pos));
+    phy_engine::netlist::model_pos* model_pos_arr = static_cast<phy_engine::netlist::model_pos*>(malloc(ele_size * sizeof(phy_engine::netlist::model_pos)));
     if(model_pos_arr == nullptr)
     {
         destroy_circuit(c, *vec_pos, *chunk_pos);
@@ -849,10 +849,10 @@ extern "C" void* create_circuit(int* elements,
     }
 
     double* curr_prop = properties;  // current 'properties', for we don't know the length of properties
-    ::std::size_t curr_i{};          // curr_i以和i区分，前者说明的是第几个非接地元件 // TODO 如果要在elements里禁止接地元件，需要去掉curr_i
+    ::std::size_t curr_i{};          // curr_i distinguishes from i, indicating which non-ground element // TODO If ground elements are to be prohibited in elements, curr_i needs to be removed
     for(::std::size_t i{}; i < ele_size; ++i)
     {
-        // vec_pos和chunk_pos保序，这很重要
+        // vec_pos and chunk_pos maintain order, this is important
         if(elements[i])
         {
             auto [ele, ele_pos]{add_model_via_code(nl, elements[i], &curr_prop)};
@@ -871,12 +871,12 @@ extern "C" void* create_circuit(int* elements,
         }
 
         /* TEMP
-        if (elements[i]) { // 非接地元件
+        if (elements[i]) { // Non-ground element
             auto [ele, ele_pos]{add_model_via_code(nl, elements[i], &curr_prop)};
             (*vec_pos)[i] = ele_pos.vec_pos;
             (*chunk_pos)[i] = ele_pos.chunk_pos;
             model_pos_arr[i] = ele_pos;
-        } else { // 接地元件
+        } else { // Ground element
             (*vec_pos)[i] = 0;
             (*chunk_pos)[i] = 0;
             model_pos_arr[i] = {};
@@ -885,12 +885,12 @@ extern "C" void* create_circuit(int* elements,
     }
     *comp_size = curr_i;
 
-    // 默认wires元素取值不会超过ele_size，且默认wires_size为4的倍数
+    // Default: wires element values won't exceed ele_size, and wires_size is a multiple of 4
 
-    // 在这里调用build_netlist_from_wires，使用model_pos_arr获取model_pos后构建元件
-    // TODO comp_size应该是去掉接地元件的数目
-    // TODO 要深入考虑一下到底应不应该在pos里加上接地元件
-    // TODO 再检查一下build_netlist_from_wires
+    // Call build_netlist_from_wires here, use model_pos_arr to get model_pos and build components
+    // TODO comp_size should be the count excluding ground elements
+    // TODO Need to deeply consider whether ground elements should be included in pos
+    // TODO Check build_netlist_from_wires again
     int const wire_count = static_cast<int>(wires_size / 4);
     if(wires != nullptr && wire_count > 0) { build_netlist_from_wires(nl, elements, static_cast<int>(ele_size), wires, wire_count, model_pos_arr); }
 
@@ -928,8 +928,8 @@ extern "C" void* create_circuit_ex(int* elements,
         .ele_size = ele_size,
     };
 
-    *vec_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
-    *chunk_pos = (::std::size_t*)malloc(ele_size * sizeof(::std::size_t));
+    *vec_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
+    *chunk_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     if(*vec_pos == nullptr || *chunk_pos == nullptr)
     {
         ::std::free(*vec_pos);
@@ -939,7 +939,7 @@ extern "C" void* create_circuit_ex(int* elements,
         return nullptr;
     }
 
-    ::phy_engine::circult* c = reinterpret_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
+    ::phy_engine::circult* c = static_cast<::phy_engine::circult*>(std::malloc(sizeof(::phy_engine::circult)));
     if(c == nullptr) [[unlikely]] { ::fast_io::fast_terminate(); }
     ::std::construct_at(c);
 
@@ -959,7 +959,7 @@ extern "C" void* create_circuit_ex(int* elements,
 
     ::std::vector<verilog_netlist_job> verilog_jobs{};
 
-    phy_engine::netlist::model_pos* model_pos_arr = (phy_engine::netlist::model_pos*)malloc(ele_size * sizeof(phy_engine::netlist::model_pos));
+    phy_engine::netlist::model_pos* model_pos_arr = static_cast<phy_engine::netlist::model_pos*>(malloc(ele_size * sizeof(phy_engine::netlist::model_pos)));
     if(model_pos_arr == nullptr)
     {
         destroy_circuit(c, *vec_pos, *chunk_pos);
@@ -1124,7 +1124,7 @@ extern "C" void* create_circuit_ex(int* elements,
 }
 
 extern "C" void destroy_circuit(void* circuit_ptr, ::std::size_t* vec_pos, ::std::size_t* chunk_pos)
-{  // 这里pos是否需要是void*？
+{  // Does pos need to be void* here?
     if(circuit_ptr)
     {
         ::phy_engine::circult* c = static_cast<::phy_engine::circult*>(circuit_ptr);
@@ -1176,23 +1176,23 @@ extern "C" int analyze_circuit(void* circuit_ptr,
                                bool* digital,
                                ::std::size_t* digital_ord)
 {
-    // prop相关不需要判断，因为确实可能为空
-    // TODO 是否需要获取运行时间
+    // No need to check prop-related, as it may indeed be empty
+    // TODO Need to get runtime?
     if(circuit_ptr && vec_pos && chunk_pos && voltage && voltage_ord && current && current_ord && digital && digital_ord)
     {
         ::phy_engine::circult* c = static_cast<::phy_engine::circult*>(circuit_ptr);
         auto& nl{c->get_netlist()};
-        // 按需修改properties
+        // Modify properties as needed
         for(::std::size_t i{}; i < prop_size; ++i)
         {
             phy_engine::model::model_base* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos[changed_ele[i]], chunk_pos[changed_ele[i]]});
             set_property(model, changed_ind[i], changed_prop[i]);
         }
 
-        // 分析
+        // Analyze
         if(!c->analyze()) { return 1; }
 
-        // 读取（不触发 digital_clk；需要的话调用方通过 circuit_digital_clk() 单独触发）
+        // Read (doesn't trigger digital_clk; if needed, caller triggers separately via circuit_digital_clk())
         return circuit_sample(circuit_ptr, vec_pos, chunk_pos, comp_size, voltage, voltage_ord, current, current_ord, digital, digital_ord);
     }
     return 0;
