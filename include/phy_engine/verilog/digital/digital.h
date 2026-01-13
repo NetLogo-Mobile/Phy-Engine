@@ -1189,7 +1189,9 @@ namespace phy_engine::verilog::digital
             empty,
             block,
             blocking_assign,
+            blocking_assign_vec,
             nonblocking_assign,
+            nonblocking_assign_vec,
             if_stmt,
             case_stmt,
             for_stmt,
@@ -1209,6 +1211,9 @@ namespace phy_engine::verilog::digital
 
         ::std::size_t lhs_signal{SIZE_MAX};
         ::std::size_t expr_root{SIZE_MAX};  // assign rhs or if cond
+        // Vector assignment (whole vector lvalue): evaluated atomically (RHS sampled before any LHS bit updates).
+        ::fast_io::vector<::std::size_t> lhs_signals{};  // msb->lsb
+        ::fast_io::vector<::std::size_t> rhs_roots{};    // msb->lsb
 
         ::fast_io::vector<::std::size_t> stmts{};       // then-branch (or block list)
         ::fast_io::vector<::std::size_t> else_stmts{};  // else-branch
@@ -2669,7 +2674,15 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_mul(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                ::std::size_t const w{::std::max(width(a), width(b))};
+                // Verilog sizing: multiplication produces wa+wb bits (before any assignment truncation).
+                ::std::size_t const wa{width(a)};
+                ::std::size_t const wb{width(b)};
+                ::std::size_t w{wa + wb};
+                if(w > max_concat_bits)
+                {
+                    if(p) { p->err(p->peek(), u8"multiplication result too wide (limit exceeded)"); }
+                    w = max_concat_bits;
+                }
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
@@ -5306,20 +5319,16 @@ namespace phy_engine::verilog::digital
                     if(lhs.k == lvalue_ref::kind::vector)
                     {
                         auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
-                        stmt_node blk{};
-                        blk.k = stmt_node::kind::block;
-                        blk.stmts.reserve(lhs.vector_signals.size());
-                        for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
+                        stmt_node st{};
+                        st.k = stmt_node::kind::blocking_assign_vec;
+                        st.delay_ticks = 0;
+                        st.lhs_signals = lhs.vector_signals;
+                        st.rhs_roots = ::std::move(rhs_bits);
+                        for(auto const sig: st.lhs_signals)
                         {
-                            stmt_node st{};
-                            st.k = stmt_node::kind::blocking_assign;
-                            st.delay_ticks = 0;
-                            st.lhs_signal = lhs.vector_signals.index_unchecked(i);
-                            st.expr_root = rhs_bits.index_unchecked(i);
-                            blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
-                            if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                            if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
                         }
-                        return add_stmt(arena, ::std::move(blk));
+                        return add_stmt(arena, ::std::move(st));
                     }
 
                     auto const rhs1{ep.resize(rhs, 1)};
@@ -5532,20 +5541,16 @@ namespace phy_engine::verilog::digital
                         if(out_lv.k == lvalue_ref::kind::vector)
                         {
                             auto rhs_bits{ep_tmp.resize_to_vector(rhs_v, out_lv.vector_signals.size(), rhs_v.is_signed)};
-                            stmt_node blk{};
-                            blk.k = stmt_node::kind::block;
-                            blk.stmts.reserve(out_lv.vector_signals.size());
-                            for(::std::size_t i{}; i < out_lv.vector_signals.size(); ++i)
+                            stmt_node st{};
+                            st.k = stmt_node::kind::blocking_assign_vec;
+                            st.delay_ticks = delay;
+                            st.lhs_signals = out_lv.vector_signals;
+                            st.rhs_roots = ::std::move(rhs_bits);
+                            for(auto const sig: st.lhs_signals)
                             {
-                                stmt_node st{};
-                                st.k = stmt_node::kind::blocking_assign;
-                                st.delay_ticks = delay;
-                                st.lhs_signal = out_lv.vector_signals.index_unchecked(i);
-                                st.expr_root = rhs_bits.index_unchecked(i);
-                                blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
-                                if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                                if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
                             }
-                            return add_stmt(arena, ::std::move(blk));
+                            return add_stmt(arena, ::std::move(st));
                         }
 
                         // scalar output
@@ -5593,24 +5598,16 @@ namespace phy_engine::verilog::digital
             if(lhs.k == lvalue_ref::kind::vector)
             {
                 auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
-
-                stmt_node blk{};
-                blk.k = stmt_node::kind::block;
-                blk.stmts.reserve(lhs.vector_signals.size());
-
-                for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
+                stmt_node st{};
+                st.k = nonblocking ? stmt_node::kind::nonblocking_assign_vec : stmt_node::kind::blocking_assign_vec;
+                st.delay_ticks = delay;
+                st.lhs_signals = lhs.vector_signals;
+                st.rhs_roots = ::std::move(rhs_bits);
+                for(auto const sig: st.lhs_signals)
                 {
-                    stmt_node st{};
-                    st.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
-                    st.delay_ticks = delay;
-                    st.lhs_signal = lhs.vector_signals.index_unchecked(i);
-                    st.expr_root = rhs_bits.index_unchecked(i);
-                    blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
-
-                    if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                    if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
                 }
-
-                return add_stmt(arena, ::std::move(blk));
+                return add_stmt(arena, ::std::move(st));
             }
 
             if(lhs.k == lvalue_ref::kind::dynamic_bit_select)
@@ -6726,6 +6723,9 @@ namespace phy_engine::verilog::digital
         bool nonblocking{};
         ::std::size_t lhs_signal{SIZE_MAX};
         ::std::size_t expr_root{SIZE_MAX};
+        bool is_vector{};
+        ::fast_io::vector<::std::size_t> lhs_signals{};  // msb->lsb
+        ::fast_io::vector<::std::size_t> expr_roots{};   // msb->lsb
     };
 
     struct module_state
@@ -7076,6 +7076,39 @@ namespace phy_engine::verilog::digital
                     auto const v{eval_expr_cached(m, n.expr_root, st)};
                     return assign_signal(st, n.lhs_signal, v);
                 }
+                case stmt_node::kind::blocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size()) { return false; }
+                    if(n.lhs_signals.empty()) { return false; }
+
+                    if(n.delay_ticks != 0)
+                    {
+                        scheduled_event ev{};
+                        ev.due_tick = tick + n.delay_ticks;
+                        ev.nonblocking = false;
+                        ev.is_vector = true;
+                        ev.lhs_signals = n.lhs_signals;
+                        ev.expr_roots = n.rhs_roots;
+                        st.events.push_back(::std::move(ev));
+                        return false;
+                    }
+
+                    ::fast_io::vector<logic_t> sampled{};
+                    sampled.resize(n.rhs_roots.size());
+                    for(::std::size_t i{}; i < n.rhs_roots.size(); ++i)
+                    {
+                        sampled.index_unchecked(i) = eval_expr_cached(m, n.rhs_roots.index_unchecked(i), st);
+                    }
+
+                    bool changed{};
+                    for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                    {
+                        auto const sig{n.lhs_signals.index_unchecked(i)};
+                        if(sig >= st.values.size()) { continue; }
+                        changed = assign_signal(st, sig, sampled.index_unchecked(i)) || changed;
+                    }
+                    return changed;
+                }
                 case stmt_node::kind::nonblocking_assign:
                 {
                     if(n.lhs_signal >= st.values.size()) { return false; }
@@ -7097,6 +7130,65 @@ namespace phy_engine::verilog::digital
                     }
                     auto const v{eval_expr_cached(m, n.expr_root, st)};
                     st.nba_queue.push_back({n.lhs_signal, v});
+                    return false;
+                }
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size()) { return false; }
+                    if(n.lhs_signals.empty()) { return false; }
+
+                    if(treat_nonblocking_as_blocking)
+                    {
+                        // Evaluate all RHS bits before updating any LHS bits (vector is atomic).
+                        if(n.delay_ticks != 0)
+                        {
+                            scheduled_event ev{};
+                            ev.due_tick = tick + n.delay_ticks;
+                            ev.nonblocking = false;
+                            ev.is_vector = true;
+                            ev.lhs_signals = n.lhs_signals;
+                            ev.expr_roots = n.rhs_roots;
+                            st.events.push_back(::std::move(ev));
+                            return false;
+                        }
+
+                        ::fast_io::vector<logic_t> sampled{};
+                        sampled.resize(n.rhs_roots.size());
+                        for(::std::size_t i{}; i < n.rhs_roots.size(); ++i)
+                        {
+                            sampled.index_unchecked(i) = eval_expr_cached(m, n.rhs_roots.index_unchecked(i), st);
+                        }
+
+                        bool changed{};
+                        for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                        {
+                            auto const sig{n.lhs_signals.index_unchecked(i)};
+                            if(sig >= st.values.size()) { continue; }
+                            changed = assign_signal(st, sig, sampled.index_unchecked(i)) || changed;
+                        }
+                        return changed;
+                    }
+
+                    if(n.delay_ticks != 0)
+                    {
+                        scheduled_event ev{};
+                        ev.due_tick = tick + n.delay_ticks;
+                        ev.nonblocking = true;
+                        ev.is_vector = true;
+                        ev.lhs_signals = n.lhs_signals;
+                        ev.expr_roots = n.rhs_roots;
+                        st.events.push_back(::std::move(ev));
+                        return false;
+                    }
+
+                    // NBA: RHS is sampled now, no LHS hazard.
+                    for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                    {
+                        auto const sig{n.lhs_signals.index_unchecked(i)};
+                        if(sig >= st.values.size()) { continue; }
+                        auto const v{eval_expr_cached(m, n.rhs_roots.index_unchecked(i), st)};
+                        st.nba_queue.push_back({sig, v});
+                    }
                     return false;
                 }
                 case stmt_node::kind::if_stmt:
@@ -7218,13 +7310,43 @@ namespace phy_engine::verilog::digital
                     continue;
                 }
 
+                if(ev.is_vector)
+                {
+                    if(ev.lhs_signals.size() != ev.expr_roots.size()) { continue; }
+                    if(ev.lhs_signals.empty()) { continue; }
+
+                    ::fast_io::vector<logic_t> sampled{};
+                    sampled.resize(ev.expr_roots.size());
+                    for(::std::size_t i{}; i < ev.expr_roots.size(); ++i)
+                    {
+                        sampled.index_unchecked(i) = eval_expr_cached(m, ev.expr_roots.index_unchecked(i), st);
+                    }
+
+                    if(ev.nonblocking)
+                    {
+                        for(::std::size_t i{}; i < ev.lhs_signals.size(); ++i)
+                        {
+                            auto const sig{ev.lhs_signals.index_unchecked(i)};
+                            if(sig >= st.values.size()) { continue; }
+                            st.nba_queue.push_back({sig, sampled.index_unchecked(i)});
+                        }
+                    }
+                    else
+                    {
+                        for(::std::size_t i{}; i < ev.lhs_signals.size(); ++i)
+                        {
+                            auto const sig{ev.lhs_signals.index_unchecked(i)};
+                            if(sig >= st.values.size()) { continue; }
+                            (void)assign_signal(st, sig, sampled.index_unchecked(i));
+                        }
+                    }
+                    continue;
+                }
+
                 if(ev.lhs_signal >= st.values.size()) { continue; }
 
                 if(ev.nonblocking) { st.nba_queue.push_back({ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st)}); }
-                else
-                {
-                    (void)assign_signal(st, ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st));
-                }
+                else { (void)assign_signal(st, ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st)); }
             }
 
             st.events = ::std::move(keep);

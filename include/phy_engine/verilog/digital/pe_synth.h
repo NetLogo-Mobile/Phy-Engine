@@ -670,6 +670,15 @@ namespace phy_engine::verilog::digital
                     if(n.lhs_signal < out.size()) { out[n.lhs_signal] = true; }
                     return;
                 }
+                case stmt_node::kind::blocking_assign_vec:
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    for(auto const sig: n.lhs_signals)
+                    {
+                        if(sig < out.size()) { out[sig] = true; }
+                    }
+                    return;
+                }
                 case stmt_node::kind::block:
                 {
                     for(auto const s: n.stmts) { collect_assigned_signals(arena, s, out); }
@@ -779,6 +788,28 @@ namespace phy_engine::verilog::digital
                     }
                     return true;
                 }
+                case stmt_node::kind::blocking_assign_vec:
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size()) { return true; }
+                    for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                    {
+                        auto const sig{n.lhs_signals.index_unchecked(i)};
+                        if(sig >= reset_values.size() || sig >= has_reset.size()) { continue; }
+                        if(sig < targets.size() && targets[sig])
+                        {
+                            ::phy_engine::verilog::digital::logic_t v{};
+                            if(!eval_const_expr_to_logic(b, n.rhs_roots.index_unchecked(i), v))
+                            {
+                                b.ctx.set_error("pe_synth: async reset assignment must be constant");
+                                return false;
+                            }
+                            reset_values[sig] = v;
+                            has_reset[sig] = true;
+                        }
+                    }
+                    return true;
+                }
                 default:
                 {
                     b.ctx.set_error("pe_synth: unsupported statement in async reset branch");
@@ -822,6 +853,24 @@ namespace phy_engine::verilog::digital
                     }
                     return true;
                 }
+                case stmt_node::kind::blocking_assign_vec:
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size()) { return true; }
+                    for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                    {
+                        auto const sig{n.lhs_signals.index_unchecked(i)};
+                        if(sig >= reset_values.size() || sig >= has_reset.size()) { continue; }
+                        if(sig < targets.size() && targets[sig])
+                        {
+                            ::phy_engine::verilog::digital::logic_t v{};
+                            if(!eval_const_expr_to_logic(b, n.rhs_roots.index_unchecked(i), v)) { return false; }
+                            reset_values[sig] = v;
+                            has_reset[sig] = true;
+                        }
+                    }
+                    return true;
+                }
                 default: return false;
             }
         }
@@ -862,6 +911,37 @@ namespace phy_engine::verilog::digital
                         if(n.lhs_signal < cur.size()) { cur[n.lhs_signal] = rhs; }
                     }
                     if(n.lhs_signal < targets.size() && targets[n.lhs_signal]) { next[n.lhs_signal] = rhs; }
+                    return true;
+                }
+                case stmt_node::kind::blocking_assign_vec:
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size()) { return true; }
+                    if(n.lhs_signals.empty()) { return true; }
+
+                    ::std::vector<::phy_engine::model::node_t*> rhs_nodes{};
+                    rhs_nodes.resize(n.rhs_roots.size());
+                    for(::std::size_t i{}; i < n.rhs_roots.size(); ++i)
+                    {
+                        auto* rhs = b.expr_in_env(n.rhs_roots.index_unchecked(i), cur, nullptr);
+                        if(n.delay_ticks != 0) { rhs = b.ctx.tick_delay(rhs, n.delay_ticks); }
+                        rhs_nodes[i] = rhs;
+                    }
+
+                    if(n.k == stmt_node::kind::blocking_assign_vec)
+                    {
+                        for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                        {
+                            auto const sig{n.lhs_signals.index_unchecked(i)};
+                            if(sig < cur.size()) { cur[sig] = rhs_nodes[i]; }
+                        }
+                    }
+
+                    for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                    {
+                        auto const sig{n.lhs_signals.index_unchecked(i)};
+                        if(sig < targets.size() && targets[sig] && sig < next.size()) { next[sig] = rhs_nodes[i]; }
+                    }
                     return true;
                 }
                 case stmt_node::kind::if_stmt:
@@ -1121,6 +1201,34 @@ namespace phy_engine::verilog::digital
                         if(n.delay_ticks != 0) { rhs = b.ctx.tick_delay(rhs, n.delay_ticks); }
                         value[n.lhs_signal] = rhs;
                         assigned_cond[n.lhs_signal] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
+                    }
+                    return true;
+                }
+                case stmt_node::kind::blocking_assign_vec:
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size()) { return true; }
+                    if(n.lhs_signals.empty()) { return true; }
+
+                    // RHS must be sampled before any LHS update (vector atomicity).
+                    ::std::vector<::phy_engine::model::node_t*> rhs_nodes{};
+                    rhs_nodes.resize(n.rhs_roots.size());
+                    for(::std::size_t i{}; i < n.rhs_roots.size(); ++i)
+                    {
+                        auto* rhs = b.expr_in_env(n.rhs_roots.index_unchecked(i), value, nullptr);
+                        if(n.delay_ticks != 0) { rhs = b.ctx.tick_delay(rhs, n.delay_ticks); }
+                        rhs_nodes[i] = rhs;
+                    }
+
+                    for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
+                    {
+                        auto const sig{n.lhs_signals.index_unchecked(i)};
+                        if(sig >= value.size() || sig >= assigned_cond.size()) { continue; }
+                        if(sig < targets.size() && targets[sig])
+                        {
+                            value[sig] = rhs_nodes[i];
+                            assigned_cond[sig] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state);
+                        }
                     }
                     return true;
                 }
