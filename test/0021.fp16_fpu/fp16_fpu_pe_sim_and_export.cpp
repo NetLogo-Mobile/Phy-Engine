@@ -184,6 +184,26 @@ int main()
     };
     if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt)) { return 13; }
 
+    auto count_models = [&]() -> std::size_t {
+        std::size_t n{};
+        for(auto const& blk : nl.models) { n += static_cast<std::size_t>(blk.curr - blk.begin); }
+        return n;
+    };
+    auto count_nodes = [&]() -> std::size_t {
+        std::size_t n{};
+        for(auto const& blk : nl.nodes) { n += static_cast<std::size_t>(blk.curr - blk.begin); }
+        return n;
+    };
+    auto count_pins = [&]() -> std::size_t {
+        std::size_t total{};
+        for(auto const& blk : nl.nodes)
+        {
+            for(auto const* n = blk.begin; n != blk.curr; ++n) { total += n->pins.size(); }
+        }
+        total += nl.ground_node.pins.size();
+        return total;
+    };
+
     // Analyze once so `pe_to_pl` sees a linked netlist.
     if(!c.analyze()) { return 14; }
 
@@ -241,8 +261,16 @@ int main()
         r.ex.save(out_path, 2);
         if(!std::filesystem::exists(out_path)) { return 15; }
         if(std::filesystem::file_size(out_path) < 128) { return 16; }
+
+        std::printf("PE netlist scale (fp16_fpu_top):\n");
+        std::printf("- models: %zu\n", count_models());
+        std::printf("- nodes: %zu (+ ground)\n", count_nodes());
+        std::printf("- node pins (sum): %zu\n", count_pins());
+        std::printf("PLSAV scale (fp16_fpu_pe_to_pl.sav):\n");
+        std::printf("- elements: %zu\n", static_cast<std::size_t>(r.ex.elements().size()));
+        std::printf("- wires: %zu\n", static_cast<std::size_t>(r.ex.wires().size()));
+        std::printf("- file_size: %zu bytes\n", static_cast<std::size_t>(std::filesystem::file_size(out_path)));
     }
 
     return 0;
 }
-
