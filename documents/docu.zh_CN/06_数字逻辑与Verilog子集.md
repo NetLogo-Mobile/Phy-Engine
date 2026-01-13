@@ -5,6 +5,8 @@
 1) 直接使用 PE 内置数字 primitive（`model/models/digital/*`）搭建数字电路  
 2) 使用 `verilog::digital` 编译/展开 Verilog 子集，并用 `pe_synth` 综合到 PE 数字 primitive
 
+本章聚焦“能力与流程”；所有可调参数（options/配置项）的逐项解释请看：`documents/docu.zh_CN/10_Options_与配置参考.md`。
+
 ## 1) 4 态逻辑与传播
 
 数字状态类型：`phy_engine::model::digital_node_statement_t`（`include/phy_engine/model/node/node.h`）
@@ -34,6 +36,11 @@
 - `find_module(design, name)`：查找模块
 - `elaborate(design, module)`：展开顶层 instance（含子模块实例）
 - `simulate(instance_state, tick, process_sequential)`：推进仿真（`VERILOG_MODULE` 内部使用）
+
+相关 options（逐项解释见 `documents/docu.zh_CN/10_Options_与配置参考.md`）：
+
+- `preprocess_options`：`\`include` 解析/深度限制
+- `compile_options`：目前只封装 `preprocess_options`
 
 ## 3) Verilog → PE 网表综合（`pe_synth`）
 
@@ -66,6 +73,8 @@ bool synthesize_to_pe_netlist(
 - `support_always_comb` / `support_always_ff`
 - `optimize_adders`：best-effort：把门级加法器模式替换成 `HALF_ADDER/FULL_ADDER`
 - `loop_unroll_limit`：动态 for/while 的有限展开上限
+
+补充：如果你想查“综合失败时常见原因/如何定位是哪条 net 多驱动/怎么调 allow_multi_driver”，建议直接看 `documents/docu.zh_CN/11_API_逐函数参考.md` 的 E 节与 `documents/docu.zh_CN/10_Options_与配置参考.md` 的 B 节。
 
 ## 4) 另一种集成方式：`model::VERILOG_MODULE`
 

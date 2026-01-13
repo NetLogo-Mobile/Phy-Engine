@@ -7,6 +7,8 @@ PE 仓库内置 `phy_lab_wrapper`，用于读写 PhysicsLab 的 `.sav`（本质�
 
 相关头文件都在 `include/phy_engine/phy_lab_wrapper/`。
 
+本章聚焦“接口与流程”；所有 options/配置项的逐项解释请看：`documents/docu.zh_CN/10_Options_与配置参考.md`。
+
 ## 1) `.sav` 数据结构：`physicslab.h`
 
 头文件：`include/phy_engine/phy_lab_wrapper/physicslab.h`
@@ -61,6 +63,8 @@ PE 仓库内置 `phy_lab_wrapper`，用于读写 PhysicsLab 的 `.sav`（本质�
 - `generate_wires`：是否生成导线
 - `element_placer`：回调，用于按 `pe_model_name/pe_instance_name/pl_model_id` 自定义摆放位置
 
+`pe_to_pl::options` 的逐字段语义与典型策略（例如按位排布 IO、是否保留宏元件）见：`documents/docu.zh_CN/10_Options_与配置参考.md`（E 节）。
+
 ## 4) 布局定位辅助：`layout_locator.h`
 
 头文件：`include/phy_engine/phy_lab_wrapper/layout_locator.h`
@@ -75,4 +79,3 @@ PE 仓库内置 `phy_lab_wrapper`，用于读写 PhysicsLab 的 `.sav`（本质�
 
 - `plw_experiment_create/load_from_string/dump/connect/...`
 - `plw_last_error()` 获取线程局部错误信息
-

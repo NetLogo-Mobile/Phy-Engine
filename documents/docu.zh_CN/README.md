@@ -14,6 +14,8 @@
 - `07_PhysicsLab互操作.md`：`.sav` 读写、PL↔PE 适配、PE→PL 导出、布局辅助
 - `08_C_ABI_与共享库.md`：`dll_api.h`（create/analyze/sample…）与内存/调用约定
 - `09_文件格式_工具_FAQ.md`：文件格式/工具模块、常见问题、性能与排障
+- `10_Options_与配置参考.md`：所有 “options/setting/配置项/环境变量” 的逐项解释与示例
+- `11_API_逐函数参考.md`：按模块列出公开入口函数/方法，并给出用法与典型流程
 
 ## 参考示例
 

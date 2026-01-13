@@ -2,6 +2,8 @@
 
 本章面向“把 PE 当成动态库嵌入”的用户。C ABI 位于 `include/phy_engine/dll_api.h`，其实现（默认）在 `src/dll_main.cpp`。
 
+按函数逐个说明的调用约定与典型流程另见：`documents/docu.zh_CN/11_API_逐函数参考.md`（I 节）。
+
 ## 1) 为什么需要 C ABI
 
 - 方便被其它语言/运行时调用（Python/JS/wasm/…）
@@ -56,4 +58,3 @@
 - 接口声明：`include/phy_engine/dll_api.h`
 - 默认实现：`src/dll_main.cpp`
 - PL 适配器封装：`include/phy_engine/phy_lab_wrapper/pe_sim.h`
-
