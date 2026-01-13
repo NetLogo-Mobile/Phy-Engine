@@ -127,8 +127,11 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         pl_model_mapping m{};
         m.model_id = std::string(pl_model_id::half_adder);
         m.is_big_element = true;
-        // PE(HALF_ADDER): ia, ib, s, c  ->  PL(Half Adder): o_up, o_low, i_up, i_low
-        m.pe_to_pl_pin = {{0, 2}, {1, 3}, {2, 1}, {3, 0}};
+        // physicsLab(Half Adder) pin order:
+        //   outputs: 0=S, 1=C
+        //   inputs : 2=B, 3=A
+        // PE(HALF_ADDER): ia(A), ib(B), s(S), c(C)
+        m.pe_to_pl_pin = {{0, 3}, {1, 2}, {2, 0}, {3, 1}};
         return m;
     }
     if(name == "FULL_ADDER")
@@ -136,8 +139,11 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         pl_model_mapping m{};
         m.model_id = std::string(pl_model_id::full_adder);
         m.is_big_element = true;
-        // PE(FULL_ADDER): ia, ib, cin, s, cout  ->  PL(Full Adder): o_up, o_low, i_up, i_mid, i_low
-        m.pe_to_pl_pin = {{0, 3}, {1, 4}, {2, 2}, {3, 1}, {4, 0}};
+        // physicsLab(Full Adder) pin order:
+        //   outputs: 0=S, 1=Cout
+        //   inputs : 2=B, 3=Cin, 4=A
+        // PE(FULL_ADDER): ia(A), ib(B), cin(Cin), s(S), cout(Cout)
+        m.pe_to_pl_pin = {{0, 4}, {1, 2}, {2, 3}, {3, 0}, {4, 1}};
         return m;
     }
     if(name == "HALF_SUB")
@@ -145,8 +151,11 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         pl_model_mapping m{};
         m.model_id = std::string(pl_model_id::half_subtractor);
         m.is_big_element = true;
-        // PE(HALF_SUB): ia, ib, d, b  ->  PL(Half Subtractor): o_up, o_low, i_up, i_low
-        m.pe_to_pl_pin = {{0, 2}, {1, 3}, {2, 1}, {3, 0}};
+        // physicsLab(Half Subtractor) pin order:
+        //   outputs: 0=D, 1=Bout
+        //   inputs : 2=B, 3=A
+        // PE(HALF_SUB): ia(A), ib(B), d(D), b(Bout)
+        m.pe_to_pl_pin = {{0, 3}, {1, 2}, {2, 0}, {3, 1}};
         return m;
     }
     if(name == "FULL_SUB")
@@ -154,8 +163,11 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         pl_model_mapping m{};
         m.model_id = std::string(pl_model_id::full_subtractor);
         m.is_big_element = true;
-        // PE(FULL_SUB): ia, ib, bin, d, bout  ->  PL(Full Subtractor): o_up, o_low, i_up, i_mid, i_low
-        m.pe_to_pl_pin = {{0, 3}, {1, 4}, {2, 2}, {3, 1}, {4, 0}};
+        // physicsLab(Full Subtractor) pin order:
+        //   outputs: 0=D, 1=Bout
+        //   inputs : 2=B, 3=Bin, 4=A
+        // PE(FULL_SUB): ia(A), ib(B), bin(Bin), d(D), bout(Bout)
+        m.pe_to_pl_pin = {{0, 4}, {1, 2}, {2, 3}, {3, 0}, {4, 1}};
         return m;
     }
     if(name == "MUL2")

@@ -638,6 +638,66 @@ private:
 
                 continue;
             }
+
+            // ---- PL macro: Half/Full Adder/Subtractor (pin order differs from PE model pin order) ----
+            //
+            // physicsLab(Half Adder):
+            //   outputs: 0=S, 1=C
+            //   inputs : 2=B, 3=A
+            // PE(HALF_ADDER): ia(A), ib(B), s(S), c(C)
+            if (model_id == "Half Adder")
+            {
+                auto fa = add_pe_element(PHY_ENGINE_E_DIGITAL_HALF_ADDER, {}, pl_id);
+                pin_map[pl_id][3] = endpoint{fa, 0};  // A -> ia
+                pin_map[pl_id][2] = endpoint{fa, 1};  // B -> ib
+                pin_map[pl_id][0] = endpoint{fa, 2};  // S -> s
+                pin_map[pl_id][1] = endpoint{fa, 3};  // C -> c
+                continue;
+            }
+
+            // physicsLab(Full Adder):
+            //   outputs: 0=S, 1=Cout
+            //   inputs : 2=B, 3=Cin, 4=A
+            // PE(FULL_ADDER): ia(A), ib(B), cin(Cin), s(S), cout(Cout)
+            if (model_id == "Full Adder")
+            {
+                auto fa = add_pe_element(PHY_ENGINE_E_DIGITAL_FULL_ADDER, {}, pl_id);
+                pin_map[pl_id][4] = endpoint{fa, 0};  // A -> ia
+                pin_map[pl_id][2] = endpoint{fa, 1};  // B -> ib
+                pin_map[pl_id][3] = endpoint{fa, 2};  // Cin -> cin
+                pin_map[pl_id][0] = endpoint{fa, 3};  // S -> s
+                pin_map[pl_id][1] = endpoint{fa, 4};  // Cout -> cout
+                continue;
+            }
+
+            // physicsLab(Half Subtractor):
+            //   outputs: 0=D, 1=Bout
+            //   inputs : 2=B, 3=A
+            // PE(HALF_SUB): ia(A), ib(B), d(D), b(Bout)
+            if (model_id == "Half Subtractor")
+            {
+                auto hs = add_pe_element(PHY_ENGINE_E_DIGITAL_HALF_SUBTRACTOR, {}, pl_id);
+                pin_map[pl_id][3] = endpoint{hs, 0};  // A -> ia
+                pin_map[pl_id][2] = endpoint{hs, 1};  // B -> ib
+                pin_map[pl_id][0] = endpoint{hs, 2};  // D -> d
+                pin_map[pl_id][1] = endpoint{hs, 3};  // Bout -> b
+                continue;
+            }
+
+            // physicsLab(Full Subtractor):
+            //   outputs: 0=D, 1=Bout
+            //   inputs : 2=B, 3=Bin, 4=A
+            // PE(FULL_SUB): ia(A), ib(B), bin(Bin), d(D), bout(Bout)
+            if (model_id == "Full Subtractor")
+            {
+                auto fs = add_pe_element(PHY_ENGINE_E_DIGITAL_FULL_SUBTRACTOR, {}, pl_id);
+                pin_map[pl_id][4] = endpoint{fs, 0};  // A -> ia
+                pin_map[pl_id][2] = endpoint{fs, 1};  // B -> ib
+                pin_map[pl_id][3] = endpoint{fs, 2};  // Bin -> bin
+                pin_map[pl_id][0] = endpoint{fs, 3};  // D -> d
+                pin_map[pl_id][1] = endpoint{fs, 4};  // Bout -> bout
+                continue;
+            }
 // 1:1 element mapping
             auto [code, props] = detail::to_phy_engine_code_and_props(e.data());
             auto idx = add_pe_element(code, std::move(props), pl_id);
