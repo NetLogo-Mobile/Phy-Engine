@@ -21,3 +21,6 @@ endif()
 
 # 添加这一行来编译phyengine.dll
 add_library(phyengine SHARED dll_main.cpp)
+
+# verilog -> PE netlist -> PhysicsLab .sav (with IO auto-placement)
+add_executable(verilog2plsav verilog2plsav.cpp)
