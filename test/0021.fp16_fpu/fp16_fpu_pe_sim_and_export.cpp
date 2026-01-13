@@ -12,6 +12,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -181,13 +182,14 @@ int main()
     ::phy_engine::verilog::digital::pe_synth_options opt{
         .allow_inout = false,
         .allow_multi_driver = false,
+        .assume_binary_inputs = true,
+        .optimize_wires = true,
+        .optimize_adders = true,
     };
     if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt)) { return 13; }
 
     auto count_models = [&]() -> std::size_t {
-        std::size_t n{};
-        for(auto const& blk : nl.models) { n += static_cast<std::size_t>(blk.curr - blk.begin); }
-        return n;
+        return ::phy_engine::netlist::get_num_of_model(nl);
     };
     auto count_nodes = [&]() -> std::size_t {
         std::size_t n{};
@@ -202,6 +204,32 @@ int main()
         }
         total += nl.ground_node.pins.size();
         return total;
+    };
+
+    auto count_models_by_name = [&]() {
+        struct key_hash
+        {
+            std::size_t operator()(::fast_io::u8string const& s) const noexcept
+            {
+                return std::hash<std::string_view>{}(std::string_view(reinterpret_cast<char const*>(s.data()), s.size()));
+            }
+        };
+        struct key_eq
+        {
+            bool operator()(::fast_io::u8string const& a, ::fast_io::u8string const& b) const noexcept { return a == b; }
+        };
+
+        std::unordered_map<::fast_io::u8string, std::size_t, key_hash, key_eq> counts{};
+        counts.reserve(64);
+        for(auto const& blk : nl.models)
+        {
+            for(auto const* m = blk.begin; m != blk.curr; ++m)
+            {
+                if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                counts[::fast_io::u8string{m->ptr->get_model_name()}] += 1;
+            }
+        }
+        return counts;
     };
 
     // Analyze once so `pe_to_pl` sees a linked netlist.
@@ -266,6 +294,21 @@ int main()
         std::printf("- models: %zu\n", count_models());
         std::printf("- nodes: %zu (+ ground)\n", count_nodes());
         std::printf("- node pins (sum): %zu\n", count_pins());
+
+        auto const counts = count_models_by_name();
+        auto get = [&](char const* name) -> std::size_t {
+            auto const u8 = ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(name), std::strlen(name)};
+            if(auto it = counts.find(::fast_io::u8string{u8}); it != counts.end()) { return it->second; }
+            return 0;
+        };
+        std::printf("- gates: YES=%zu NOT=%zu AND=%zu OR=%zu XOR=%zu XNOR=%zu\n",
+                    get("YES"),
+                    get("NOT"),
+                    get("AND"),
+                    get("OR"),
+                    get("XOR"),
+                    get("XNOR"));
+        std::printf("- macros: HALF_ADDER=%zu FULL_ADDER=%zu\n", get("HALF_ADDER"), get("FULL_ADDER"));
         std::printf("PLSAV scale (fp16_fpu_pe_to_pl.sav):\n");
         std::printf("- elements: %zu\n", static_cast<std::size_t>(r.ex.elements().size()));
         std::printf("- wires: %zu\n", static_cast<std::size_t>(r.ex.wires().size()));
