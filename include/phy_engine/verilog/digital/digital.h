@@ -6429,6 +6429,15 @@ namespace phy_engine::verilog::digital
                         current_is_reg = false;
                         current_is_signed = false;
                         current_range = {};
+                        if(p.accept_kw(u8"wire"))
+                        {
+                            // ignored
+                        }
+                        else if(p.accept_kw(u8"reg"))
+                        {
+                            // SystemVerilog-style `input reg` is accepted as a compatibility extension.
+                            // Treat as a normal input port (driven externally).
+                        }
                         if(p.accept_kw(u8"signed")) { current_is_signed = true; }
                         else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
@@ -6454,6 +6463,10 @@ namespace phy_engine::verilog::digital
                         current_is_reg = false;
                         current_is_signed = false;
                         current_range = {};
+                        if(p.accept_kw(u8"wire"))
+                        {
+                            // ignored
+                        }
                         if(p.accept_kw(u8"signed")) { current_is_signed = true; }
                         else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
