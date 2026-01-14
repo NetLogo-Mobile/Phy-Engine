@@ -221,12 +221,12 @@ int main()
 {
     // Layout/placement constraints (requested):
     // - internal region per layer: (-1, -1/3, z) .. (1, +1/3, z)
-    // - z increases by 0.1 per layer
+    // - z increases by 0.02 per layer
     // - IO: top 1/3 = inputs, bottom 1/3 = outputs
     // - IO bit order: right->left is low->high
     constexpr double extent = 1.0;
     constexpr double third = 1.0 / 3.0;
-    constexpr double z_step = 0.1;
+    constexpr double z_step = 0.02;
     constexpr double layout_step = 0.01;
     constexpr double layout_min_step = 0.001;
 
