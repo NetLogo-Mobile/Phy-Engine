@@ -472,7 +472,8 @@ public:
     static element circuit(std::string model_id,
                            position pos,
                            bool element_xyz_coords = false,
-                           bool is_big_element = false)
+                           bool is_big_element = false,
+                           bool participate_in_layout = true)
     {
         element e;
 
@@ -528,10 +529,15 @@ public:
         e.pos_ = pos;
         e.is_element_xyz_ = element_xyz_coords;
         e.is_big_element_ = is_big_element;
+        e.participate_in_layout_ = participate_in_layout;
         return e;
     }
 
-    static element generic(json data, position pos, bool element_xyz_coords = false, bool is_big_element = false)
+    static element generic(json data,
+                           position pos,
+                           bool element_xyz_coords = false,
+                           bool is_big_element = false,
+                           bool participate_in_layout = true)
     {
         element e;
         e.data_ = std::move(data);
@@ -542,6 +548,7 @@ public:
         e.pos_ = pos;
         e.is_element_xyz_ = element_xyz_coords;
         e.is_big_element_ = is_big_element;
+        e.participate_in_layout_ = participate_in_layout;
         return e;
     }
 
@@ -557,6 +564,7 @@ public:
 
     [[nodiscard]] bool is_element_xyz() const noexcept { return is_element_xyz_; }
     [[nodiscard]] bool is_big_element() const noexcept { return is_big_element_; }
+    [[nodiscard]] bool participate_in_layout() const noexcept { return participate_in_layout_; }
 
     [[nodiscard]] position element_position() const noexcept { return pos_; }
 
@@ -567,6 +575,7 @@ public:
     }
 
     void set_big_element(bool v) noexcept { is_big_element_ = v; }
+    void set_participate_in_layout(bool v) noexcept { participate_in_layout_ = v; }
 
     void set_rotation(position rot_native_xyz = {0.0, 0.0, 180.0})
     {
@@ -593,6 +602,7 @@ private:
     position pos_{};
     bool is_element_xyz_{false};
     bool is_big_element_{false};
+    bool participate_in_layout_{true};
 };
 
 struct pin_ref
@@ -822,14 +832,15 @@ public:
     [[nodiscard]] std::string add_circuit_element(std::string model_id,
                                                   position pos,
                                                   std::optional<bool> element_xyz_coords = std::nullopt,
-                                                  bool is_big_element = false)
+                                                  bool is_big_element = false,
+                                                  bool participate_in_layout = true)
     {
         if (type_ != experiment_type::circuit)
         {
             throw std::runtime_error("add_circuit_element only valid for circuit experiments");
         }
         bool is_element_xyz_coords = element_xyz_coords.value_or(element_xyz_enabled_);
-        element e = element::circuit(std::move(model_id), pos, is_element_xyz_coords, is_big_element);
+        element e = element::circuit(std::move(model_id), pos, is_element_xyz_coords, is_big_element, participate_in_layout);
         return add_element(std::move(e));
     }
 
@@ -1059,6 +1070,7 @@ public:
             pos.z += offset.z;
 
             element ne = element::generic(std::move(d), pos, e.is_element_xyz(), e.is_big_element());
+            ne.set_participate_in_layout(e.participate_in_layout());
             static_cast<void>(add_element(std::move(ne)));
             id_map.emplace(old_id, new_id);
         }
