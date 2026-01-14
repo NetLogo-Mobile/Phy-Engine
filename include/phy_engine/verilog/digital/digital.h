@@ -2592,7 +2592,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_add(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                ::std::size_t const w{::std::max(width(a), width(b))};
+                ::std::size_t const w0{::std::max(width(a), width(b))};
+                ::std::size_t const w{w0 + 1};
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
@@ -2633,7 +2634,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_sub(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                ::std::size_t const w{::std::max(width(a), width(b))};
+                ::std::size_t const w0{::std::max(width(a), width(b))};
+                ::std::size_t const w{w0 + 1};
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
@@ -3719,7 +3721,9 @@ namespace phy_engine::verilog::digital
                 {
                     auto const a{parse_unary()};
                     expr_value const z{a.is_signed ? make_int_literal(0, width(a)) : make_uint_literal(0, width(a))};
-                    return arith_sub(z, a);
+                    // Verilog-compatible sizing: unary '-' keeps the operand width.
+                    auto const r = arith_sub(z, a);
+                    return resize(r, width(a), a.is_signed);
                 }
                 if(p->accept_sym(u8'~'))
                 {
@@ -4016,6 +4020,68 @@ namespace phy_engine::verilog::digital
 
         inline bool parse_lvalue_ref(parser& p, compiled_module& m, lvalue_ref& out, bool mark_reg, bool allow_vector) noexcept
         {
+            if(p.accept_sym(u8'{'))
+            {
+                if(!allow_vector) { p.err(p.peek(), u8"concatenation lvalue is not allowed here"); }
+
+                out.k = lvalue_ref::kind::vector;
+                out.vector_signals.clear();
+
+                bool ok{true};
+                bool any{};
+                while(!p.eof())
+                {
+                    if(p.accept_sym(u8'}')) { break; }
+
+                    lvalue_ref part{};
+                    if(!parse_lvalue_ref(p, m, part, mark_reg, true))
+                    {
+                        ok = false;
+                        // best-effort recovery: skip until ',' or '}'
+                        while(!p.eof() && !p.accept_sym(u8',') && !p.accept_sym(u8'}')) { p.consume(); }
+                        if(p.accept_sym(u8'}')) { break; }
+                        continue;
+                    }
+                    any = true;
+
+                    if(part.k == lvalue_ref::kind::scalar)
+                    {
+                        if(part.scalar_signal != SIZE_MAX) { out.vector_signals.push_back(part.scalar_signal); }
+                    }
+                    else if(part.k == lvalue_ref::kind::vector)
+                    {
+                        out.vector_signals.reserve(out.vector_signals.size() + part.vector_signals.size());
+                        for(auto const sig: part.vector_signals) { out.vector_signals.push_back(sig); }
+                    }
+                    else
+                    {
+                        ok = false;
+                        p.err(p.peek(), u8"unsupported lvalue kind inside concatenation in this subset");
+                    }
+
+                    if(p.accept_sym(u8'}')) { break; }
+                    if(!p.accept_sym(u8','))
+                    {
+                        p.err(p.peek(), u8"expected ',' or '}' in concatenation lvalue");
+                        // best-effort recovery: seek to '}'
+                        while(!p.eof() && !p.accept_sym(u8'}')) { p.consume(); }
+                        break;
+                    }
+                }
+
+                if(!any)
+                {
+                    p.err(p.peek(), u8"empty concatenation lvalue is not allowed");
+                    return false;
+                }
+                if(out.vector_signals.empty())
+                {
+                    p.err(p.peek(), u8"concatenation lvalue has no bits");
+                    return false;
+                }
+                return ok;
+            }
+
             auto const name{p.expect_ident(u8"expected identifier")};
             if(name.empty()) { return false; }
 
