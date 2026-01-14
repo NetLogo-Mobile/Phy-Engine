@@ -186,7 +186,7 @@ static std::size_t estimate_required_cells(experiment const& ex, ::phy_engine::p
     return demand;
 }
 
-static void shrink_steps_to_fit_table(std::size_t required_cells,
+static void refine_steps_to_fit_table(std::size_t required_cells,
                                       bool generate_wires,
                                       ::phy_engine::phy_lab_wrapper::auto_layout::options& aopt)
 {
@@ -197,6 +197,7 @@ static void shrink_steps_to_fit_table(std::size_t required_cells,
     constexpr double table_extent = 1.0;
     constexpr double third = 1.0 / 3.0;
     constexpr double fill = 1.25;  // packing overhead
+    constexpr std::size_t kMaxGridCells = 2'000'000;
 
     double const span_x = 2.0 * table_extent;
     double const span_y = generate_wires ? (2.0 * table_extent * third) : (2.0 * table_extent);
@@ -212,12 +213,23 @@ static void shrink_steps_to_fit_table(std::size_t required_cells,
     // Reduce step sizes until there is enough grid capacity (or until we hit a reasonable minimum).
     for(std::size_t iter{}; iter < 200 && capacity(aopt.step_x, aopt.step_y) < target; ++iter)
     {
-        aopt.step_x *= 0.95;
-        aopt.step_y *= 0.95;
+        double next_x = aopt.step_x * 0.95;
+        double next_y = aopt.step_y * 0.95;
 
-        // Keep a sane minimum to avoid huge grids.
-        if(aopt.step_x < 0.005) aopt.step_x = 0.005;
-        if(aopt.step_y < 0.005) aopt.step_y = 0.005;
+        // Keep a low but safe minimum; finer grid -> more subcells to avoid pile-up.
+        next_x = std::max(next_x, 0.001);
+        next_y = std::max(next_y, 0.001);
+
+        auto const w = static_cast<std::size_t>(std::floor(span_x / next_x + 1e-12)) + 1;
+        auto const h = static_cast<std::size_t>(std::floor(span_y / next_y + 1e-12)) + 1;
+        if(w > 0 && h > 0 && w > (kMaxGridCells / h))
+        {
+            // Cannot refine further without making the grid too large.
+            break;
+        }
+
+        aopt.step_x = next_x;
+        aopt.step_y = next_y;
     }
 }
 
@@ -589,6 +601,15 @@ int main(int argc, char** argv)
         // Exclude boundary-placed IO elements from being treated as obstacles inside the layout grid.
         aopt.margin_x = 1e-6;
         aopt.margin_y = 1e-6;
+        // Finer grid => more available subcells (prevents pile-up without enlarging the desk).
+        aopt.step_x = 0.01;
+        aopt.step_y = 0.01;
+        if(aopt.mode == ::phy_engine::phy_lab_wrapper::auto_layout::mode::cluster)
+        {
+            // More sub-blocks / macro tiles for a chip-like feel.
+            aopt.cluster_max_nodes = 24;
+            aopt.cluster_channel_spacing = 2;
+        }
 
         // Defensive: if some converter path ever marks internal elements as non-participating, undo that here.
         for(auto const& e : r.ex.elements())
@@ -606,8 +627,8 @@ int main(int argc, char** argv)
         for(std::size_t attempt{}; attempt < 10; ++attempt)
         {
             // Keep everything within the fixed desk bounds: (-1,-1,0)~(1,1,0).
-            // If the layout region is too small for the number of elements, shrink the discretization step.
-            shrink_steps_to_fit_table(demand, generate_wires, aopt);
+            // If the layout region is too small for the number of elements, refine the discretization step.
+            refine_steps_to_fit_table(demand, generate_wires, aopt);
 
             // Re-place IO (fixed bounds, but this keeps the partition consistent).
             reposition_io_elements(r.ex, inputs, outputs, extent, generate_wires);
