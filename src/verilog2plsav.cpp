@@ -7,6 +7,7 @@
 #include <phy_engine/netlist/operation.h>
 
 #include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
+#include <phy_engine/phy_lab_wrapper/auto_layout/auto_layout.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -142,7 +143,10 @@ static void usage(char const* argv0)
     std::fprintf(stderr,
                  "usage: %s OUT.sav IN.v [--top TOP_MODULE]\n"
                  "  - Compiles Verilog (subset), synthesizes to PE netlist with optimizations,\n"
-                 "    then exports PhysicsLab .sav with IO auto-placement.\n",
+                 "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
+                 "options:\n"
+                 "  --layout fast|cluster|spectral|hier|force   Layout algorithm (default: fast)\n"
+                 "  --no-wires                                 Disable auto wire generation\n",
                  argv0);
 }
 
@@ -162,6 +166,20 @@ static bool has_flag(int argc, char** argv, std::string_view flag)
         if(std::string_view(argv[i]) == flag) { return true; }
     }
     return false;
+}
+
+static std::optional<phy_engine::phy_lab_wrapper::auto_layout::mode>
+parse_layout_mode(std::optional<std::string> const& s)
+{
+    using phy_engine::phy_lab_wrapper::auto_layout::mode;
+    if(!s) { return mode::fast; }
+    auto const& v = *s;
+    if(v == "fast" || v == "0") { return mode::fast; }
+    if(v == "cluster" || v == "1") { return mode::cluster; }
+    if(v == "spectral" || v == "2") { return mode::spectral; }
+    if(v == "hier" || v == "hierarchical" || v == "3") { return mode::hierarchical; }
+    if(v == "force" || v == "4") { return mode::force; }
+    return std::nullopt;
 }
 
 static ::phy_engine::verilog::digital::compiled_module const*
@@ -224,6 +242,14 @@ int main(int argc, char** argv)
     auto out_path = std::filesystem::path(argv[1]);
     auto in_path = std::filesystem::path(argv[2]);
     auto top_override = arg_after(argc, argv, "--top");
+    auto layout_mode_arg = arg_after(argc, argv, "--layout");
+    auto layout_mode = parse_layout_mode(layout_mode_arg);
+    if(!layout_mode)
+    {
+        std::fprintf(stderr, "error: invalid --layout value\n");
+        return 12;
+    }
+    bool const generate_wires = !has_flag(argc, argv, "--no-wires");
 
     using namespace phy_engine;
     using namespace phy_engine::verilog::digital;
@@ -334,14 +360,16 @@ int main(int argc, char** argv)
     // Export PE->PL (.sav): keep core elements at (0,0,0), place IO around it.
     ::phy_engine::phy_lab_wrapper::pe_to_pl::options popt{};
     popt.fixed_pos = {0.0, 0.0, 0.0};  // core stays here
-    popt.generate_wires = true;
+    popt.generate_wires = generate_wires;
     popt.keep_pl_macros = true;
 
-    constexpr double y_gap = 1.0 / 16.0;
-    constexpr double in_y_min = y_gap;
-    constexpr double in_y_max = 1.0;
-    constexpr double out_y_min = -1.0;
-    constexpr double out_y_max = -y_gap;
+    constexpr double third = 1.0 / 3.0;
+    double in_y_min = generate_wires ? third : (1.0 / 16.0);
+    double in_y_max = 1.0;
+    double out_y_min = -1.0;
+    double out_y_max = generate_wires ? -third : -(1.0 / 16.0);
+    double layout_y_min = generate_wires ? -third : -1.0;
+    double layout_y_max = generate_wires ? third : 1.0;
 
     popt.element_placer = [&](::phy_engine::phy_lab_wrapper::pe_to_pl::options::placement_context const& ctx)
         -> std::optional<phy_engine::phy_lab_wrapper::position> {
@@ -393,6 +421,32 @@ int main(int argc, char** argv)
 
     std::fprintf(stderr, "[verilog2plsav] pe_to_pl convert\n");
     auto r = ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt);
+
+    // Keep IO elements fixed for layout.
+    for(auto const& e : r.ex.elements())
+    {
+        auto const mid = e.data().value("ModelID", "");
+        if(mid == pl_model_id::logic_input || mid == pl_model_id::logic_output || mid == pl_model_id::eight_bit_input ||
+           mid == pl_model_id::eight_bit_display)
+        {
+            r.ex.get_element(e.identifier()).set_participate_in_layout(false);
+        }
+    }
+
+    // Auto-layout internal elements into the requested region.
+    {
+        ::phy_engine::phy_lab_wrapper::auto_layout::options aopt{};
+        aopt.mode = *layout_mode;
+        aopt.respect_fixed_elements = true;
+        aopt.small_element = {1, 1};
+        aopt.big_element = {2, 2};
+        (void)::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex,
+                                                                position{-1.0, layout_y_min, 0.0},
+                                                                position{1.0, layout_y_max, 0.0},
+                                                                0.0,
+                                                                aopt);
+    }
+
     r.ex.save(out_path, 2);
 
     if(!std::filesystem::exists(out_path))
