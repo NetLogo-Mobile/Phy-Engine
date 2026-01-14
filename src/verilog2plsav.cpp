@@ -314,6 +314,7 @@ int main(int argc, char** argv)
         .allow_multi_driver = false,
         .assume_binary_inputs = true,
         .optimize_wires = true,
+        .optimize_mul2 = true,
         .optimize_adders = true,
     };
 
@@ -402,4 +403,3 @@ int main(int argc, char** argv)
     std::fprintf(stderr, "[verilog2plsav] wrote %s\n", out_path.string().c_str());
     return 0;
 }
-
