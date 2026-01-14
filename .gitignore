@@ -17,3 +17,4 @@ test/**/*.exe
 !.github/*
 *.lnk
 .DS_Store
+*.sav

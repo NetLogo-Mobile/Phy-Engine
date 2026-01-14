@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -188,6 +189,8 @@ static std::size_t estimate_required_cells(experiment const& ex, ::phy_engine::p
 
 static void refine_steps_to_fit_table(std::size_t required_cells,
                                       bool generate_wires,
+                                      double min_step,
+                                      double fill,
                                       ::phy_engine::phy_lab_wrapper::auto_layout::options& aopt)
 {
     if(required_cells == 0) { return; }
@@ -196,8 +199,9 @@ static void refine_steps_to_fit_table(std::size_t required_cells,
     // The "desk" bounds are fixed to x/y in [-1, 1]. If wires are enabled, the middle third is the layout region.
     constexpr double table_extent = 1.0;
     constexpr double third = 1.0 / 3.0;
-    constexpr double fill = 1.25;  // packing overhead
     constexpr std::size_t kMaxGridCells = 2'000'000;
+    if(!std::isfinite(fill) || fill < 1.0) { fill = 1.0; }
+    if(!std::isfinite(min_step) || min_step <= 0.0) { min_step = 0.001; }
 
     double const span_x = 2.0 * table_extent;
     double const span_y = generate_wires ? (2.0 * table_extent * third) : (2.0 * table_extent);
@@ -209,6 +213,33 @@ static void refine_steps_to_fit_table(std::size_t required_cells,
         return w * h;
     };
 
+    auto grid_ok = [&](double step_x, double step_y) -> bool {
+        if(!(step_x > 0.0) || !(step_y > 0.0)) { return false; }
+        auto const w = static_cast<std::size_t>(std::floor(span_x / step_x + 1e-12)) + 1;
+        auto const h = static_cast<std::size_t>(std::floor(span_y / step_y + 1e-12)) + 1;
+        if(w == 0 || h == 0) { return false; }
+        if(w > (kMaxGridCells / h)) { return false; }
+        return true;
+    };
+
+    // Effective minimum step must also respect the max grid size.
+    double effective_min_step = std::max(min_step, 1e-9);
+    for(std::size_t guard{}; guard < 256 && !grid_ok(effective_min_step, effective_min_step); ++guard)
+    {
+        // Increase slightly until it fits (covers floor(+1) effects).
+        effective_min_step *= 1.02;
+    }
+
+    if(!grid_ok(aopt.step_x, aopt.step_y))
+    {
+        auto const safe = std::max(effective_min_step, 1e-6);
+        std::fprintf(stderr,
+                     "[verilog2plsav] warning: layout step too small; clamping step to %.6f to fit max grid\n",
+                     safe);
+        aopt.step_x = safe;
+        aopt.step_y = safe;
+    }
+
     double const target = static_cast<double>(required_cells) * fill;
     // Reduce step sizes until there is enough grid capacity (or until we hit a reasonable minimum).
     for(std::size_t iter{}; iter < 200 && capacity(aopt.step_x, aopt.step_y) < target; ++iter)
@@ -217,12 +248,10 @@ static void refine_steps_to_fit_table(std::size_t required_cells,
         double next_y = aopt.step_y * 0.95;
 
         // Keep a low but safe minimum; finer grid -> more subcells to avoid pile-up.
-        next_x = std::max(next_x, 0.001);
-        next_y = std::max(next_y, 0.001);
+        next_x = std::max(next_x, effective_min_step);
+        next_y = std::max(next_y, effective_min_step);
 
-        auto const w = static_cast<std::size_t>(std::floor(span_x / next_x + 1e-12)) + 1;
-        auto const h = static_cast<std::size_t>(std::floor(span_y / next_y + 1e-12)) + 1;
-        if(w > 0 && h > 0 && w > (kMaxGridCells / h))
+        if(!grid_ok(next_x, next_y))
         {
             // Cannot refine further without making the grid too large.
             break;
@@ -304,7 +333,13 @@ static void usage(char const* argv0)
                  "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
                  "options:\n"
                  "  --layout fast|cluster|spectral|hier|force   Layout algorithm (default: fast)\n"
-                 "  --no-wires                                 Disable auto wire generation\n",
+                 "  --no-wires                                 Disable auto wire generation\n"
+                 "  --layout-step STEP                         Layout grid step (default: 0.01)\n"
+                 "  --layout-min-step STEP                     Minimum step for auto-refine (default: 0.001)\n"
+                 "  --layout-fill FACTOR                       Capacity safety factor (>=1, default: 1.25)\n"
+                 "  --no-layout-refine                         Disable step auto-refinement\n"
+                 "  --cluster-max-nodes N                      Cluster macro max nodes (default: 24)\n"
+                 "  --cluster-channel-spacing N                Cluster macro spacing in cells (default: 2)\n",
                  argv0);
 }
 
@@ -324,6 +359,37 @@ static bool has_flag(int argc, char** argv, std::string_view flag)
         if(std::string_view(argv[i]) == flag) { return true; }
     }
     return false;
+}
+
+static std::optional<double> parse_double(std::string const& s)
+{
+    try
+    {
+        std::size_t idx{};
+        double v = std::stod(s, &idx);
+        if(idx != s.size()) { return std::nullopt; }
+        if(!std::isfinite(v)) { return std::nullopt; }
+        return v;
+    }
+    catch(...)
+    {
+        return std::nullopt;
+    }
+}
+
+static std::optional<std::size_t> parse_size(std::string const& s)
+{
+    try
+    {
+        std::size_t idx{};
+        auto v = std::stoull(s, &idx, 10);
+        if(idx != s.size()) { return std::nullopt; }
+        return static_cast<std::size_t>(v);
+    }
+    catch(...)
+    {
+        return std::nullopt;
+    }
 }
 
 static std::optional<phy_engine::phy_lab_wrapper::auto_layout::mode>
@@ -397,6 +463,8 @@ int main(int argc, char** argv)
         return (argc < 3) ? 2 : 0;
     }
 
+    try
+    {
     auto out_path = std::filesystem::path(argv[1]);
     auto in_path = std::filesystem::path(argv[2]);
     auto top_override = arg_after(argc, argv, "--top");
@@ -408,6 +476,67 @@ int main(int argc, char** argv)
         return 12;
     }
     bool const generate_wires = !has_flag(argc, argv, "--no-wires");
+    bool const layout_refine = !has_flag(argc, argv, "--no-layout-refine");
+
+    double layout_step = 0.01;
+    if(auto s = arg_after(argc, argv, "--layout-step"))
+    {
+        auto v = parse_double(*s);
+        if(!v || !(*v > 0.0))
+        {
+            std::fprintf(stderr, "error: invalid --layout-step\n");
+            return 13;
+        }
+        layout_step = *v;
+    }
+
+    double layout_min_step = 0.001;
+    if(auto s = arg_after(argc, argv, "--layout-min-step"))
+    {
+        auto v = parse_double(*s);
+        if(!v || !(*v > 0.0))
+        {
+            std::fprintf(stderr, "error: invalid --layout-min-step\n");
+            return 14;
+        }
+        layout_min_step = *v;
+    }
+
+    double layout_fill = 1.25;
+    if(auto s = arg_after(argc, argv, "--layout-fill"))
+    {
+        auto v = parse_double(*s);
+        if(!v || !(*v >= 1.0))
+        {
+            std::fprintf(stderr, "error: invalid --layout-fill (must be >= 1.0)\n");
+            return 15;
+        }
+        layout_fill = *v;
+    }
+
+    std::size_t cluster_max_nodes = 24;
+    if(auto s = arg_after(argc, argv, "--cluster-max-nodes"))
+    {
+        auto v = parse_size(*s);
+        if(!v || *v == 0)
+        {
+            std::fprintf(stderr, "error: invalid --cluster-max-nodes\n");
+            return 16;
+        }
+        cluster_max_nodes = *v;
+    }
+
+    std::size_t cluster_channel_spacing = 2;
+    if(auto s = arg_after(argc, argv, "--cluster-channel-spacing"))
+    {
+        auto v = parse_size(*s);
+        if(!v)
+        {
+            std::fprintf(stderr, "error: invalid --cluster-channel-spacing\n");
+            return 17;
+        }
+        cluster_channel_spacing = *v;
+    }
 
     using namespace phy_engine;
     using namespace phy_engine::verilog::digital;
@@ -602,13 +731,13 @@ int main(int argc, char** argv)
         aopt.margin_x = 1e-6;
         aopt.margin_y = 1e-6;
         // Finer grid => more available subcells (prevents pile-up without enlarging the desk).
-        aopt.step_x = 0.01;
-        aopt.step_y = 0.01;
+        aopt.step_x = layout_step;
+        aopt.step_y = layout_step;
         if(aopt.mode == ::phy_engine::phy_lab_wrapper::auto_layout::mode::cluster)
         {
             // More sub-blocks / macro tiles for a chip-like feel.
-            aopt.cluster_max_nodes = 24;
-            aopt.cluster_channel_spacing = 2;
+            aopt.cluster_max_nodes = cluster_max_nodes;
+            aopt.cluster_channel_spacing = cluster_channel_spacing;
         }
 
         // Defensive: if some converter path ever marks internal elements as non-participating, undo that here.
@@ -628,7 +757,10 @@ int main(int argc, char** argv)
         {
             // Keep everything within the fixed desk bounds: (-1,-1,0)~(1,1,0).
             // If the layout region is too small for the number of elements, refine the discretization step.
-            refine_steps_to_fit_table(demand, generate_wires, aopt);
+            if(layout_refine)
+            {
+                refine_steps_to_fit_table(demand, generate_wires, layout_min_step, layout_fill, aopt);
+            }
 
             // Re-place IO (fixed bounds, but this keeps the partition consistent).
             reposition_io_elements(r.ex, inputs, outputs, extent, generate_wires);
@@ -644,8 +776,11 @@ int main(int argc, char** argv)
 
             // If this mode fell back (e.g., cluster->fast) or there are still skipped elements, try again with smaller steps.
             if(st.skipped == 0 && st.mode == aopt.mode) { break; }
-            aopt.step_x *= 0.92;
-            aopt.step_y *= 0.92;
+            if(layout_refine)
+            {
+                aopt.step_x = std::max(aopt.step_x * 0.92, layout_min_step);
+                aopt.step_y = std::max(aopt.step_y * 0.92, layout_min_step);
+            }
         }
 
         std::fprintf(stderr,
@@ -670,4 +805,10 @@ int main(int argc, char** argv)
     }
     std::fprintf(stderr, "[verilog2plsav] wrote %s\n", out_path.string().c_str());
     return 0;
+    }
+    catch(std::exception const& e)
+    {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 99;
+    }
 }
