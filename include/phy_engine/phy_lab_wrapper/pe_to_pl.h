@@ -175,8 +175,12 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         pl_model_mapping m{};
         m.model_id = std::string(pl_model_id::multiplier);
         m.is_big_element = true;
-        // PE(MUL2): a0, a1, b0, b1, p0, p1, p2, p3  ->  PL(Multiplier): o_up..o_low, i_up..i_low
-        m.pe_to_pl_pin = {{0, 5}, {1, 4}, {2, 7}, {3, 6}, {4, 3}, {5, 2}, {6, 1}, {7, 0}};
+        // PE(MUL2): a0, a1, b0, b1, p0, p1, p2, p3
+        // PL(Multiplier) pin order (PhysicsLab):
+        //   outputs: 0=Q1, 1=Q2, 2=Q3, 3=Q4
+        //   inputs : 4=B1, 5=B2, 6=A1, 7=A2
+        // Note: Earlier versions used a different assumed pin order and produced swapped A/B and reversed Q bits.
+        m.pe_to_pl_pin = {{0, 6}, {1, 7}, {2, 4}, {3, 5}, {4, 0}, {5, 1}, {6, 2}, {7, 3}};
         return m;
     }
 
@@ -336,6 +340,18 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
                 auto const name_u8 = m->ptr->get_model_name();
                 auto const name = detail::u8sv_to_string(name_u8);
                 throw std::runtime_error("pe_to_pl: unsupported conversion for PE digital model: " + name);
+            }
+
+            // Drop dangling Logic Inputs (PE INPUT models with no connections).
+            // This commonly happens after aggressive synthesis/optimization where unused constants/ports remain.
+            if(mapping.model_id == pl_model_id::logic_input)
+            {
+                auto pv = m->ptr->generate_pin_view();
+                if(pv.size >= 1)
+                {
+                    auto const* node = pv.pins[0].nodes;
+                    if(node == nullptr || node->pins.size() <= 1) { continue; }
+                }
             }
 
             position pos = opt.fixed_pos;

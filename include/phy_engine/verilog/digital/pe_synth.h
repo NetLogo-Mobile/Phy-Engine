@@ -557,6 +557,8 @@ namespace phy_engine::verilog::digital
             ::std::unordered_map<::phy_engine::model::node_t*, bool> driver_is_non_input{};
             driver_is_named_input.reserve(1 << 14);
             driver_is_non_input.reserve(1 << 14);
+            ::std::unordered_map<::phy_engine::model::node_t*, ::fast_io::u8string_view> named_input_name{};
+            named_input_name.reserve(1 << 14);
 
             // Best-effort pin direction classification for the whole netlist.
             for(auto& blk : nl.models)
@@ -578,6 +580,7 @@ namespace phy_engine::verilog::digital
                             if(name == u8"INPUT" && !mb->name.empty())
                             {
                                 driver_is_named_input[n] = true;
+                                named_input_name.emplace(n, ::fast_io::u8string_view{mb->name.data(), mb->name.size()});
                             }
                             else if(name != u8"INPUT")
                             {
@@ -734,8 +737,49 @@ namespace phy_engine::verilog::digital
                     auto* const a0 = (b1 == s10) ? s11 : s10;
                     auto* const b0 = (a1 == s20) ? s21 : s20;
 
+                    // Deterministically assign operand A/B based on the driving named INPUT instance names.
+                    // Multiplication is commutative, but downstream export (e.g. PhysicsLab Multiplier) has labeled A/B pins.
+                    auto base_of_named_input = [&](::phy_engine::model::node_t* n) noexcept -> ::fast_io::u8string_view
+                    {
+                        auto it = named_input_name.find(n);
+                        if(it == named_input_name.end()) { return {}; }
+                        auto const full = it->second;
+                        for(std::size_t i{}; i < full.size(); ++i)
+                        {
+                            if(full[i] == u8'[') { return ::fast_io::u8string_view{full.data(), i}; }
+                        }
+                        return full;
+                    };
+
+                    auto const base_a0 = base_of_named_input(a0);
+                    auto const base_a1 = base_of_named_input(a1);
+                    auto const base_b0 = base_of_named_input(b0);
+                    auto const base_b1 = base_of_named_input(b1);
+
+                    auto* aa0 = a0;
+                    auto* aa1 = a1;
+                    auto* bb0 = b0;
+                    auto* bb1 = b1;
+
+                    if(!base_a0.empty() && base_a0 == base_a1 && !base_b0.empty() && base_b0 == base_b1)
+                    {
+                        // Prefer explicit "a"/"b" naming; otherwise choose stable (lexicographically smaller) base as operand A.
+                        auto desired_a = base_a0;
+                        if(base_a0 != u8"a" && base_b0 == u8"a") { desired_a = base_b0; }
+                        else if(base_a0 != u8"a" && base_b0 != u8"a")
+                        {
+                            desired_a = (base_a0 <= base_b0) ? base_a0 : base_b0;
+                        }
+
+                        if(base_a0 != desired_a)
+                        {
+                            ::std::swap(aa0, bb0);
+                            ::std::swap(aa1, bb1);
+                        }
+                    }
+
                     // p0 = AND(a0, b0)
-                    auto* const p0_out = out_of_and(a0, b0);
+                    auto* const p0_out = out_of_and(aa0, bb0);
                     if(p0_out == nullptr) { continue; }
                     auto const p0_idx_opt = gate_idx_for_out(p0_out);
                     if(!p0_idx_opt) { continue; }
@@ -778,10 +822,10 @@ namespace phy_engine::verilog::digital
                         if(m == nullptr) { return false; }
 
                         // Inputs: a0,a1,b0,b1; Outputs: p0,p1,p2,p3
-                        if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a0)) { return false; }
-                        if(!::phy_engine::netlist::add_to_node(nl, *m, 1, *a1)) { return false; }
-                        if(!::phy_engine::netlist::add_to_node(nl, *m, 2, *b0)) { return false; }
-                        if(!::phy_engine::netlist::add_to_node(nl, *m, 3, *b1)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *aa0)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 1, *aa1)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 2, *bb0)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 3, *bb1)) { return false; }
 
                         if(!::phy_engine::netlist::add_to_node(nl, *m, 4, *p0_out)) { return false; }
                         if(!::phy_engine::netlist::add_to_node(nl, *m, 5, *g_p1.out)) { return false; }
