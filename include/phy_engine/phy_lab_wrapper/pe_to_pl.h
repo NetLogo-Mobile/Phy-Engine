@@ -67,6 +67,9 @@ struct result
     experiment ex{};
     std::vector<net> nets{};
     std::vector<std::string> warnings{};
+    // Best-effort mapping for downstream tooling (e.g., multi-pass layout): PE model ptr -> PL element id.
+    // Only contains entries for PE models that were actually converted into PL elements.
+    std::unordered_map<::phy_engine::model::model_base const*, std::string> element_by_pe_model{};
 };
 
 namespace detail
@@ -373,6 +376,7 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
             }
 
             auto id = out.ex.add_circuit_element(mapping.model_id, pos, opt.element_xyz_coords, mapping.is_big_element);
+            out.element_by_pe_model.emplace(m, id);
             model_map.emplace(m, mapped_element{std::move(id), std::move(mapping.pe_to_pl_pin)});
 
             detail::try_set_pl_properties_for_element(out.ex, model_map[m].element_id, *m, out.warnings);
