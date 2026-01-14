@@ -186,31 +186,39 @@ static std::size_t estimate_required_cells(experiment const& ex, ::phy_engine::p
     return demand;
 }
 
-static double choose_extent(std::size_t required_cells,
-                            bool generate_wires,
-                            ::phy_engine::phy_lab_wrapper::auto_layout::options const& aopt)
+static void shrink_steps_to_fit_table(std::size_t required_cells,
+                                      bool generate_wires,
+                                      ::phy_engine::phy_lab_wrapper::auto_layout::options& aopt)
 {
-    if(required_cells == 0) { return 1.0; }
+    if(required_cells == 0) { return; }
+    if(!std::isfinite(aopt.step_x) || !std::isfinite(aopt.step_y) || aopt.step_x <= 0.0 || aopt.step_y <= 0.0) { return; }
 
-    constexpr double kThird = 1.0 / 3.0;
-    double const y_factor = generate_wires ? kThird : 1.0;  // layout_y_span = 2*extent*y_factor
-    double const fill = 1.25;                               // packing overhead
+    // The "desk" bounds are fixed to x/y in [-1, 1]. If wires are enabled, the middle third is the layout region.
+    constexpr double table_extent = 1.0;
+    constexpr double third = 1.0 / 3.0;
+    constexpr double fill = 1.25;  // packing overhead
 
-    double extent = std::sqrt((static_cast<double>(required_cells) * fill * aopt.step_x * aopt.step_y) / (4.0 * y_factor));
-    if(!std::isfinite(extent) || extent < 1.0) { extent = 1.0; }
+    double const span_x = 2.0 * table_extent;
+    double const span_y = generate_wires ? (2.0 * table_extent * third) : (2.0 * table_extent);
 
-    auto capacity = [&](double ext) -> double {
-        auto const w = std::floor((2.0 * ext) / aopt.step_x + 1e-12) + 1.0;
-        auto const h = std::floor((2.0 * ext * y_factor) / aopt.step_y + 1e-12) + 1.0;
+    auto capacity = [&](double step_x, double step_y) -> double {
+        if(!(step_x > 0.0) || !(step_y > 0.0)) { return 0.0; }
+        auto const w = std::floor(span_x / step_x + 1e-12) + 1.0;
+        auto const h = std::floor(span_y / step_y + 1e-12) + 1.0;
         return w * h;
     };
 
     double const target = static_cast<double>(required_cells) * fill;
-    for(std::size_t iter{}; iter < 200 && capacity(extent) < target; ++iter)
+    // Reduce step sizes until there is enough grid capacity (or until we hit a reasonable minimum).
+    for(std::size_t iter{}; iter < 200 && capacity(aopt.step_x, aopt.step_y) < target; ++iter)
     {
-        extent *= 1.05;
+        aopt.step_x *= 0.95;
+        aopt.step_y *= 0.95;
+
+        // Keep a sane minimum to avoid huge grids.
+        if(aopt.step_x < 0.005) aopt.step_x = 0.005;
+        if(aopt.step_y < 0.005) aopt.step_y = 0.005;
     }
-    return extent;
 }
 
 static void reposition_io_elements(experiment& ex,
@@ -504,7 +512,7 @@ int main(int argc, char** argv)
     // The export coordinate system uses a symmetric "extent" for convenience.
     // When wires are enabled, the top/bottom thirds are reserved for IO and the middle third is used for layout.
     constexpr double third = 1.0 / 3.0;
-    double extent = 1.0;
+    constexpr double extent = 1.0;
     double const io_gap = generate_wires ? ::phy_engine::phy_lab_wrapper::element_xyz::y_unit : 0.0;
     double in_y_min = generate_wires ? ((extent * third) + io_gap) : (extent * (1.0 / 16.0));
     double in_y_max = extent;
@@ -593,12 +601,15 @@ int main(int argc, char** argv)
         // Auto-scale extent so the middle-third layout region has enough capacity. Otherwise, skipped elements
         // stay at `fixed_pos` (0,0,0) and pile up visually.
         auto const demand = estimate_required_cells(r.ex, aopt);
-        extent = choose_extent(demand, generate_wires, aopt);
 
         ::phy_engine::phy_lab_wrapper::auto_layout::stats st{};
-        for(std::size_t attempt{}; attempt < 8; ++attempt)
+        for(std::size_t attempt{}; attempt < 10; ++attempt)
         {
-            // Re-place IO after extent scaling (the initial placement assumed extent=1).
+            // Keep everything within the fixed desk bounds: (-1,-1,0)~(1,1,0).
+            // If the layout region is too small for the number of elements, shrink the discretization step.
+            shrink_steps_to_fit_table(demand, generate_wires, aopt);
+
+            // Re-place IO (fixed bounds, but this keeps the partition consistent).
             reposition_io_elements(r.ex, inputs, outputs, extent, generate_wires);
 
             double const layout_y_min = generate_wires ? (-extent * third) : (-extent);
@@ -610,15 +621,18 @@ int main(int argc, char** argv)
                                                                     0.0,
                                                                     aopt);
 
-            // `cluster` mode may fall back to `fast` when macro placement fails. Retry with a larger extent.
+            // If this mode fell back (e.g., cluster->fast) or there are still skipped elements, try again with smaller steps.
             if(st.skipped == 0 && st.mode == aopt.mode) { break; }
-            extent *= 1.15;
+            aopt.step_x *= 0.92;
+            aopt.step_y *= 0.92;
         }
 
         std::fprintf(stderr,
-                     "[verilog2plsav] layout=%d extent=%.3f grid=%zux%zu placed=%zu skipped=%zu fixed=%zu\n",
+                     "[verilog2plsav] layout=%d extent=%.3f step=(%.4f,%.4f) grid=%zux%zu placed=%zu skipped=%zu fixed=%zu\n",
                      static_cast<int>(st.mode),
                      extent,
+                     aopt.step_x,
+                     aopt.step_y,
                      st.grid_w,
                      st.grid_h,
                      st.placed,
