@@ -96,7 +96,8 @@ static group_layout make_groups(std::vector<std::string> const& names)
 static double row_center_y(std::size_t row, std::size_t nrows, double y_min, double y_max)
 {
     if(nrows <= 1) { return 0.5 * (y_min + y_max); }
-    double const t = static_cast<double>(row) / static_cast<double>(nrows - 1);
+    // Use row-centers (avoid placing IO exactly on the boundary of the top/bottom third).
+    double const t = (static_cast<double>(row) + 0.5) / static_cast<double>(nrows);
     return y_max - (y_max - y_min) * t;
 }
 
@@ -247,22 +248,37 @@ int main()
     auto rom_data = make_bus(nl, 16);
     auto ir = make_bus(nl, 16);
     auto opcode = make_bus(nl, 4);
-    auto reg_sel = make_bus(nl, 2);
+    auto reg_dst = make_bus(nl, 2);
+    auto reg_src = make_bus(nl, 2);
     auto imm8 = make_bus(nl, 8);
     auto imm16 = make_bus(nl, 16);
-    auto rf_rdata = make_bus(nl, 16);
+    auto rf_waddr = make_bus(nl, 2);
+    auto rf_raddr_a = make_bus(nl, 2);
+    auto rf_raddr_b = make_bus(nl, 2);
+    auto rf_rdata_a = make_bus(nl, 16);
+    auto rf_rdata_b = make_bus(nl, 16);
+    auto alu_b = make_bus(nl, 16);
     auto alu_y = make_bus(nl, 16);
     auto alu_op = make_bus(nl, 3);
 
     auto& n_pc_we = ::phy_engine::netlist::create_node(nl);
     auto& n_reg_we = ::phy_engine::netlist::create_node(nl);
-    auto& n_flags_we = ::phy_engine::netlist::create_node(nl);
+    auto& n_alu_b_sel = ::phy_engine::netlist::create_node(nl);
+    auto& n_flags_we_z = ::phy_engine::netlist::create_node(nl);
+    auto& n_flags_we_c = ::phy_engine::netlist::create_node(nl);
+    auto& n_flags_we_s = ::phy_engine::netlist::create_node(nl);
     auto& n_halt = ::phy_engine::netlist::create_node(nl);
     auto& n_alu_zf = ::phy_engine::netlist::create_node(nl);
+    auto& n_alu_cf = ::phy_engine::netlist::create_node(nl);
+    auto& n_alu_sf = ::phy_engine::netlist::create_node(nl);
     auto& n_flag_z = ::phy_engine::netlist::create_node(nl);
+    auto& n_flag_c = ::phy_engine::netlist::create_node(nl);
+    auto& n_flag_s = ::phy_engine::netlist::create_node(nl);
 
     auto dbg_r0 = make_bus(nl, 16);
     auto dbg_r1 = make_bus(nl, 16);
+    auto dbg_r2 = make_bus(nl, 16);
+    auto dbg_r3 = make_bus(nl, 16);
 
     // Convert each Verilog module independently to PE primitives and link via shared nodes.
     struct layer
@@ -271,7 +287,7 @@ int main()
         std::vector<::phy_engine::model::model_base const*> pe_models{};
     };
     std::vector<layer> layers{};
-    layers.reserve(9);
+    layers.reserve(12);
 
     auto synth_layer = [&](char const* layer_name,
                            std::filesystem::path const& vpath,
@@ -325,30 +341,42 @@ int main()
         synth_layer("ir16", dir / "ir16.v", u8"ir16", ports);
     }
 
-    // decode16(instr[15:0], opcode[3:0], reg_sel[1:0], imm8[7:0])
+    // decode16(instr[15:0], opcode[3:0], reg_dst[1:0], reg_src[1:0], imm8[7:0])
     {
         std::vector<::phy_engine::model::node_t*> ports{};
-        ports.reserve(30);
+        ports.reserve(32);
         for(auto* n : ir) { ports.push_back(n); }
         for(auto* n : opcode) { ports.push_back(n); }
-        for(auto* n : reg_sel) { ports.push_back(n); }
+        for(auto* n : reg_dst) { ports.push_back(n); }
+        for(auto* n : reg_src) { ports.push_back(n); }
         for(auto* n : imm8) { ports.push_back(n); }
         synth_layer("decode16", dir / "decode16.v", u8"decode16", ports);
     }
 
-    // control16(opcode, reg_sel, imm8, pc, flag_z, pc_next, pc_we, reg_we, flags_we, alu_op, halt)
+    // control16(opcode, reg_dst, reg_src, imm8, pc, flag_z, flag_c, flag_s,
+    //           pc_next, pc_we, reg_we, rf_waddr, rf_raddr_a, rf_raddr_b, alu_b_sel,
+    //           flags_we_z, flags_we_c, flags_we_s, alu_op, halt)
     {
         std::vector<::phy_engine::model::node_t*> ports{};
-        ports.reserve(38);
+        ports.reserve(51);
         for(auto* n : opcode) { ports.push_back(n); }
-        for(auto* n : reg_sel) { ports.push_back(n); }
+        for(auto* n : reg_dst) { ports.push_back(n); }
+        for(auto* n : reg_src) { ports.push_back(n); }
         for(auto* n : imm8) { ports.push_back(n); }
         for(auto* n : pc) { ports.push_back(n); }
         ports.push_back(&n_flag_z);
+        ports.push_back(&n_flag_c);
+        ports.push_back(&n_flag_s);
         for(auto* n : pc_next) { ports.push_back(n); }
         ports.push_back(&n_pc_we);
         ports.push_back(&n_reg_we);
-        ports.push_back(&n_flags_we);
+        for(auto* n : rf_waddr) { ports.push_back(n); }
+        for(auto* n : rf_raddr_a) { ports.push_back(n); }
+        for(auto* n : rf_raddr_b) { ports.push_back(n); }
+        ports.push_back(&n_alu_b_sel);
+        ports.push_back(&n_flags_we_z);
+        ports.push_back(&n_flags_we_c);
+        ports.push_back(&n_flags_we_s);
         for(auto* n : alu_op) { ports.push_back(n); }
         ports.push_back(&n_halt);
         synth_layer("control16", dir / "control16.v", u8"control16", ports);
@@ -363,47 +391,83 @@ int main()
         synth_layer("imm_ext8_to_16", dir / "imm_ext8_to_16.v", u8"imm_ext8_to_16", ports);
     }
 
-    // regfile4x16(clk,rst_n,we,addr[1:0],wdata[15:0],rdata[15:0],dbg_r0,dbg_r1,dbg_r2,dbg_r3)
+    // regfile4x16(clk,rst_n,we,waddr[1:0],wdata[15:0],raddr_a[1:0],raddr_b[1:0],
+    //            rdata_a[15:0],rdata_b[15:0],dbg_r0,dbg_r1,dbg_r2,dbg_r3)
     {
         std::vector<::phy_engine::model::node_t*> ports{};
-        ports.reserve(101);
+        ports.reserve(121);
         ports.push_back(&nclk);
         ports.push_back(&nrstn);
         ports.push_back(&n_reg_we);
-        for(auto* n : reg_sel) { ports.push_back(n); }
+        for(auto* n : rf_waddr) { ports.push_back(n); }
         for(auto* n : alu_y) { ports.push_back(n); }
-        for(auto* n : rf_rdata) { ports.push_back(n); }
+        for(auto* n : rf_raddr_a) { ports.push_back(n); }
+        for(auto* n : rf_raddr_b) { ports.push_back(n); }
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : rf_rdata_b) { ports.push_back(n); }
         for(auto* n : dbg_r0) { ports.push_back(n); }
         for(auto* n : dbg_r1) { ports.push_back(n); }
-        // dbg_r2/dbg_r3 are omitted from chip-level pins but still synthesized (left unconnected here by wiring to dummy nodes).
-        auto dbg_r2 = make_bus(nl, 16);
-        auto dbg_r3 = make_bus(nl, 16);
         for(auto* n : dbg_r2) { ports.push_back(n); }
         for(auto* n : dbg_r3) { ports.push_back(n); }
         synth_layer("regfile4x16", dir / "regfile4x16.v", u8"regfile4x16", ports);
     }
 
-    // flag1(clk,rst_n,we,d,q)
+    // mux16(sel, a[15:0], b[15:0], y[15:0])
     {
         std::vector<::phy_engine::model::node_t*> ports{};
-        ports.reserve(5);
-        ports.push_back(&nclk);
-        ports.push_back(&nrstn);
-        ports.push_back(&n_flags_we);
-        ports.push_back(&n_alu_zf);
-        ports.push_back(&n_flag_z);
-        synth_layer("flag1", dir / "flag1.v", u8"flag1", ports);
+        ports.reserve(49);
+        ports.push_back(&n_alu_b_sel);
+        for(auto* n : imm16) { ports.push_back(n); }
+        for(auto* n : rf_rdata_b) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
+        synth_layer("mux16", dir / "mux16.v", u8"mux16", ports);
     }
 
-    // alu16(op[2:0],a[15:0],b[15:0],y[15:0],zf)
+    // flag1(clk,rst_n,we,d,q)  (Z/C/S flags)
+    {
+        {
+            std::vector<::phy_engine::model::node_t*> ports{};
+            ports.reserve(5);
+            ports.push_back(&nclk);
+            ports.push_back(&nrstn);
+            ports.push_back(&n_flags_we_z);
+            ports.push_back(&n_alu_zf);
+            ports.push_back(&n_flag_z);
+            synth_layer("flag_z", dir / "flag1.v", u8"flag1", ports);
+        }
+        {
+            std::vector<::phy_engine::model::node_t*> ports{};
+            ports.reserve(5);
+            ports.push_back(&nclk);
+            ports.push_back(&nrstn);
+            ports.push_back(&n_flags_we_c);
+            ports.push_back(&n_alu_cf);
+            ports.push_back(&n_flag_c);
+            synth_layer("flag_c", dir / "flag1.v", u8"flag1", ports);
+        }
+        {
+            std::vector<::phy_engine::model::node_t*> ports{};
+            ports.reserve(5);
+            ports.push_back(&nclk);
+            ports.push_back(&nrstn);
+            ports.push_back(&n_flags_we_s);
+            ports.push_back(&n_alu_sf);
+            ports.push_back(&n_flag_s);
+            synth_layer("flag_s", dir / "flag1.v", u8"flag1", ports);
+        }
+    }
+
+    // alu16(op[2:0],a[15:0],b[15:0],y[15:0],zf,cf,sf)
     {
         std::vector<::phy_engine::model::node_t*> ports{};
-        ports.reserve(52);
+        ports.reserve(54);
         for(auto* n : alu_op) { ports.push_back(n); }
-        for(auto* n : rf_rdata) { ports.push_back(n); }
-        for(auto* n : imm16) { ports.push_back(n); }
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
         for(auto* n : alu_y) { ports.push_back(n); }
         ports.push_back(&n_alu_zf);
+        ports.push_back(&n_alu_cf);
+        ports.push_back(&n_alu_sf);
         synth_layer("alu16", dir / "alu16.v", u8"alu16", ports);
     }
 
@@ -435,7 +499,8 @@ int main()
     // Convert to PhysicsLab experiment with 3D coordinates + wires.
     ::phy_engine::phy_lab_wrapper::pe_to_pl::options popt{};
     popt.fixed_pos = {0.0, 0.0, 0.0};
-    popt.element_xyz_coords = true;
+    // Use native coordinates so IO spans the full [-1,1] range as requested; PhysicsLab stores positions as "x,z,y".
+    popt.element_xyz_coords = false;
     popt.generate_wires = true;
     popt.keep_pl_macros = true;
 
@@ -569,8 +634,11 @@ int main()
     }
 
     // Save.
+    // Keep numbers short to shrink .sav size (layout grid is at most 0.001 anyway).
+    r.ex.set_xyz_precision(2);
     auto const out_path = std::filesystem::path("x86_16_multi_module_3d.sav");
-    r.ex.save(out_path, 2);
+    // Keep the .sav small for sharing/publishing.
+    r.ex.save(out_path, -1);
     if(!std::filesystem::exists(out_path))
     {
         std::fprintf(stderr, "error: failed to write %s\n", out_path.string().c_str());

@@ -74,6 +74,7 @@ int main()
     auto const ctl_s = read_file_text(dir / "control16.v");
     auto const imm_s = read_file_text(dir / "imm_ext8_to_16.v");
     auto const rf_s = read_file_text(dir / "regfile4x16.v");
+    auto const mux_s = read_file_text(dir / "mux16.v");
     auto const alu_s = read_file_text(dir / "alu16.v");
     auto const flg_s = read_file_text(dir / "flag1.v");
 
@@ -105,13 +106,22 @@ int main()
     auto [m_imm, p_imm] = add_model(nl, ::phy_engine::model::make_verilog_module(
                                        ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(imm_s.data()), imm_s.size()},
                                        u8"imm_ext8_to_16"));
+    auto [m_mux, p_mux] = add_model(nl, ::phy_engine::model::make_verilog_module(
+                                       ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(mux_s.data()), mux_s.size()},
+                                       u8"mux16"));
     auto [m_rf, p_rf] = add_model(nl, ::phy_engine::model::make_verilog_module(
                                       ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(rf_s.data()), rf_s.size()},
                                       u8"regfile4x16"));
-    auto [m_flg, p_flg] = add_model(nl, ::phy_engine::model::make_verilog_module(
+    auto [m_flg_z, p_flg_z] = add_model(nl, ::phy_engine::model::make_verilog_module(
+                                            ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(flg_s.data()), flg_s.size()},
+                                            u8"flag1"));
+    auto [m_flg_c, p_flg_c] = add_model(nl, ::phy_engine::model::make_verilog_module(
+                                            ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(flg_s.data()), flg_s.size()},
+                                            u8"flag1"));
+    auto [m_flg_s, p_flg_s] = add_model(nl, ::phy_engine::model::make_verilog_module(
                                        ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(flg_s.data()), flg_s.size()},
                                        u8"flag1"));
-    // Ensure the flag register samples the *pre-edge* ALU ZF (before ALU recomputes from post-write state).
+    // Ensure flag registers sample the *pre-edge* ALU flags (before ALU recomputes from post-write state).
     auto [m_alu, p_alu] = add_model(nl, ::phy_engine::model::make_verilog_module(
                                        ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(alu_s.data()), alu_s.size()},
                                        u8"alu16"));
@@ -124,12 +134,15 @@ int main()
     (void)p_dec;
     (void)p_ctl;
     (void)p_imm;
+    (void)p_mux;
     (void)p_rf;
-    (void)p_flg;
+    (void)p_flg_z;
+    (void)p_flg_c;
+    (void)p_flg_s;
     (void)p_alu;
 
-    if(m_pc == nullptr || m_rom == nullptr || m_ir == nullptr || m_dec == nullptr || m_ctl == nullptr || m_imm == nullptr || m_rf == nullptr ||
-       m_alu == nullptr || m_flg == nullptr)
+    if(m_pc == nullptr || m_rom == nullptr || m_ir == nullptr || m_dec == nullptr || m_ctl == nullptr || m_imm == nullptr || m_mux == nullptr ||
+       m_rf == nullptr || m_alu == nullptr || m_flg_z == nullptr || m_flg_c == nullptr || m_flg_s == nullptr)
     {
         return 2;
     }
@@ -146,19 +159,32 @@ int main()
     auto rom_data = make_bus(nl, 16);
     auto ir = make_bus(nl, 16);
     auto opcode = make_bus(nl, 4);
-    auto reg_sel = make_bus(nl, 2);
+    auto reg_dst = make_bus(nl, 2);
+    auto reg_src = make_bus(nl, 2);
     auto imm8 = make_bus(nl, 8);
     auto imm16 = make_bus(nl, 16);
-    auto rf_rdata = make_bus(nl, 16);
+    auto rf_waddr = make_bus(nl, 2);
+    auto rf_raddr_a = make_bus(nl, 2);
+    auto rf_raddr_b = make_bus(nl, 2);
+    auto rf_rdata_a = make_bus(nl, 16);
+    auto rf_rdata_b = make_bus(nl, 16);
+    auto alu_b = make_bus(nl, 16);
     auto alu_y = make_bus(nl, 16);
     auto alu_op = make_bus(nl, 3);
 
     auto& n_pc_we = create_node(nl);
     auto& n_reg_we = create_node(nl);
-    auto& n_flags_we = create_node(nl);
+    auto& n_alu_b_sel = create_node(nl);
+    auto& n_flags_we_z = create_node(nl);
+    auto& n_flags_we_c = create_node(nl);
+    auto& n_flags_we_s = create_node(nl);
     auto& n_halt = create_node(nl);
     auto& n_alu_zf = create_node(nl);
+    auto& n_alu_cf = create_node(nl);
+    auto& n_alu_sf = create_node(nl);
     auto& n_flag_z = create_node(nl);
+    auto& n_flag_c = create_node(nl);
+    auto& n_flag_s = create_node(nl);
 
     auto dbg_r0 = make_bus(nl, 16);
     auto dbg_r1 = make_bus(nl, 16);
@@ -185,54 +211,90 @@ int main()
     connect_bus(nl, *m_ir, 2, rom_data);
     connect_bus(nl, *m_ir, 18, ir);
 
-    // decode16(instr[15:0], opcode[3:0], reg_sel[1:0], imm8[7:0])
+    // decode16(instr[15:0], opcode[3:0], reg_dst[1:0], reg_src[1:0], imm8[7:0])
     connect_bus(nl, *m_dec, 0, ir);
     connect_bus(nl, *m_dec, 16, opcode);
-    connect_bus(nl, *m_dec, 20, reg_sel);
-    connect_bus(nl, *m_dec, 22, imm8);
+    connect_bus(nl, *m_dec, 20, reg_dst);
+    connect_bus(nl, *m_dec, 22, reg_src);
+    connect_bus(nl, *m_dec, 24, imm8);
 
-    // control16(opcode, reg_sel, imm8, pc, flag_z, pc_next, pc_we, reg_we, flags_we, alu_op, halt)
+    // control16(opcode, reg_dst, reg_src, imm8, pc, flag_z, flag_c, flag_s,
+    //           pc_next, pc_we, reg_we, rf_waddr, rf_raddr_a, rf_raddr_b, alu_b_sel,
+    //           flags_we_z, flags_we_c, flags_we_s, alu_op, halt)
     connect_bus(nl, *m_ctl, 0, opcode);
-    connect_bus(nl, *m_ctl, 4, reg_sel);
-    connect_bus(nl, *m_ctl, 6, imm8);
-    connect_bus(nl, *m_ctl, 14, pc);
-    add_to_node(nl, *m_ctl, 22, n_flag_z);
-    connect_bus(nl, *m_ctl, 23, pc_next);
-    add_to_node(nl, *m_ctl, 31, n_pc_we);
-    add_to_node(nl, *m_ctl, 32, n_reg_we);
-    add_to_node(nl, *m_ctl, 33, n_flags_we);
-    connect_bus(nl, *m_ctl, 34, alu_op);
-    add_to_node(nl, *m_ctl, 37, n_halt);
+    connect_bus(nl, *m_ctl, 4, reg_dst);
+    connect_bus(nl, *m_ctl, 6, reg_src);
+    connect_bus(nl, *m_ctl, 8, imm8);
+    connect_bus(nl, *m_ctl, 16, pc);
+    add_to_node(nl, *m_ctl, 24, n_flag_z);
+    add_to_node(nl, *m_ctl, 25, n_flag_c);
+    add_to_node(nl, *m_ctl, 26, n_flag_s);
+    connect_bus(nl, *m_ctl, 27, pc_next);
+    add_to_node(nl, *m_ctl, 35, n_pc_we);
+    add_to_node(nl, *m_ctl, 36, n_reg_we);
+    connect_bus(nl, *m_ctl, 37, rf_waddr);
+    connect_bus(nl, *m_ctl, 39, rf_raddr_a);
+    connect_bus(nl, *m_ctl, 41, rf_raddr_b);
+    add_to_node(nl, *m_ctl, 43, n_alu_b_sel);
+    add_to_node(nl, *m_ctl, 44, n_flags_we_z);
+    add_to_node(nl, *m_ctl, 45, n_flags_we_c);
+    add_to_node(nl, *m_ctl, 46, n_flags_we_s);
+    connect_bus(nl, *m_ctl, 47, alu_op);
+    add_to_node(nl, *m_ctl, 50, n_halt);
 
     // imm_ext8_to_16(imm8[7:0], imm16[15:0])
     connect_bus(nl, *m_imm, 0, imm8);
     connect_bus(nl, *m_imm, 8, imm16);
 
-    // regfile4x16(clk,rst_n,we,addr[1:0],wdata[15:0],rdata[15:0],dbg_r0,dbg_r1,dbg_r2,dbg_r3)
+    // regfile4x16(clk,rst_n,we,waddr[1:0],wdata[15:0],raddr_a[1:0],raddr_b[1:0],
+    //            rdata_a[15:0],rdata_b[15:0],dbg_r0,dbg_r1,dbg_r2,dbg_r3)
     add_to_node(nl, *m_rf, 0, nclk);
     add_to_node(nl, *m_rf, 1, nrstn);
     add_to_node(nl, *m_rf, 2, n_reg_we);
-    connect_bus(nl, *m_rf, 3, reg_sel);
+    connect_bus(nl, *m_rf, 3, rf_waddr);
     connect_bus(nl, *m_rf, 5, alu_y);
-    connect_bus(nl, *m_rf, 21, rf_rdata);
-    connect_bus(nl, *m_rf, 37, dbg_r0);
-    connect_bus(nl, *m_rf, 53, dbg_r1);
-    connect_bus(nl, *m_rf, 69, dbg_r2);
-    connect_bus(nl, *m_rf, 85, dbg_r3);
+    connect_bus(nl, *m_rf, 21, rf_raddr_a);
+    connect_bus(nl, *m_rf, 23, rf_raddr_b);
+    connect_bus(nl, *m_rf, 25, rf_rdata_a);
+    connect_bus(nl, *m_rf, 41, rf_rdata_b);
+    connect_bus(nl, *m_rf, 57, dbg_r0);
+    connect_bus(nl, *m_rf, 73, dbg_r1);
+    connect_bus(nl, *m_rf, 89, dbg_r2);
+    connect_bus(nl, *m_rf, 105, dbg_r3);
 
-    // alu16(op[2:0],a[15:0],b[15:0],y[15:0],zf)
+    // mux16(sel, a[15:0], b[15:0], y[15:0])
+    add_to_node(nl, *m_mux, 0, n_alu_b_sel);
+    connect_bus(nl, *m_mux, 1, imm16);
+    connect_bus(nl, *m_mux, 17, rf_rdata_b);
+    connect_bus(nl, *m_mux, 33, alu_b);
+
+    // alu16(op[2:0],a[15:0],b[15:0],y[15:0],zf,cf,sf)
     connect_bus(nl, *m_alu, 0, alu_op);
-    connect_bus(nl, *m_alu, 3, rf_rdata);
-    connect_bus(nl, *m_alu, 19, imm16);
+    connect_bus(nl, *m_alu, 3, rf_rdata_a);
+    connect_bus(nl, *m_alu, 19, alu_b);
     connect_bus(nl, *m_alu, 35, alu_y);
     add_to_node(nl, *m_alu, 51, n_alu_zf);
+    add_to_node(nl, *m_alu, 52, n_alu_cf);
+    add_to_node(nl, *m_alu, 53, n_alu_sf);
 
-    // flag1(clk,rst_n,we,d,q)
-    add_to_node(nl, *m_flg, 0, nclk);
-    add_to_node(nl, *m_flg, 1, nrstn);
-    add_to_node(nl, *m_flg, 2, n_flags_we);
-    add_to_node(nl, *m_flg, 3, n_alu_zf);
-    add_to_node(nl, *m_flg, 4, n_flag_z);
+    // flag1(clk,rst_n,we,d,q)  (Z/C/S flags)
+    add_to_node(nl, *m_flg_z, 0, nclk);
+    add_to_node(nl, *m_flg_z, 1, nrstn);
+    add_to_node(nl, *m_flg_z, 2, n_flags_we_z);
+    add_to_node(nl, *m_flg_z, 3, n_alu_zf);
+    add_to_node(nl, *m_flg_z, 4, n_flag_z);
+
+    add_to_node(nl, *m_flg_c, 0, nclk);
+    add_to_node(nl, *m_flg_c, 1, nrstn);
+    add_to_node(nl, *m_flg_c, 2, n_flags_we_c);
+    add_to_node(nl, *m_flg_c, 3, n_alu_cf);
+    add_to_node(nl, *m_flg_c, 4, n_flag_c);
+
+    add_to_node(nl, *m_flg_s, 0, nclk);
+    add_to_node(nl, *m_flg_s, 1, nrstn);
+    add_to_node(nl, *m_flg_s, 2, n_flags_we_s);
+    add_to_node(nl, *m_flg_s, 3, n_alu_sf);
+    add_to_node(nl, *m_flg_s, 4, n_flag_s);
 
     if(!c.analyze()) { return 4; }
 
@@ -277,7 +339,7 @@ int main()
         if(trace)
         {
             std::fprintf(stderr,
-                         "[pre ] cyc=%d pc=%02x ir=%04x rom=%04x we=%d alu=%04x z=%d r0=%04x r1=%04x\n",
+                         "[pre ] cyc=%d pc=%02x ir=%04x rom=%04x we=%d alu=%04x z=%d c=%d s=%d r0=%04x r1=%04x\n",
                          cycle,
                          static_cast<unsigned>(read_u16(pc)),
                          static_cast<unsigned>(read_u16(ir)),
@@ -285,6 +347,8 @@ int main()
                          n_reg_we.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
                          static_cast<unsigned>(read_u16(alu_y)),
                          n_flag_z.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
+                         n_flag_c.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
+                         n_flag_s.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
                          static_cast<unsigned>(read_u16(dbg_r0)),
                          static_cast<unsigned>(read_u16(dbg_r1)));
         }
@@ -295,7 +359,7 @@ int main()
         if(trace)
         {
             std::fprintf(stderr,
-                         "[pos ] cyc=%d pc=%02x ir=%04x rom=%04x we=%d alu=%04x z=%d r0=%04x r1=%04x halt=%d\n",
+                         "[pos ] cyc=%d pc=%02x ir=%04x rom=%04x we=%d alu=%04x z=%d c=%d s=%d r0=%04x r1=%04x halt=%d\n",
                          cycle,
                          static_cast<unsigned>(read_u16(pc)),
                          static_cast<unsigned>(read_u16(ir)),
@@ -303,6 +367,8 @@ int main()
                          n_reg_we.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
                          static_cast<unsigned>(read_u16(alu_y)),
                          n_flag_z.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
+                         n_flag_c.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
+                         n_flag_s.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state,
                          static_cast<unsigned>(read_u16(dbg_r0)),
                          static_cast<unsigned>(read_u16(dbg_r1)),
                          halted);
@@ -315,15 +381,15 @@ int main()
 
     assert(halted && "CPU did not reach HLT within cycle budget");
 
-    // Program should leave R0 == 0, and skip the MOVI into R1.
+    // Program should leave R0 == 0, and keep R1 == 7 (the MOVI 0x55 is skipped).
     auto const r0 = read_u16(dbg_r0);
     auto const r1 = read_u16(dbg_r1);
-    if(r0 != 0x0000 || r1 != 0x0000)
+    if(r0 != 0x0000 || r1 != 0x0007)
     {
         std::fprintf(stderr, "dbg_r0=0x%04x dbg_r1=0x%04x\n", r0, r1);
     }
     assert(r0 == 0x0000);
-    assert(r1 == 0x0000);
+    assert(r1 == 0x0007);
     (void)dbg_r2;
     (void)dbg_r3;
 

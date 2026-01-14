@@ -27,6 +27,7 @@ The exporter `test/0026.multi-module/x86_16_multi_module_export_plsav.cc` genera
 - IO placement: inputs in the top third, outputs in the bottom third.
 - Bit ordering: **LSB on the right**, MSB on the left (`[0]` at `x=+1`).
 - IO element type: all pins are exported as **Logic Output** elements (inputs and outputs both use the same PL element).
+- Note: PhysicsLab stores positions as the string `"x,z,y"` (Z is the middle value).
 
 Inputs:
 - `clk`
@@ -36,3 +37,50 @@ Outputs:
 - `halt`
 - `dbg_r0[15:0]`
 - `dbg_r1[15:0]`
+
+## Implemented ISA (toy, 16-bit)
+
+Instruction word is `instr[15:0]`:
+
+- `instr[15:12]` = `opcode`
+- `instr[11:10]` = `reg_dst` (register index 0..3)
+- `instr[9:8]` = `reg_src` (register index 0..3)
+- `instr[7:0]` = `imm8` / `addr8`
+
+Registers:
+
+- 4 general registers: `R0..R3` (16-bit)
+- Flags: `Z` (zero), `C` (carry/borrow), `S` (sign)
+
+Immediate rules:
+
+- `imm8` is sign-extended to 16-bit (`imm16 = {{8{imm8[7]}}, imm8}`)
+- Used as ALU operand for `*_I` instructions, and as absolute address for `JMP/JZ/JNZ`
+
+Opcodes:
+
+- `0x0 EXT/NOP` : extended ops; `imm8[7:4]==0` is `NOP`, otherwise:
+  - `0x01s SHLI dst, shamt4` : `R[dst] <- R[dst] << shamt4`, updates `Z/C/S`
+  - `0x02s SHRI dst, shamt4` : `R[dst] <- R[dst] >> shamt4`, updates `Z/C/S`
+  - `0x03? SHLR dst, src` : `R[dst] <- R[dst] << R[src][3:0]`, updates `Z/C/S`
+  - `0x04? SHRR dst, src` : `R[dst] <- R[dst] >> R[src][3:0]`, updates `Z/C/S`
+- `0x1 MOVI dst, imm8` : `R[dst] <- imm16`
+- `0x2 ADDI dst, imm8` : `R[dst] <- R[dst] + imm16`, updates `Z/C/S`
+- `0x3 XORI dst, imm8` : `R[dst] <- R[dst] ^ imm16`, updates `Z/C/S`
+- `0x4 JMP addr8` : `PC <- addr8`
+- `0x5 JZ addr8` : if `Z==1` then `PC <- addr8` else fall-through
+- `0x6 MOVR dst, src` : `R[dst] <- R[src]`
+- `0x7 ADDR dst, src` : `R[dst] <- R[dst] + R[src]`, updates `Z/C/S`
+- `0x8 SUBR dst, src` : `R[dst] <- R[dst] - R[src]`, updates `Z/C/S`
+- `0x9 ANDR dst, src` : `R[dst] <- R[dst] & R[src]`, updates `Z/C/S`
+- `0xA ORR dst, src` : `R[dst] <- R[dst] | R[src]`, updates `Z/C/S`
+- `0xB XORR dst, src` : `R[dst] <- R[dst] ^ R[src]`, updates `Z/C/S`
+- `0xC CMPR dst, src` : updates `Z/C/S` from `R[dst] - R[src]` (no register write)
+- `0xD JNZ addr8` : if `Z==0` then `PC <- addr8` else fall-through
+- `0xE SUBI dst, imm8` : `R[dst] <- R[dst] - imm16`, updates `Z/C/S`
+- `0xF HLT` : assert `halt`, stop PC update
+
+Flag semantics:
+
+- Flags are latched from `alu16` outputs when the corresponding `flags_we_*==1`.
+- `JZ/JNZ` use the previously latched `Z` (from the last flag-updating instruction).

@@ -138,6 +138,24 @@ inline double round6(double v)
     return std::round(v * 1'000'000.0) / 1'000'000.0;
 }
 
+inline double round_n(double v, int decimals)
+{
+    if (!std::isfinite(v))
+    {
+        throw std::invalid_argument("position/rotation must be finite");
+    }
+    if (decimals < 0 || decimals > 12)
+    {
+        throw std::invalid_argument("position/rotation precision out of range");
+    }
+    double scale{1.0};
+    for (int i = 0; i < decimals; ++i)
+    {
+        scale *= 10.0;
+    }
+    return std::round(v * scale) / scale;
+}
+
 inline std::string python_float(double v)
 {
     v = round6(v);
@@ -160,9 +178,36 @@ inline std::string python_float(double v)
     return s;
 }
 
+inline std::string python_float(double v, int decimals)
+{
+    v = round_n(v, decimals);
+    if (std::fabs(v - std::round(v)) < 1e-9)
+    {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(1) << v;
+        return oss.str();
+    }
+
+    std::ostringstream oss;
+    oss << std::setprecision(15) << std::defaultfloat << v;
+    auto s = oss.str();
+    if (auto e = s.find('e'); e != std::string::npos)
+    {
+        std::ostringstream oss2;
+        oss2 << std::fixed << std::setprecision(decimals) << v;
+        s = oss2.str();
+    }
+    return s;
+}
+
 inline std::string pack_xyz(position p)
 {
     return python_float(p.x) + "," + python_float(p.z) + "," + python_float(p.y);
+}
+
+inline std::string pack_xyz(position p, int decimals)
+{
+    return python_float(p.x, decimals) + "," + python_float(p.z, decimals) + "," + python_float(p.y, decimals);
 }
 
 inline position parse_xyz(std::string_view s)
@@ -887,6 +932,17 @@ public:
     [[nodiscard]] std::vector<element> const& elements() const noexcept { return elements_; }
     [[nodiscard]] std::vector<wire> const& wires() const noexcept { return wires_; }
 
+    // Controls how many decimal digits are kept when serializing positions/rotations into the .sav.
+    // This only affects `dump()/save()` output size, not the in-memory layout math.
+    void set_xyz_precision(int decimals)
+    {
+        if (decimals < 0 || decimals > 12)
+        {
+            throw std::invalid_argument("xyz precision out of range");
+        }
+        xyz_precision_ = decimals;
+    }
+
     [[nodiscard]] json to_plsav_json() const
     {
         json out = plsav_;
@@ -905,7 +961,7 @@ public:
                 auto element_pos = e.element_position();
                 position native_pos = e.is_element_xyz() ? element_xyz::to_native(element_pos, element_xyz_origin_, e.is_big_element())
                                                          : element_pos;
-                el["Position"] = detail::pack_xyz(native_pos);
+                el["Position"] = detail::pack_xyz(native_pos, xyz_precision_);
                 status_save["Elements"].push_back(std::move(el));
             }
             for (auto const& w : wires_)
@@ -923,7 +979,7 @@ public:
             {
                 json el = e.data();
                 auto element_pos = e.element_position();
-                el["Position"] = detail::pack_xyz(element_pos);
+                el["Position"] = detail::pack_xyz(element_pos, xyz_precision_);
                 status_save["Elements"].push_back(std::move(el));
             }
         }
@@ -955,11 +1011,12 @@ public:
         out["Summary"]["CreationDate"] = creation_ms;
 
         json camera_save = camera_save_;
-        camera_save["VisionCenter"] = detail::pack_xyz(vision_center_);
-        camera_save["TargetRotation"] = detail::pack_xyz(target_rotation_);
+        camera_save["VisionCenter"] = detail::pack_xyz(vision_center_, xyz_precision_);
+        camera_save["TargetRotation"] = detail::pack_xyz(target_rotation_, xyz_precision_);
 
-        out["Experiment"]["CameraSave"] = camera_save.dump(-1, ' ', true);
-        out["Experiment"]["StatusSave"] = status_save.dump(-1, ' ', true);
+        // Use UTF-8 directly to keep .sav smaller (PhysicsLab accepts UTF-8 JSON).
+        out["Experiment"]["CameraSave"] = camera_save.dump(-1, ' ', false);
+        out["Experiment"]["StatusSave"] = status_save.dump(-1, ' ', false);
 
         return out;
     }
@@ -1161,6 +1218,7 @@ private:
 
     bool element_xyz_enabled_{false};
     position element_xyz_origin_{0.0, 0.0, 0.0};
+    int xyz_precision_{6};
 
     std::vector<element> elements_;
     std::vector<wire> wires_;
