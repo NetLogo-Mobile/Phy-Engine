@@ -10,7 +10,7 @@ module mul8 (
         result = 16'd0;
         for (i = 0; i < 8; i = i + 1) begin
             if (b[i])
-                result = result + (a << i);
+                result = result + ({8'd0, a} << i);
         end
     end
 
