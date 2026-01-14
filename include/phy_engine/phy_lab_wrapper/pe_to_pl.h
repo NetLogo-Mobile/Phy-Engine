@@ -170,19 +170,20 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         m.pe_to_pl_pin = {{0, 4}, {1, 2}, {2, 3}, {3, 0}, {4, 1}};
         return m;
     }
-    if(name == "MUL2")
-    {
-        pl_model_mapping m{};
-        m.model_id = std::string(pl_model_id::multiplier);
-        m.is_big_element = true;
-        // PE(MUL2): a0, a1, b0, b1, p0, p1, p2, p3
-        // PL(Multiplier) pin order (PhysicsLab):
-        //   outputs: 0=Q1, 1=Q2, 2=Q3, 3=Q4
-        //   inputs : 4=B1, 5=B2, 6=A1, 7=A2
-        // Note: Earlier versions used a different assumed pin order and produced swapped A/B and reversed Q bits.
-        m.pe_to_pl_pin = {{0, 6}, {1, 7}, {2, 4}, {3, 5}, {4, 0}, {5, 1}, {6, 2}, {7, 3}};
-        return m;
-    }
+	    if(name == "MUL2")
+	    {
+	        pl_model_mapping m{};
+	        m.model_id = std::string(pl_model_id::multiplier);
+	        m.is_big_element = true;
+	        // PE(MUL2): a0, a1, b0, b1, p0, p1, p2, p3
+	        // PL(Multiplier) pin order (PhysicsLab):
+	        //   outputs: 0=Q1, 1=Q2, 2=Q3, 3=Q4
+	        //   inputs : 4=B1, 5=B2, 6=A1, 7=A2
+	        // Fix: The in-app labels are reversed for A/B and Q bit order for the exported layout:
+	        //   A1<->A2, B1<->B2, Q1<->Q4, Q2<->Q3.
+	        m.pe_to_pl_pin = {{0, 7}, {1, 6}, {2, 5}, {3, 4}, {4, 3}, {5, 2}, {6, 1}, {7, 0}};
+	        return m;
+	    }
 
 // Sequential blocks
     if(name == "DFF")
