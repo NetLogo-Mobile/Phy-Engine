@@ -2684,6 +2684,84 @@ namespace phy_engine::verilog::digital
                     w = max_concat_bits;
                 }
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
+
+                // Special-case: common unsigned 8x8 -> 16-bit multiply, lowered via 2-bit tiles.
+                // This is primarily to enable later PE netlist optimization into `MUL2` macros.
+                if(!signed_op && wa == 8u && wb == 8u && w == 16u)
+                {
+                    auto const av{resize_to_vector(a, wa, false)};
+                    auto const bv{resize_to_vector(b, wb, false)};
+                    auto const z{make_literal(logic_t::false_state)};
+
+                    auto bit_from_lsb = [&](::fast_io::vector<::std::size_t> const& v, ::std::size_t bit) noexcept -> ::std::size_t
+                    {
+                        if(bit >= v.size()) { return z; }
+                        return v.index_unchecked(v.size() - 1u - bit);  // msb->lsb storage
+                    };
+
+                    auto mul2_tile = [&](::std::size_t a0, ::std::size_t a1, ::std::size_t b0, ::std::size_t b1) noexcept
+                        -> ::fast_io::vector<::std::size_t> {
+                        // p0..p3 (lsb->msb):
+                        auto const p0{make_and(a0, b0)};
+                        auto const t1{make_and(a0, b1)};
+                        auto const t2{make_and(a1, b0)};
+                        auto const p1{make_xor(t1, t2)};
+                        auto const c1{make_and(t1, t2)};
+                        auto const t3{make_and(a1, b1)};
+                        auto const p2{make_xor(t3, c1)};
+                        auto const p3{make_and(t3, c1)};
+
+                        ::fast_io::vector<::std::size_t> out{};
+                        out.resize(4);
+                        out.index_unchecked(0) = p3;
+                        out.index_unchecked(1) = p2;
+                        out.index_unchecked(2) = p1;
+                        out.index_unchecked(3) = p0;
+                        return out;
+                    };
+
+                    expr_value acc{make_uint_literal(0u, w)};
+                    for(::std::size_t ai{}; ai < 4u; ++ai)
+                    {
+                        auto const a0{bit_from_lsb(av, 2u * ai)};
+                        auto const a1{bit_from_lsb(av, 2u * ai + 1u)};
+                        for(::std::size_t bi{}; bi < 4u; ++bi)
+                        {
+                            auto const b0{bit_from_lsb(bv, 2u * bi)};
+                            auto const b1{bit_from_lsb(bv, 2u * bi + 1u)};
+
+                            auto prod{mul2_tile(a0, a1, b0, b1)};  // msb->lsb (4 bits)
+                            ::std::size_t const shift{2u * (ai + bi)};
+
+                            ::fast_io::vector<::std::size_t> partial{};
+                            partial.resize(w);
+                            for(::std::size_t i{}; i < w; ++i) { partial.index_unchecked(i) = z; }
+
+                            // Place prod bits into the correct bit positions (truncate if needed).
+                            for(::std::size_t k{}; k < 4u; ++k)
+                            {
+                                ::std::size_t const bit{shift + k};
+                                if(bit >= w) { continue; }
+                                auto const pk{prod.index_unchecked(3u - k)};  // lsb->msb
+                                partial.index_unchecked(w - 1u - bit) = pk;
+                            }
+
+                            acc = arith_add(acc, make_vector(::std::move(partial), false));
+                        }
+                    }
+
+                    if(acc.is_vector)
+                    {
+                        auto const x{make_literal(logic_t::indeterminate_state)};
+                        for(::std::size_t i{}; i < acc.vector_roots.size(); ++i)
+                        {
+                            acc.vector_roots.index_unchecked(i) = make_mux(unknown_sel, x, acc.vector_roots.index_unchecked(i));
+                        }
+                    }
+                    acc.is_signed = false;
+                    return acc;
+                }
+
                 if(w <= 1)
                 {
                     auto const av{resize_to_vector(a, 1, signed_op).front_unchecked()};

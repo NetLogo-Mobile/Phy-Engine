@@ -78,6 +78,18 @@
   - 如果你只希望用 `always @*`，可以关掉让不符合子集的代码更早失败。
 - `support_always_ff`（默认 `true`）
   - 是否接受 `always_ff`（SystemVerilog 风格）作为时序逻辑块。
+- `assume_binary_inputs`（默认 `false`）
+  - 把输入当作只有 0/1（忽略 X/Z）：`is_unknown(...)` 会折叠为常量 0，从而避免综合出大规模的 X/Z 传播 mux 网络。
+  - 适用场景：你确信上游不会产生 X/Z，且希望网表更小、仿真更快。
+  - 风险：会改变 4-state 语义；若真实存在 X/Z，结果可能与 Verilog 4 态仿真不一致。
+- `optimize_wires`（默认 `false`）
+  - best-effort：消除综合生成的 `YES` 缓冲（网线别名化），尽量保持顶层端口节点不变。
+  - 目的：减少模型数量、加快仿真、提升导出可读性。
+- `optimize_mul2`（默认 `false`）
+  - best-effort：把识别到的“2-bit 乘法 tile”（门级 AND/XOR 结构）替换为 PE 内建 `MUL2` 宏模型。
+  - 典型来源：`assign p = a * b;` 这类乘法在前端会被降解为 2-bit tile + 加法器累加（例如 8×8 → 16 个 tile）。
+  - 目的：显著减少门级数量、加快仿真，并利于导出到 PhysicsLab 的大元件（若有映射）。
+  - 注意：这是启发式结构匹配；只对符合该 tile 形状的门级网络生效。
 - `optimize_adders`（默认 `false`）
   - best-effort：把识别到的门级加法器结构替换为 PE 内建 `HALF_ADDER/FULL_ADDER` 模型。
   - 目的：减少模型数量、加快仿真、并利于导出到 PhysicsLab 大元件。
@@ -250,4 +262,3 @@
 
 - 如果你在 benchmark/大电路：先试 `PHY_ENGINE_MNA_REUSE`（默认是开）与 `PHY_ENGINE_CUDA_PINNED`
 - 如果你在调试求解性能：打开 `PHY_ENGINE_PROFILE_SOLVE`
-

@@ -18,6 +18,7 @@
 #include "../../model/models/digital/combinational/d_latch.h"
 #include "../../model/models/digital/combinational/full_adder.h"
 #include "../../model/models/digital/combinational/half_adder.h"
+#include "../../model/models/digital/combinational/mul2.h"
 #include "../../model/models/digital/logical/and.h"
 #include "../../model/models/digital/logical/case_eq.h"
 #include "../../model/models/digital/logical/input.h"
@@ -43,6 +44,7 @@ namespace phy_engine::verilog::digital
         bool support_always_ff{true};
         bool assume_binary_inputs{false};  // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
         bool optimize_wires{false};   // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
+        bool optimize_mul2{false};    // best-effort: replace 2-bit multiplier tiles with MUL2 models
         bool optimize_adders{false};  // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
         ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
     };
@@ -54,6 +56,8 @@ namespace phy_engine::verilog::digital
 
     namespace details
     {
+        inline bool is_output_pin(::fast_io::u8string_view model_name, std::size_t pin_idx, std::size_t pin_count) noexcept;
+
         inline ::fast_io::u8string_view model_name_u8(::phy_engine::model::model_base const& mb) noexcept
         {
             return (mb.ptr == nullptr) ? ::fast_io::u8string_view{} : mb.ptr->get_model_name();
@@ -476,6 +480,329 @@ namespace phy_engine::verilog::digital
                     if(a.cout) { (void)::phy_engine::netlist::add_to_node(nl, *m, 3, *a.cout); }
                 }
             }
+        }
+
+        inline void optimize_mul2_in_pe_netlist(::phy_engine::netlist::netlist& nl) noexcept
+        {
+            struct model_pos
+            {
+                std::size_t vec_pos{};
+                std::size_t chunk_pos{};
+            };
+            struct gate
+            {
+                enum class kind : std::uint8_t
+                {
+                    and_gate,
+                    xor_gate
+                };
+                kind k{};
+                model_pos pos{};
+                ::phy_engine::model::model_base* mb{};
+                ::phy_engine::model::node_t* in0{};
+                ::phy_engine::model::node_t* in1{};
+                ::phy_engine::model::node_t* out{};
+            };
+
+            struct gate_key
+            {
+                gate::kind k{};
+                ::phy_engine::model::node_t* a{};
+                ::phy_engine::model::node_t* b{};
+            };
+            struct gate_key_hash
+            {
+                std::size_t operator()(gate_key const& x) const noexcept
+                {
+                    auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
+                    {
+                        return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
+                    };
+                    std::size_t h{};
+                    h = mix(h, static_cast<std::size_t>(x.k));
+                    h = mix(h, reinterpret_cast<std::size_t>(x.a));
+                    h = mix(h, reinterpret_cast<std::size_t>(x.b));
+                    return h;
+                }
+            };
+            struct gate_key_eq
+            {
+                bool operator()(gate_key const& x, gate_key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
+            };
+
+            auto canon_pair = [](gate::kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> gate_key
+            {
+                if(reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
+                return gate_key{k, a, b};
+            };
+
+            ::std::vector<gate> gates{};
+            gates.reserve(4096);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> gate_by_out{};
+            gate_by_out.reserve(4096);
+
+            ::std::unordered_map<gate_key, ::phy_engine::model::node_t*, gate_key_hash, gate_key_eq> out_by_inputs{};
+            out_by_inputs.reserve(8192);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, ::std::vector<std::size_t>> uses{};
+            uses.reserve(8192);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> consumer_count{};
+            ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> driver_count{};
+            consumer_count.reserve(1 << 14);
+            driver_count.reserve(1 << 14);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> driver_is_named_input{};
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> driver_is_non_input{};
+            driver_is_named_input.reserve(1 << 14);
+            driver_is_non_input.reserve(1 << 14);
+
+            // Best-effort pin direction classification for the whole netlist.
+            for(auto& blk : nl.models)
+            {
+                for(auto* mb = blk.begin; mb != blk.curr; ++mb)
+                {
+                    if(mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
+                    auto const name = model_name_u8(*mb);
+                    auto pv = mb->ptr->generate_pin_view();
+                    for(std::size_t i{}; i < pv.size; ++i)
+                    {
+                        auto* n = pv.pins[i].nodes;
+                        if(n == nullptr) { continue; }
+                        if(is_output_pin(name, i, pv.size)) { ++driver_count[n]; }
+                        else { ++consumer_count[n]; }
+
+                        if(is_output_pin(name, i, pv.size))
+                        {
+                            if(name == u8"INPUT" && !mb->name.empty())
+                            {
+                                driver_is_named_input[n] = true;
+                            }
+                            else if(name != u8"INPUT")
+                            {
+                                driver_is_non_input[n] = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            auto classify_gate = [&](::phy_engine::model::model_base& mb, std::size_t vec_pos, std::size_t chunk_pos) noexcept -> std::optional<gate>
+            {
+                if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return std::nullopt; }
+                auto const name = model_name_u8(mb);
+                gate g{};
+                if(name == u8"AND") { g.k = gate::kind::and_gate; }
+                else if(name == u8"XOR") { g.k = gate::kind::xor_gate; }
+                else { return std::nullopt; }
+                auto pv = mb.ptr->generate_pin_view();
+                if(pv.size != 3) { return std::nullopt; }
+                g.pos = model_pos{vec_pos, chunk_pos};
+                g.mb = __builtin_addressof(mb);
+                g.in0 = pv.pins[0].nodes;
+                g.in1 = pv.pins[1].nodes;
+                g.out = pv.pins[2].nodes;
+                if(g.in0 == nullptr || g.in1 == nullptr || g.out == nullptr) { return std::nullopt; }
+                return g;
+            };
+
+            // Collect candidate gates and build indices.
+            for(std::size_t chunk_pos{}; chunk_pos < nl.models.size(); ++chunk_pos)
+            {
+                auto& blk = nl.models.index_unchecked(chunk_pos);
+                for(auto* mb = blk.begin; mb != blk.curr; ++mb)
+                {
+                    if(mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
+                    auto const vec_pos = static_cast<std::size_t>(mb - blk.begin);
+                    auto og = classify_gate(*mb, vec_pos, chunk_pos);
+                    if(!og) { continue; }
+                    auto const idx = gates.size();
+                    gates.push_back(*og);
+                    gate_by_out.emplace(og->out, idx);
+                    out_by_inputs.emplace(canon_pair(og->k, og->in0, og->in1), og->out);
+                    uses[og->in0].push_back(idx);
+                    uses[og->in1].push_back(idx);
+                }
+            }
+
+            if(gates.empty()) { return; }
+
+            ::std::vector<bool> dead{};
+            dead.assign(gates.size(), false);
+
+            auto gate_idx_for_out = [&](::phy_engine::model::node_t* out) noexcept -> std::optional<std::size_t>
+            {
+                auto it = gate_by_out.find(out);
+                if(it == gate_by_out.end()) { return std::nullopt; }
+                return it->second;
+            };
+
+            auto out_of_and = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
+            {
+                auto it = out_by_inputs.find(canon_pair(gate::kind::and_gate, a, b));
+                if(it == out_by_inputs.end()) { return nullptr; }
+                return it->second;
+            };
+
+            auto is_in_pair = [&](::phy_engine::model::node_t* x, ::phy_engine::model::node_t* p0, ::phy_engine::model::node_t* p1) noexcept -> bool
+            {
+                return x == p0 || x == p1;
+            };
+
+            auto try_make_mul2 = [&](std::size_t p1_xor_idx) noexcept -> bool
+            {
+                if(p1_xor_idx >= gates.size() || dead[p1_xor_idx]) { return false; }
+                auto const& g_p1 = gates[p1_xor_idx];
+                if(g_p1.k != gate::kind::xor_gate) { return false; }
+
+                auto* const t1_out = g_p1.in0;
+                auto* const t2_out = g_p1.in1;
+                auto const t1_idx_opt = gate_idx_for_out(t1_out);
+                auto const t2_idx_opt = gate_idx_for_out(t2_out);
+                if(!t1_idx_opt || !t2_idx_opt) { return false; }
+                auto const t1_idx = *t1_idx_opt;
+                auto const t2_idx = *t2_idx_opt;
+                if(dead[t1_idx] || dead[t2_idx]) { return false; }
+                auto const& g_t1 = gates[t1_idx];
+                auto const& g_t2 = gates[t2_idx];
+                if(g_t1.k != gate::kind::and_gate || g_t2.k != gate::kind::and_gate) { return false; }
+
+                auto* const c1_out = out_of_and(t1_out, t2_out);
+                if(c1_out == nullptr) { return false; }
+                auto const c1_idx_opt = gate_idx_for_out(c1_out);
+                if(!c1_idx_opt) { return false; }
+                auto const c1_idx = *c1_idx_opt;
+                if(dead[c1_idx] || gates[c1_idx].k != gate::kind::and_gate) { return false; }
+
+                // Strict internal-node usage checks (skip if shared elsewhere).
+                auto const dc = [&](::phy_engine::model::node_t* n) noexcept -> std::size_t
+                {
+                    auto it = driver_count.find(n);
+                    return it == driver_count.end() ? 0u : it->second;
+                };
+                auto const cc = [&](::phy_engine::model::node_t* n) noexcept -> std::size_t
+                {
+                    auto it = consumer_count.find(n);
+                    return it == consumer_count.end() ? 0u : it->second;
+                };
+                if(dc(t1_out) != 1u || cc(t1_out) != 2u) { return false; }
+                if(dc(t2_out) != 1u || cc(t2_out) != 2u) { return false; }
+
+                // Find p2 = XOR(t3, c1) and p3 = AND(t3, c1).
+                auto uses_it = uses.find(c1_out);
+                if(uses_it == uses.end()) { return false; }
+                for(auto const p2_xor_idx : uses_it->second)
+                {
+                    if(p2_xor_idx >= gates.size() || dead[p2_xor_idx]) { continue; }
+                    if(p2_xor_idx == p1_xor_idx) { continue; }
+                    auto const& g_p2 = gates[p2_xor_idx];
+                    if(g_p2.k != gate::kind::xor_gate) { continue; }
+
+                    auto* const t3_out = (g_p2.in0 == c1_out) ? g_p2.in1 : (g_p2.in1 == c1_out ? g_p2.in0 : nullptr);
+                    if(t3_out == nullptr) { continue; }
+
+                    auto* const p3_out = out_of_and(c1_out, t3_out);
+                    if(p3_out == nullptr) { continue; }
+                    auto const p3_idx_opt = gate_idx_for_out(p3_out);
+                    if(!p3_idx_opt) { continue; }
+                    auto const p3_idx = *p3_idx_opt;
+                    if(dead[p3_idx] || gates[p3_idx].k != gate::kind::and_gate) { continue; }
+
+                    auto const t3_idx_opt = gate_idx_for_out(t3_out);
+                    if(!t3_idx_opt) { continue; }
+                    auto const t3_idx = *t3_idx_opt;
+                    if(dead[t3_idx] || gates[t3_idx].k != gate::kind::and_gate) { continue; }
+                    auto const& g_t3 = gates[t3_idx];
+
+                    if(dc(c1_out) != 1u || cc(c1_out) != 2u) { continue; }
+                    if(dc(t3_out) != 1u || cc(t3_out) != 2u) { continue; }
+
+                    // t3 must be AND(one from g_t1 inputs, one from g_t2 inputs).
+                    auto* const s10 = g_t1.in0;
+                    auto* const s11 = g_t1.in1;
+                    auto* const s20 = g_t2.in0;
+                    auto* const s21 = g_t2.in1;
+                    bool const t3_in0_in_s1 = is_in_pair(g_t3.in0, s10, s11);
+                    bool const t3_in1_in_s1 = is_in_pair(g_t3.in1, s10, s11);
+                    bool const t3_in0_in_s2 = is_in_pair(g_t3.in0, s20, s21);
+                    bool const t3_in1_in_s2 = is_in_pair(g_t3.in1, s20, s21);
+                    if(!((t3_in0_in_s1 && t3_in1_in_s2) || (t3_in0_in_s2 && t3_in1_in_s1))) { continue; }
+
+                    auto* const b1 = t3_in0_in_s1 ? g_t3.in0 : g_t3.in1;
+                    auto* const a1 = t3_in0_in_s2 ? g_t3.in0 : g_t3.in1;
+                    auto* const a0 = (b1 == s10) ? s11 : s10;
+                    auto* const b0 = (a1 == s20) ? s21 : s20;
+
+                    // p0 = AND(a0, b0)
+                    auto* const p0_out = out_of_and(a0, b0);
+                    if(p0_out == nullptr) { continue; }
+                    auto const p0_idx_opt = gate_idx_for_out(p0_out);
+                    if(!p0_idx_opt) { continue; }
+                    auto const p0_idx = *p0_idx_opt;
+                    if(dead[p0_idx] || gates[p0_idx].k != gate::kind::and_gate) { continue; }
+
+                    // Restrict to "tile inputs" driven by named top-level INPUT models to avoid false-positive matches.
+                    auto is_primary_input_node = [&](::phy_engine::model::node_t* n) noexcept -> bool
+                    {
+                        if(n == nullptr) { return false; }
+                        if(dc(n) != 1u) { return false; }
+                        if(auto it = driver_is_non_input.find(n); it != driver_is_non_input.end() && it->second) { return false; }
+                        auto it = driver_is_named_input.find(n);
+                        return it != driver_is_named_input.end() && it->second;
+                    };
+                    if(!is_primary_input_node(a0) || !is_primary_input_node(a1) || !is_primary_input_node(b0) || !is_primary_input_node(b1)) { continue; }
+
+                    // Sanity: output nodes should have a single driver.
+                    if(dc(p0_out) != 1u || dc(g_p1.out) != 1u || dc(g_p2.out) != 1u || dc(p3_out) != 1u) { continue; }
+
+                    // Distinct gates.
+                    std::size_t ids[8]{p1_xor_idx, t1_idx, t2_idx, c1_idx, p2_xor_idx, p3_idx, t3_idx, p0_idx};
+                    bool distinct{true};
+                    for(int i = 0; i < 8 && distinct; ++i)
+                    {
+                        for(int j = i + 1; j < 8; ++j)
+                        {
+                            if(ids[i] == ids[j])
+                            {
+                                distinct = false;
+                                break;
+                            }
+                        }
+                    }
+                    if(!distinct) { continue; }
+
+                    {
+                        auto [m, mp] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::MUL2{});
+                        (void)mp;
+                        if(m == nullptr) { return false; }
+
+                        // Inputs: a0,a1,b0,b1; Outputs: p0,p1,p2,p3
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a0)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 1, *a1)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 2, *b0)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 3, *b1)) { return false; }
+
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 4, *p0_out)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 5, *g_p1.out)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 6, *g_p2.out)) { return false; }
+                        if(!::phy_engine::netlist::add_to_node(nl, *m, 7, *p3_out)) { return false; }
+                    }
+
+                    // Delete old gates (best-effort).
+                    auto kill = [&](std::size_t i) noexcept
+                    {
+                        dead[i] = true;
+                        (void)::phy_engine::netlist::delete_model(nl, gates[i].pos.vec_pos, gates[i].pos.chunk_pos);
+                    };
+                    for(auto const i : ids) { kill(i); }
+                    return true;
+                }
+
+                return false;
+            };
+
+            for(std::size_t i{}; i < gates.size(); ++i) { (void)try_make_mul2(i); }
         }
 
         inline bool is_output_pin(::fast_io::u8string_view model_name, std::size_t pin_idx, std::size_t pin_count) noexcept
@@ -2602,6 +2929,7 @@ namespace phy_engine::verilog::digital
         if(!ctx.synth_instance(top, nullptr, top_port_nodes)) { return false; }
         if(!ctx.resolve_multi_driver_digital_nets()) { return false; }
         if(opt.optimize_wires) { details::optimize_eliminate_yes_buffers(nl, top_port_nodes); }
+        if(opt.optimize_mul2) { details::optimize_mul2_in_pe_netlist(nl); }
         if(opt.optimize_adders) { details::optimize_adders_in_pe_netlist(nl); }
         return ctx.ok();
     }
