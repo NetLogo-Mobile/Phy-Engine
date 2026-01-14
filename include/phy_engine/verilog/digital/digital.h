@@ -6057,6 +6057,31 @@ namespace phy_engine::verilog::digital
             }
         }
 
+        inline void parse_integer_list(parser& p, compiled_module& m, bool is_signed_default) noexcept
+        {
+            bool is_signed{is_signed_default};
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
+            // `integer`/`int` are fixed-width in Verilog/SystemVerilog (32-bit). Treat as a signed reg vector by default.
+            constexpr int msb{31};
+            constexpr int lsb{0};
+
+            for(;;)
+            {
+                auto const name{p.expect_ident(u8"expected identifier in integer declaration")};
+                if(name.empty()) { return; }
+                (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, msb, lsb, true, is_signed);
+                if(!p.accept_sym(u8',')) { break; }
+            }
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
+        }
+
         inline void parse_assign_stmt(parser& p, compiled_module& m) noexcept
         {
             lvalue_ref lhs{};
@@ -6666,6 +6691,16 @@ namespace phy_engine::verilog::digital
                 if(p.accept_kw(u8"reg"))
                 {
                     parse_wire_list(p, m, true);
+                    continue;
+                }
+                if(p.accept_kw(u8"integer"))
+                {
+                    parse_integer_list(p, m, true);
+                    continue;
+                }
+                if(p.accept_kw(u8"int"))
+                {
+                    parse_integer_list(p, m, true);
                     continue;
                 }
 

@@ -2022,6 +2022,24 @@ namespace phy_engine::verilog::digital
                         auto* raw_cond = b.expr_in_env(n.expr_root, cur, nullptr);
                         auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
+                        ::phy_engine::verilog::digital::logic_t cv{};
+                        if(b.ctx.try_get_const(cond, cv))
+                        {
+                            if(cv == ::phy_engine::verilog::digital::logic_t::false_state) { break; }
+                            if(cv == ::phy_engine::verilog::digital::logic_t::true_state)
+                            {
+                                if(n.body_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_ff(b, arena, n.body_stmt, cur, next, targets)) { return false; }
+                                }
+                                if(n.step_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_ff(b, arena, n.step_stmt, cur, next, targets)) { return false; }
+                                }
+                                continue;
+                            }
+                        }
+
                         auto then_cur = cur;
                         auto then_next = next;
                         if(n.body_stmt != SIZE_MAX)
@@ -2063,6 +2081,20 @@ namespace phy_engine::verilog::digital
                         auto* raw_cond = b.expr_in_env(n.expr_root, cur, nullptr);
 
                         auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        ::phy_engine::verilog::digital::logic_t cv{};
+                        if(b.ctx.try_get_const(cond, cv))
+                        {
+                            if(cv == ::phy_engine::verilog::digital::logic_t::false_state) { break; }
+                            if(cv == ::phy_engine::verilog::digital::logic_t::true_state)
+                            {
+                                if(n.body_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_ff(b, arena, n.body_stmt, cur, next, targets)) { return false; }
+                                }
+                                continue;
+                            }
+                        }
 
                         auto then_cur = cur;
                         auto then_next = next;
@@ -2305,6 +2337,24 @@ namespace phy_engine::verilog::digital
                         auto* raw_cond = b.expr_in_env(n.expr_root, value, nullptr);
                         auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
 
+                        ::phy_engine::verilog::digital::logic_t cv{};
+                        if(b.ctx.try_get_const(cond, cv))
+                        {
+                            if(cv == ::phy_engine::verilog::digital::logic_t::false_state) { break; }
+                            if(cv == ::phy_engine::verilog::digital::logic_t::true_state)
+                            {
+                                if(n.body_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_comb(b, arena, n.body_stmt, value, assigned_cond, targets)) { return false; }
+                                }
+                                if(n.step_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_comb(b, arena, n.step_stmt, value, assigned_cond, targets)) { return false; }
+                                }
+                                continue;
+                            }
+                        }
+
                         auto then_value = value;
                         auto then_assigned = assigned_cond;
                         if(n.body_stmt != SIZE_MAX)
@@ -2341,6 +2391,20 @@ namespace phy_engine::verilog::digital
                     {
                         auto* raw_cond = b.expr_in_env(n.expr_root, value, nullptr);
                         auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        ::phy_engine::verilog::digital::logic_t cv{};
+                        if(b.ctx.try_get_const(cond, cv))
+                        {
+                            if(cv == ::phy_engine::verilog::digital::logic_t::false_state) { break; }
+                            if(cv == ::phy_engine::verilog::digital::logic_t::true_state)
+                            {
+                                if(n.body_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_comb(b, arena, n.body_stmt, value, assigned_cond, targets)) { return false; }
+                                }
+                                continue;
+                            }
+                        }
 
                         auto then_value = value;
                         auto then_assigned = assigned_cond;

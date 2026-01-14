@@ -1108,6 +1108,9 @@ extern "C" void* create_circuit_ex(int* elements,
         ::phy_engine::verilog::digital::pe_synth_options syn_opt{
             .allow_inout = true,
             .allow_multi_driver = true,
+            .optimize_wires = true,
+            .optimize_mul2 = true,
+            .optimize_adders = true,
         };
         if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err, syn_opt))
         {
