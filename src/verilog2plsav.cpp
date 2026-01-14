@@ -9,6 +9,7 @@
 #include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
 #include <phy_engine/phy_lab_wrapper/auto_layout/auto_layout.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -25,6 +26,9 @@
 namespace
 {
 using u8sv = ::fast_io::u8string_view;
+using ::phy_engine::phy_lab_wrapper::experiment;
+using ::phy_engine::phy_lab_wrapper::element;
+using ::phy_engine::phy_lab_wrapper::position;
 
 struct include_ctx
 {
@@ -136,6 +140,140 @@ static double x_for_bit_lsb_right(std::size_t bit, std::size_t width, double x_m
     auto const ridx = (width - 1) - bit;
     double const t = static_cast<double>(ridx) / static_cast<double>(width - 1);
     return x_min + (x_max - x_min) * t;
+}
+
+static bool is_io_model_id(std::string_view mid) noexcept
+{
+    return mid == ::phy_engine::phy_lab_wrapper::pl_model_id::logic_input ||
+           mid == ::phy_engine::phy_lab_wrapper::pl_model_id::logic_output ||
+           mid == ::phy_engine::phy_lab_wrapper::pl_model_id::eight_bit_input ||
+           mid == ::phy_engine::phy_lab_wrapper::pl_model_id::eight_bit_display;
+}
+
+static bool is_port_io_element(element const& e, group_layout const& inputs, group_layout const& outputs)
+{
+    auto const mid = e.data().value("ModelID", "");
+    if(!is_io_model_id(mid)) { return false; }
+
+    auto it_label = e.data().find("Label");
+    if(it_label == e.data().end() || !it_label->is_string()) { return false; }
+
+    auto const pn = it_label->get<std::string>();
+    auto const base = base_name(pn);
+
+    if(mid == ::phy_engine::phy_lab_wrapper::pl_model_id::logic_input ||
+       mid == ::phy_engine::phy_lab_wrapper::pl_model_id::eight_bit_input)
+    {
+        return inputs.row_by_base.find(base) != inputs.row_by_base.end();
+    }
+    if(mid == ::phy_engine::phy_lab_wrapper::pl_model_id::logic_output ||
+       mid == ::phy_engine::phy_lab_wrapper::pl_model_id::eight_bit_display)
+    {
+        return outputs.row_by_base.find(base) != outputs.row_by_base.end();
+    }
+    return false;
+}
+
+static std::size_t estimate_required_cells(experiment const& ex, ::phy_engine::phy_lab_wrapper::auto_layout::options const& aopt)
+{
+    std::size_t demand{};
+    for(auto const& e : ex.elements())
+    {
+        if(!e.participate_in_layout()) { continue; }
+        auto const fp = e.is_big_element() ? aopt.big_element : aopt.small_element;
+        demand += fp.w * fp.h;
+    }
+    return demand;
+}
+
+static double choose_extent(std::size_t required_cells,
+                            bool generate_wires,
+                            ::phy_engine::phy_lab_wrapper::auto_layout::options const& aopt)
+{
+    if(required_cells == 0) { return 1.0; }
+
+    constexpr double kThird = 1.0 / 3.0;
+    double const y_factor = generate_wires ? kThird : 1.0;  // layout_y_span = 2*extent*y_factor
+    double const fill = 1.25;                               // packing overhead
+
+    double extent = std::sqrt((static_cast<double>(required_cells) * fill * aopt.step_x * aopt.step_y) / (4.0 * y_factor));
+    if(!std::isfinite(extent) || extent < 1.0) { extent = 1.0; }
+
+    auto capacity = [&](double ext) -> double {
+        auto const w = std::floor((2.0 * ext) / aopt.step_x + 1e-12) + 1.0;
+        auto const h = std::floor((2.0 * ext * y_factor) / aopt.step_y + 1e-12) + 1.0;
+        return w * h;
+    };
+
+    double const target = static_cast<double>(required_cells) * fill;
+    for(std::size_t iter{}; iter < 200 && capacity(extent) < target; ++iter)
+    {
+        extent *= 1.05;
+    }
+    return extent;
+}
+
+static void reposition_io_elements(experiment& ex,
+                                   group_layout const& inputs,
+                                   group_layout const& outputs,
+                                   double extent,
+                                   bool generate_wires)
+{
+    constexpr double third = 1.0 / 3.0;
+    double const io_gap = generate_wires ? ::phy_engine::phy_lab_wrapper::element_xyz::y_unit : 0.0;
+
+    double const in_y_min = generate_wires ? ((extent * third) + io_gap) : (extent * (1.0 / 16.0));
+    double const in_y_max = extent;
+    double const out_y_min = -extent;
+    double const out_y_max = generate_wires ? ((-extent * third) - io_gap) : (-extent * (1.0 / 16.0));
+
+    for(auto const& e : ex.elements())
+    {
+        auto const mid = e.data().value("ModelID", "");
+        if(mid != ::phy_engine::phy_lab_wrapper::pl_model_id::logic_input && mid != ::phy_engine::phy_lab_wrapper::pl_model_id::logic_output)
+        {
+            continue;
+        }
+
+        auto it_label = e.data().find("Label");
+        if(it_label == e.data().end() || !it_label->is_string()) { continue; }
+        auto const pn = it_label->get<std::string>();
+        auto const base = base_name(pn);
+
+        if(mid == ::phy_engine::phy_lab_wrapper::pl_model_id::logic_input)
+        {
+            auto it_row = inputs.row_by_base.find(base);
+            if(it_row == inputs.row_by_base.end()) { continue; }
+
+            auto const row = it_row->second;
+            auto const nrows = std::max<std::size_t>(1, inputs.order.size());
+            auto const y = row_center_y(row, nrows, in_y_min, in_y_max);
+
+            auto it_w = inputs.width_by_base.find(base);
+            auto const width = (it_w == inputs.width_by_base.end()) ? 1 : it_w->second;
+            std::size_t bit{};
+            if(auto idx = parse_bit_index(pn, base)) { bit = *idx; }
+            auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
+
+            ex.get_element(e.identifier()).set_element_position(position{x, y, 0.0}, false);
+            continue;
+        }
+
+        auto it_row = outputs.row_by_base.find(base);
+        if(it_row == outputs.row_by_base.end()) { continue; }
+
+        auto const row = it_row->second;
+        auto const nrows = std::max<std::size_t>(1, outputs.order.size());
+        auto const y = row_center_y(row, nrows, out_y_min, out_y_max);
+
+        auto it_w = outputs.width_by_base.find(base);
+        auto const width = (it_w == outputs.width_by_base.end()) ? 1 : it_w->second;
+        std::size_t bit{};
+        if(auto idx = parse_bit_index(pn, base)) { bit = *idx; }
+        auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
+
+        ex.get_element(e.identifier()).set_element_position(position{x, y, 0.0}, false);
+    }
 }
 
 static void usage(char const* argv0)
@@ -363,13 +501,15 @@ int main(int argc, char** argv)
     popt.generate_wires = generate_wires;
     popt.keep_pl_macros = true;
 
+    // The export coordinate system uses a symmetric "extent" for convenience.
+    // When wires are enabled, the top/bottom thirds are reserved for IO and the middle third is used for layout.
     constexpr double third = 1.0 / 3.0;
-    double in_y_min = generate_wires ? third : (1.0 / 16.0);
-    double in_y_max = 1.0;
-    double out_y_min = -1.0;
-    double out_y_max = generate_wires ? -third : -(1.0 / 16.0);
-    double layout_y_min = generate_wires ? -third : -1.0;
-    double layout_y_max = generate_wires ? third : 1.0;
+    double extent = 1.0;
+    double const io_gap = generate_wires ? ::phy_engine::phy_lab_wrapper::element_xyz::y_unit : 0.0;
+    double in_y_min = generate_wires ? ((extent * third) + io_gap) : (extent * (1.0 / 16.0));
+    double in_y_max = extent;
+    double out_y_min = -extent;
+    double out_y_max = generate_wires ? ((-extent * third) - io_gap) : (-extent * (1.0 / 16.0));
 
     popt.element_placer = [&](::phy_engine::phy_lab_wrapper::pe_to_pl::options::placement_context const& ctx)
         -> std::optional<phy_engine::phy_lab_wrapper::position> {
@@ -391,7 +531,7 @@ int main(int argc, char** argv)
             if(auto idx = parse_bit_index(pn, base)) { bit = *idx; }
 
             // LSB on the right: bit0 at +x, MSB at -x.
-            auto const x = x_for_bit_lsb_right(bit, width, -1.0, 1.0);
+            auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
             return position{x, y, 0.0};
         }
 
@@ -412,7 +552,7 @@ int main(int argc, char** argv)
             std::size_t bit{};
             if(auto idx = parse_bit_index(pn, base)) { bit = *idx; }
 
-            auto const x = x_for_bit_lsb_right(bit, width, -1.0, 1.0);
+            auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
             return position{x, y, 0.0};
         }
 
@@ -425,9 +565,7 @@ int main(int argc, char** argv)
     // Keep IO elements fixed for layout.
     for(auto const& e : r.ex.elements())
     {
-        auto const mid = e.data().value("ModelID", "");
-        if(mid == pl_model_id::logic_input || mid == pl_model_id::logic_output || mid == pl_model_id::eight_bit_input ||
-           mid == pl_model_id::eight_bit_display)
+        if(is_port_io_element(e, inputs, outputs))
         {
             r.ex.get_element(e.identifier()).set_participate_in_layout(false);
         }
@@ -440,11 +578,52 @@ int main(int argc, char** argv)
         aopt.respect_fixed_elements = true;
         aopt.small_element = {1, 1};
         aopt.big_element = {2, 2};
-        (void)::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex,
-                                                                position{-1.0, layout_y_min, 0.0},
-                                                                position{1.0, layout_y_max, 0.0},
-                                                                0.0,
-                                                                aopt);
+        // Exclude boundary-placed IO elements from being treated as obstacles inside the layout grid.
+        aopt.margin_x = 1e-6;
+        aopt.margin_y = 1e-6;
+
+        // Defensive: if some converter path ever marks internal elements as non-participating, undo that here.
+        for(auto const& e : r.ex.elements())
+        {
+            auto const mid = e.data().value("ModelID", "");
+            if(is_port_io_element(e, inputs, outputs)) { continue; }
+            if(!e.participate_in_layout()) { r.ex.get_element(e.identifier()).set_participate_in_layout(true); }
+        }
+
+        // Auto-scale extent so the middle-third layout region has enough capacity. Otherwise, skipped elements
+        // stay at `fixed_pos` (0,0,0) and pile up visually.
+        auto const demand = estimate_required_cells(r.ex, aopt);
+        extent = choose_extent(demand, generate_wires, aopt);
+
+        ::phy_engine::phy_lab_wrapper::auto_layout::stats st{};
+        for(std::size_t attempt{}; attempt < 8; ++attempt)
+        {
+            // Re-place IO after extent scaling (the initial placement assumed extent=1).
+            reposition_io_elements(r.ex, inputs, outputs, extent, generate_wires);
+
+            double const layout_y_min = generate_wires ? (-extent * third) : (-extent);
+            double const layout_y_max = generate_wires ? (extent * third) : (extent);
+
+            st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex,
+                                                                    position{-extent, layout_y_min, 0.0},
+                                                                    position{extent, layout_y_max, 0.0},
+                                                                    0.0,
+                                                                    aopt);
+
+            // `cluster` mode may fall back to `fast` when macro placement fails. Retry with a larger extent.
+            if(st.skipped == 0 && st.mode == aopt.mode) { break; }
+            extent *= 1.15;
+        }
+
+        std::fprintf(stderr,
+                     "[verilog2plsav] layout=%d extent=%.3f grid=%zux%zu placed=%zu skipped=%zu fixed=%zu\n",
+                     static_cast<int>(st.mode),
+                     extent,
+                     st.grid_w,
+                     st.grid_h,
+                     st.placed,
+                     st.skipped,
+                     st.fixed_obstacles);
     }
 
     r.ex.save(out_path, 2);
