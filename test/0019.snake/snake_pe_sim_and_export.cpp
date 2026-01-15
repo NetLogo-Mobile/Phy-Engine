@@ -6,9 +6,14 @@
 #include <phy_engine/model/models/digital/logical/output.h>
 #include <phy_engine/netlist/operation.h>
 
+#include <phy_engine/phy_lab_wrapper/auto_layout/auto_layout.h>
 #include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
 
 #include <cassert>
+#include <array>
+#include <cstdio>
+#include <cmath>
+#include <cstdint>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -113,6 +118,8 @@ int main()
 
     std::vector<std::size_t> pix_port_indices{};
     pix_port_indices.reserve(64);
+    std::array<std::size_t, 64> pix_port_index_by_bit{};
+    pix_port_index_by_bit.fill(static_cast<std::size_t>(-1));
 
     // External IO models.
     for(std::size_t pi{}; pi < top_inst.mod->ports.size(); ++pi)
@@ -154,6 +161,9 @@ int main()
             if(port_name.starts_with("pix["))
             {
                 pix_port_indices.push_back(pi);
+                auto bit = parse_bit_index(port_name, "pix");
+                if(!bit || *bit >= 64) { return 9; }
+                pix_port_index_by_bit[*bit] = pi;
             }
             continue;
         }
@@ -163,6 +173,10 @@ int main()
     }
 
     if(pix_port_indices.size() != 64) { return 9; }
+    for(std::size_t b{}; b < 64; ++b)
+    {
+        if(pix_port_index_by_bit[b] == static_cast<std::size_t>(-1)) { return 9; }
+    }
     if(!input_by_name.contains("clk") || !input_by_name.contains("rst_n")) { return 10; }
 
     // Synthesize to PE netlist (digital primitives).
@@ -222,6 +236,134 @@ int main()
         };
 
         auto r = ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt);
+
+        // Keep *port* I/O fixed (do not let auto-layout move them).
+        // Note: synthesis may also introduce internal constant drivers that map to "Logic Input" with empty label;
+        // those should participate in layout (otherwise they'd pile up at fixed_pos=(0,0,0)).
+        for(auto const& e : r.ex.elements())
+        {
+            auto const mid = e.data().value("ModelID", "");
+            if(mid != pl_model_id::logic_input && mid != pl_model_id::logic_output) { continue; }
+
+            auto it = e.data().find("Label");
+            if(it == e.data().end() || !it->is_string()) { continue; }
+            auto const label = it->get<std::string>();
+            std::string_view const name{label};
+
+            bool const is_port_io = (name == "clk" || name == "rst_n" || name == "btn_up" || name == "btn_down" || name == "btn_left" ||
+                                     name == "btn_right" || name.starts_with("pix[") || name.starts_with("probe_"));
+            if(is_port_io)
+            {
+                r.ex.get_element(e.identifier()).set_participate_in_layout(false);
+            }
+        }
+
+        // Place the "core" (all movable, non-I/O elements) using hierarchical layout in the requested region:
+        // start from y=1.25 to avoid overlapping the top output row (y=1.0).
+        // corner0 = (-1, 1.25, 0), corner1 = (1, 2, 0).
+        {
+            ::phy_engine::phy_lab_wrapper::auto_layout::options aopt{};
+            aopt.mode = ::phy_engine::phy_lab_wrapper::auto_layout::mode::hierarchical;
+            aopt.respect_fixed_elements = true;
+            aopt.small_element = {1, 1};
+            aopt.big_element = {2, 2};
+            // Exclude boundary-placed IO elements from being treated as obstacles inside the layout grid.
+            aopt.margin_x = 1e-6;
+            aopt.margin_y = 1e-6;
+
+            auto const corner0 = position{-1.0, 1.25, 0.0};
+            auto const corner1 = position{1.0, 2.0, 0.0};
+
+            auto required_cells = [&] {
+                std::size_t demand{};
+                for(auto const& e : r.ex.elements())
+                {
+                    if(!e.participate_in_layout()) { continue; }
+                    auto const fp = e.is_big_element() ? aopt.big_element : aopt.small_element;
+                    demand += fp.w * fp.h;
+                }
+                return demand;
+            }();
+
+            auto capacity = [&](double step_x, double step_y) -> double {
+                if(!(step_x > 0.0) || !(step_y > 0.0)) { return 0.0; }
+                auto const min_x = std::min(corner0.x, corner1.x) + aopt.margin_x;
+                auto const max_x = std::max(corner0.x, corner1.x) - aopt.margin_x;
+                auto const min_y = std::min(corner0.y, corner1.y) + aopt.margin_y;
+                auto const max_y = std::max(corner0.y, corner1.y) - aopt.margin_y;
+                auto const span_x = max_x - min_x;
+                auto const span_y = max_y - min_y;
+                if(!(span_x >= 0.0) || !(span_y >= 0.0)) { return 0.0; }
+                auto const w = std::floor(span_x / step_x + 1e-12) + 1.0;
+                auto const h = std::floor(span_y / step_y + 1e-12) + 1.0;
+                return w * h;
+            };
+
+            auto grid_ok = [&](double step_x, double step_y) -> bool {
+                if(!(step_x > 0.0) || !(step_y > 0.0)) { return false; }
+                auto const min_x = std::min(corner0.x, corner1.x) + aopt.margin_x;
+                auto const max_x = std::max(corner0.x, corner1.x) - aopt.margin_x;
+                auto const min_y = std::min(corner0.y, corner1.y) + aopt.margin_y;
+                auto const max_y = std::max(corner0.y, corner1.y) - aopt.margin_y;
+                auto const span_x = max_x - min_x;
+                auto const span_y = max_y - min_y;
+                if(!(span_x >= 0.0) || !(span_y >= 0.0)) { return false; }
+                auto const w = static_cast<std::size_t>(std::floor(span_x / step_x + 1e-12)) + 1;
+                auto const h = static_cast<std::size_t>(std::floor(span_y / step_y + 1e-12)) + 1;
+                // Keep memory bounded even if someone exports a huge design here.
+                constexpr std::size_t kMaxGridCells = 2'000'000;
+                if(w == 0 || h == 0) { return false; }
+                if(w > (kMaxGridCells / h)) { return false; }
+                return true;
+            };
+
+            // Choose a step small enough so the region has enough subcells to avoid pile-up.
+            if(required_cells != 0)
+            {
+                auto const span_x = std::abs(corner1.x - corner0.x);
+                auto const span_y = std::abs(corner1.y - corner0.y);
+                double const area = span_x * span_y;
+                double const fill = 1.25;     // extra headroom
+                double const min_step = 0.001; // keep grid bounded by kMaxGridCells
+                double step = std::sqrt(std::max(1e-12, area / (static_cast<double>(required_cells) * fill)));
+                if(!std::isfinite(step) || step <= 0.0) { step = 0.02; }
+                step = std::max(step, min_step);
+                // Make sure the grid itself is allowed; if not, increase the step until it fits.
+                for(std::size_t guard{}; guard < 256 && !grid_ok(step, step); ++guard) { step *= 1.02; }
+
+                aopt.step_x = step;
+                aopt.step_y = step;
+
+                // Retry if the chosen step is still too coarse (skipped nodes stay at fixed_pos and overlap).
+                ::phy_engine::phy_lab_wrapper::auto_layout::stats st{};
+                for(std::size_t attempt{}; attempt < 10; ++attempt)
+                {
+                    st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
+                    if(st.skipped == 0 && st.mode == aopt.mode) { break; }
+                    aopt.step_x = std::max(aopt.step_x * 0.92, min_step);
+                    aopt.step_y = std::max(aopt.step_y * 0.92, min_step);
+                    if(!grid_ok(aopt.step_x, aopt.step_y)) { break; }
+                    // If we already have enough capacity and still skip, allow a deeper candidate search.
+                    if(capacity(aopt.step_x, aopt.step_y) >= static_cast<double>(required_cells) * fill)
+                    {
+                        aopt.max_candidates_per_element = std::max<std::size_t>(aopt.max_candidates_per_element, 16384);
+                    }
+                }
+            }
+            else
+            {
+                (void)::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
+            }
+
+            // Validate the "core" ends up inside the requested region (I/O is excluded above).
+            for(auto const& e : r.ex.elements())
+            {
+                if(!e.participate_in_layout()) { continue; }
+                auto const p = e.element_position();
+                assert(p.x >= -1.000001 && p.x <= 1.000001);
+                assert(p.y >= 1.249999 && p.y <= 2.000001);
+            }
+        }
 
         // Must be a real netlist (nodes are linked), even if element placement is fixed.
         assert(!r.ex.wires().empty());
@@ -315,57 +457,139 @@ int main()
                                             : ::phy_engine::model::digital_node_statement_t::false_state));
     };
 
-    set_in(in_rstn, false);
-    set_in(in_clk, false);
-    c.digital_clk();
-    set_in(in_clk, true);
-    c.digital_clk();
-    set_in(in_clk, false);
-    c.digital_clk();
-    set_in(in_rstn, true);
-
     auto* in_right = input_by_name.at("btn_right");
     auto* in_down = input_by_name.at("btn_down");
     auto* in_left = input_by_name.at("btn_left");
     auto* in_up = input_by_name.at("btn_up");
 
-    // Move right for a few cycles (default direction), then turn down, then left.
-    set_in(in_right, true);
-    for(int i = 0; i < 3; ++i)
-    {
+    auto tick = [&] {
         set_in(in_clk, true);
         c.digital_clk();
         set_in(in_clk, false);
         c.digital_clk();
+    };
+
+    auto reset = [&] {
+        set_in(in_clk, false);
+        c.digital_clk();
+
+        // Make reset edge-visible: INPUT ports initialize to 0, so we explicitly drive 1->0.
+        set_in(in_rstn, true);
+        c.digital_clk();
+        set_in(in_rstn, false);
+        c.digital_clk();
+
+        set_in(in_clk, true);
+        c.digital_clk();
+        set_in(in_clk, false);
+        c.digital_clk();
+        set_in(in_rstn, true);
+        c.digital_clk();
+
+        set_in(in_up, false);
+        set_in(in_down, false);
+        set_in(in_left, false);
+        set_in(in_right, false);
+        c.digital_clk();
+    };
+
+    auto pix_u64 = [&]() -> std::uint64_t {
+        std::uint64_t v{};
+        for(std::size_t bit{}; bit < 64; ++bit)
+        {
+            auto const pi = pix_port_index_by_bit[bit];
+            auto const st = ports[pi]->node_information.dn.state;
+            if(st == ::phy_engine::model::digital_node_statement_t::true_state)
+            {
+                v |= (std::uint64_t{1} << bit);
+                continue;
+            }
+            assert(st == ::phy_engine::model::digital_node_statement_t::false_state);
+        }
+        return v;
+    };
+
+    auto bit_at = [](std::uint32_t x, std::uint32_t y) -> std::uint64_t { return (std::uint64_t{1} << (y * 8u + x)); };
+
+    // Repro: if "down" is held before the first tick after reset, the snake should still render.
+    // This specifically exercises indices >= 32 (row 4+) in pix.
+    {
+        reset();
+
+        auto const initial = pix_u64();
+        auto const expected_initial = bit_at(3, 3) | bit_at(2, 3) | bit_at(1, 3) | bit_at(0, 3) | bit_at(5, 5);
+        if(initial != expected_initial)
+        {
+            std::fprintf(stderr, "initial pix mismatch: got=0x%016llx expected=0x%016llx\n",
+                         static_cast<unsigned long long>(initial), static_cast<unsigned long long>(expected_initial));
+        }
+        assert(initial == expected_initial);
+
+        set_in(in_down, true);
+        c.digital_clk();
+        tick();
+        set_in(in_down, false);
+
+        auto const after1 = pix_u64();
+        auto const expected_after1 = bit_at(3, 4) | bit_at(3, 3) | bit_at(2, 3) | bit_at(1, 3) | bit_at(5, 5);
+        if(after1 != expected_after1)
+        {
+            std::fprintf(stderr, "after1 pix mismatch: got=0x%016llx expected=0x%016llx\n",
+                         static_cast<unsigned long long>(after1), static_cast<unsigned long long>(expected_after1));
+        }
+        assert(after1 == expected_after1);
+    }
+
+    // Food: ensure it's visible after reset, and that it moves after being eaten.
+    {
+        reset();
+
+        // Move right twice (default direction) to x=5,y=3.
+        tick();
+        tick();
+
+        // Hold "down" and move onto the food at (5,5).
+        set_in(in_down, true);
+        c.digital_clk();
+        tick();  // y=4
+        tick();  // y=5 (eat)
+        set_in(in_down, false);
+
+        auto const after_eat = pix_u64();
+        assert((after_eat & bit_at(4, 6)) != 0);  // lfsr_next from 6'h3A is 6'h34 => (x=4,y=6)
+    }
+
+    reset();
+
+    // Move right for a few cycles (default direction), then turn down, then left.
+    set_in(in_right, true);
+    c.digital_clk();
+    for(int i = 0; i < 3; ++i)
+    {
+        tick();
     }
     set_in(in_right, false);
 
     set_in(in_down, true);
+    c.digital_clk();
     for(int i = 0; i < 2; ++i)
     {
-        set_in(in_clk, true);
-        c.digital_clk();
-        set_in(in_clk, false);
-        c.digital_clk();
+        tick();
     }
     set_in(in_down, false);
 
     set_in(in_left, true);
+    c.digital_clk();
     for(int i = 0; i < 2; ++i)
     {
-        set_in(in_clk, true);
-        c.digital_clk();
-        set_in(in_clk, false);
-        c.digital_clk();
+        tick();
     }
     set_in(in_left, false);
 
     // Pulse up once (direction change only; movement happens every cycle anyway).
     set_in(in_up, true);
-    set_in(in_clk, true);
     c.digital_clk();
-    set_in(in_clk, false);
-    c.digital_clk();
+    tick();
     set_in(in_up, false);
 
     // The snake renders 4 segments; at least 2 pixels should be asserted.
@@ -381,4 +605,3 @@ int main()
 
     return 0;
 }
-
