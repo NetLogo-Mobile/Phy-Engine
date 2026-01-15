@@ -14,6 +14,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -192,40 +193,31 @@ int main()
         if(!::phy_engine::netlist::add_to_node(nl, *ctr, 5, n_rstn)) { return 3; }
     }
 
-    // Random sources:
-    // - PL-style: a tiny LFSR compiled from Verilog (rng4_pl.v)
-    // - PE macro: RANDOM_GENERATOR4 (exports as "Random Generator" in PL when keep_pl_macros=true)
-    std::array<::phy_engine::model::node_t*, 4> rnd_pl{};
-    std::array<::phy_engine::model::node_t*, 4> rnd_pe{};
-    for(auto& p : rnd_pl) { p = __builtin_addressof(node_ref(nl)); }
-    for(auto& p : rnd_pe) { p = __builtin_addressof(node_ref(nl)); }
+    // Random sources (PE macros): two independent 4-bit generators.
+    // Each exports as the PL "Random Generator" when keep_pl_macros=true.
+    std::array<::phy_engine::model::node_t*, 4> rnd_a{};
+    std::array<::phy_engine::model::node_t*, 4> rnd_b{};
+    for(auto& p : rnd_a) { p = __builtin_addressof(node_ref(nl)); }
+    for(auto& p : rnd_b) { p = __builtin_addressof(node_ref(nl)); }
 
-    // Synthesize rng4_pl.
+    auto add_rng4 = [&](char const* name, ::std::uint8_t init, std::array<::phy_engine::model::node_t*, 4>& out) -> int
     {
-        std::unordered_map<std::string, ::phy_engine::model::node_t*> bind{};
-        bind.emplace("clk", __builtin_addressof(n_step_clk));
-        bind.emplace("rst_n", __builtin_addressof(n_rstn));
-        for(std::size_t i{}; i < 4; ++i) { bind.emplace("rnd[" + std::to_string(i) + "]", rnd_pl[i]); }
-        (void)synth_one_module(nl, dir / "rng4_pl.v", u8"rng4_pl", bind);
-    }
-
-    // Add PE random generator.
-    {
-        auto [rng, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::RANDOM_GENERATOR4{.state = 0x9});
+        auto [rng, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::RANDOM_GENERATOR4{.state = init});
         (void)pos;
         if(rng == nullptr || rng->ptr == nullptr) { return 4; }
         rng->name.clear();
-        rng->name.append(u8"rng_pe4");
-        // q3..q0
+        rng->name.append(::fast_io::u8string_view{reinterpret_cast<char8_t const*>(name), ::std::strlen(name)});
         for(std::size_t i{}; i < 4; ++i)
         {
-            if(!::phy_engine::netlist::add_to_node(nl, *rng, i, *rnd_pe[i])) { return 5; }
+            if(!::phy_engine::netlist::add_to_node(nl, *rng, i, *out[i])) { return 5; }
         }
-        // clk = slow clock
         if(!::phy_engine::netlist::add_to_node(nl, *rng, 4, n_step_clk)) { return 5; }
-        // reset_n = rst_n
         if(!::phy_engine::netlist::add_to_node(nl, *rng, 5, n_rstn)) { return 5; }
-    }
+        return 0;
+    };
+
+    if(int rc = add_rng4("rng_a4", 0x9, rnd_a)) { return rc; }
+    if(int rc = add_rng4("rng_b4", 0xC, rnd_b)) { return rc; }
 
     // Synthesize snake_core and snake_render, then connect them by bus nodes.
     // Core outputs -> renderer inputs.
@@ -241,33 +233,109 @@ int main()
     for(auto& p : idx_food) { p = __builtin_addressof(node_ref(nl)); }
     auto& n_game_over = node_ref(nl);
 
-    // snake_core
+    // Core (split into multiple small Verilog modules; each compiled separately and wired by buses here).
+    std::array<::phy_engine::model::node_t*, 2> dir_bits{};
+    std::array<::phy_engine::model::node_t*, 2> next_dir_bits{};
+    for(auto& p : dir_bits) { p = __builtin_addressof(node_ref(nl)); }
+    for(auto& p : next_dir_bits) { p = __builtin_addressof(node_ref(nl)); }
+
+    std::array<::phy_engine::model::node_t*, 6> idx_head_next{};
+    std::array<::phy_engine::model::node_t*, 6> new_food_idx{};
+    for(auto& p : idx_head_next) { p = __builtin_addressof(node_ref(nl)); }
+    for(auto& p : new_food_idx) { p = __builtin_addressof(node_ref(nl)); }
+    auto& n_eat = node_ref(nl);
+    auto& n_hit_body = node_ref(nl);
+
+    // snake_dir
     {
         std::unordered_map<std::string, ::phy_engine::model::node_t*> bind{};
-        bind.emplace("clk", __builtin_addressof(n_step_clk));
-        bind.emplace("rst_n", __builtin_addressof(n_rstn));
         bind.emplace("btn_up", __builtin_addressof(n_btn_up));
         bind.emplace("btn_down", __builtin_addressof(n_btn_down));
         bind.emplace("btn_left", __builtin_addressof(n_btn_left));
         bind.emplace("btn_right", __builtin_addressof(n_btn_right));
-
-        for(std::size_t i{}; i < 4; ++i)
+        for(std::size_t i{}; i < 2; ++i)
         {
-            bind.emplace("rnd_pl[" + std::to_string(i) + "]", rnd_pl[i]);
-            bind.emplace("rnd_pe[" + std::to_string(i) + "]", rnd_pe[i]);
+            bind.emplace("dir[" + std::to_string(i) + "]", dir_bits[i]);
+            bind.emplace("next_dir[" + std::to_string(i) + "]", next_dir_bits[i]);
         }
+        (void)synth_one_module(nl, dir / "snake_dir.v", u8"snake_dir", bind);
+    }
 
+    // snake_head_next
+    {
+        std::unordered_map<std::string, ::phy_engine::model::node_t*> bind{};
         for(std::size_t i{}; i < 6; ++i)
         {
+            bind.emplace("idx_head[" + std::to_string(i) + "]", idx_head[i]);
+            bind.emplace("idx_head_next[" + std::to_string(i) + "]", idx_head_next[i]);
+        }
+        for(std::size_t i{}; i < 2; ++i) { bind.emplace("next_dir[" + std::to_string(i) + "]", next_dir_bits[i]); }
+        (void)synth_one_module(nl, dir / "snake_head_next.v", u8"snake_head_next", bind);
+    }
+
+    // snake_hit_eat
+    {
+        std::unordered_map<std::string, ::phy_engine::model::node_t*> bind{};
+        for(std::size_t i{}; i < 6; ++i)
+        {
+            bind.emplace("idx_head_next[" + std::to_string(i) + "]", idx_head_next[i]);
+            bind.emplace("idx0[" + std::to_string(i) + "]", idx0[i]);
+            bind.emplace("idx1[" + std::to_string(i) + "]", idx1[i]);
+            bind.emplace("idx2[" + std::to_string(i) + "]", idx2[i]);
+            bind.emplace("idx_food[" + std::to_string(i) + "]", idx_food[i]);
+        }
+        bind.emplace("eat", __builtin_addressof(n_eat));
+        bind.emplace("hit_body", __builtin_addressof(n_hit_body));
+        (void)synth_one_module(nl, dir / "snake_hit_eat.v", u8"snake_hit_eat", bind);
+    }
+
+    // snake_food_pick
+    {
+        std::unordered_map<std::string, ::phy_engine::model::node_t*> bind{};
+        for(std::size_t i{}; i < 4; ++i)
+        {
+            bind.emplace("rnd_a[" + std::to_string(i) + "]", rnd_a[i]);
+            bind.emplace("rnd_b[" + std::to_string(i) + "]", rnd_b[i]);
+        }
+        for(std::size_t i{}; i < 6; ++i)
+        {
+            bind.emplace("idx_head_next[" + std::to_string(i) + "]", idx_head_next[i]);
+            bind.emplace("idx_head_now[" + std::to_string(i) + "]", idx_head[i]);
+            bind.emplace("idx0_now[" + std::to_string(i) + "]", idx0[i]);
+            bind.emplace("idx1_now[" + std::to_string(i) + "]", idx1[i]);
+            bind.emplace("idx2_now[" + std::to_string(i) + "]", idx2[i]);
+            bind.emplace("new_food_idx[" + std::to_string(i) + "]", new_food_idx[i]);
+        }
+        (void)synth_one_module(nl, dir / "snake_food_pick.v", u8"snake_food_pick", bind);
+    }
+
+    // snake_state
+    {
+        std::unordered_map<std::string, ::phy_engine::model::node_t*> bind{};
+        bind.emplace("clk", __builtin_addressof(n_step_clk));
+        bind.emplace("rst_n", __builtin_addressof(n_rstn));
+        bind.emplace("eat", __builtin_addressof(n_eat));
+        bind.emplace("hit_body", __builtin_addressof(n_hit_body));
+        bind.emplace("game_over", __builtin_addressof(n_game_over));
+
+        for(std::size_t i{}; i < 2; ++i)
+        {
+            bind.emplace("next_dir[" + std::to_string(i) + "]", next_dir_bits[i]);
+            bind.emplace("dir[" + std::to_string(i) + "]", dir_bits[i]);
+        }
+        for(std::size_t i{}; i < 6; ++i)
+        {
+            bind.emplace("idx_head_next[" + std::to_string(i) + "]", idx_head_next[i]);
+            bind.emplace("new_food_idx[" + std::to_string(i) + "]", new_food_idx[i]);
+
             bind.emplace("idx_head[" + std::to_string(i) + "]", idx_head[i]);
             bind.emplace("idx0[" + std::to_string(i) + "]", idx0[i]);
             bind.emplace("idx1[" + std::to_string(i) + "]", idx1[i]);
             bind.emplace("idx2[" + std::to_string(i) + "]", idx2[i]);
             bind.emplace("idx_food[" + std::to_string(i) + "]", idx_food[i]);
         }
-        bind.emplace("game_over", __builtin_addressof(n_game_over));
 
-        (void)synth_one_module(nl, dir / "snake_core.v", u8"snake_core", bind);
+        (void)synth_one_module(nl, dir / "snake_state.v", u8"snake_state", bind);
     }
 
     // snake_render -> pix bus
