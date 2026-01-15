@@ -19,8 +19,8 @@ namespace phy_engine::model
         // pins:
         //   0..3: q3..q0 (MSB..LSB)
         //   4: clk
-        //   5: seed (Z => treated as H)
-        ::phy_engine::model::pin pins[6]{{{u8"q3"}}, {{u8"q2"}}, {{u8"q1"}}, {{u8"q0"}}, {{u8"clk"}}, {{u8"seed"}}};
+        //   5: reset_n (active-low; Z => treated as H)
+        ::phy_engine::model::pin pins[6]{{{u8"q3"}}, {{u8"q2"}}, {{u8"q1"}}, {{u8"q0"}}, {{u8"clk"}}, {{u8"reset_n"}}};
 
         double Ll{0.0};
         double Hl{5.0};
@@ -112,30 +112,35 @@ namespace phy_engine::model
         };
 
         auto const n_clk{clip.pins[4].nodes};
-        auto const n_seed{clip.pins[5].nodes};
+        auto const n_rstn{clip.pins[5].nodes};
         if(n_clk == nullptr) { return {}; }
 
         auto const clk{read_dn_logic(n_clk)};
-        auto seed = (n_seed == nullptr) ? ::phy_engine::model::digital_node_statement_t::high_impedence_state
-                                        : (n_seed->num_of_analog_node == 0 ? n_seed->node_information.dn.state : read_dn_logic(n_seed));
-        if(seed == ::phy_engine::model::digital_node_statement_t::high_impedence_state) { seed = ::phy_engine::model::digital_node_statement_t::true_state; }
+        auto rstn = (n_rstn == nullptr) ? ::phy_engine::model::digital_node_statement_t::high_impedence_state
+                                       : (n_rstn->num_of_analog_node == 0 ? n_rstn->node_information.dn.state : read_dn_logic(n_rstn));
+        if(rstn == ::phy_engine::model::digital_node_statement_t::high_impedence_state) { rstn = ::phy_engine::model::digital_node_statement_t::true_state; }
 
-        if(clip.last_clk == ::phy_engine::model::digital_node_statement_t::false_state && clk == ::phy_engine::model::digital_node_statement_t::true_state)
+        // Reset dominates clocking, and also captures the current clock level so releasing reset while clk=1
+        // does not create a spurious posedge.
+        if(rstn == ::phy_engine::model::digital_node_statement_t::false_state)
         {
-            if(seed == ::phy_engine::model::digital_node_statement_t::indeterminate_state)
+            clip.state = 0u;
+            clip.unknown = false;
+        }
+        else if(rstn == ::phy_engine::model::digital_node_statement_t::indeterminate_state)
+        {
+            clip.unknown = true;
+        }
+        else if(clip.last_clk == ::phy_engine::model::digital_node_statement_t::false_state && clk == ::phy_engine::model::digital_node_statement_t::true_state)
+        {
+            if(!clip.unknown)
             {
-                clip.unknown = true;
-            }
-            else
-            {
-                if(!clip.unknown)
-                {
-                    bool const seed_bit = (seed == ::phy_engine::model::digital_node_statement_t::true_state);
-                    bool const b3 = ((clip.state >> 3u) & 1u) != 0u;
-                    bool const b2 = ((clip.state >> 2u) & 1u) != 0u;
-                    bool const feedback = (b3 ^ b2) ^ seed_bit;
-                    clip.state = static_cast<::std::uint8_t>(((clip.state << 1u) & 0x0E) | static_cast<::std::uint8_t>(feedback));
-                }
+                // Fixed non-zero injection prevents the all-zero lock state after reset.
+                bool const inject_bit = true;
+                bool const b3 = ((clip.state >> 3u) & 1u) != 0u;
+                bool const b2 = ((clip.state >> 2u) & 1u) != 0u;
+                bool const feedback = (b3 ^ b2) ^ inject_bit;
+                clip.state = static_cast<::std::uint8_t>(((clip.state << 1u) & 0x0E) | static_cast<::std::uint8_t>(feedback));
             }
         }
 

@@ -19,6 +19,7 @@
 #include "../../model/models/digital/combinational/full_adder.h"
 #include "../../model/models/digital/combinational/half_adder.h"
 #include "../../model/models/digital/combinational/mul2.h"
+#include "../../model/models/digital/combinational/random_generator4.h"
 #include "../../model/models/digital/logical/and.h"
 #include "../../model/models/digital/logical/case_eq.h"
 #include "../../model/models/digital/logical/input.h"
@@ -2864,6 +2865,55 @@ namespace phy_engine::verilog::digital
             {
                 set_error("pe_synth: always_ff not supported by options");
                 return false;
+            }
+
+            // System RNG bus: `$urandom` / `$random` are parsed as `$urandom[3:0]` and lowered to a PE RANDOM_GENERATOR4.
+            if(auto itv = m.vectors.find(::fast_io::u8string{u8"$urandom"}); itv != m.vectors.end())
+            {
+                auto const& vd = itv->second;
+                if(vd.bits.size() != 4)
+                {
+                    set_error("pe_synth: $urandom/$random internal bus width mismatch (expected [3:0])");
+                    return false;
+                }
+
+                auto find_sig_node = [&](::fast_io::u8string_view nm) noexcept -> ::phy_engine::model::node_t*
+                {
+                    auto it_sig = m.signal_index.find(::fast_io::u8string{nm});
+                    if(it_sig == m.signal_index.end()) { return nullptr; }
+                    return b.signal(it_sig->second);
+                };
+
+                auto* clk = find_sig_node(u8"clk");
+                if(clk == nullptr)
+                {
+                    set_error("pe_synth: $urandom/$random requires a 1-bit signal named 'clk'");
+                    return false;
+                }
+
+                auto* rstn = find_sig_node(u8"rst_n");
+                if(rstn == nullptr) { rstn = find_sig_node(u8"reset_n"); }
+                if(rstn == nullptr) { rstn = const_node(::phy_engine::verilog::digital::logic_t::true_state); }
+
+                auto [rng, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::RANDOM_GENERATOR4{});
+                (void)pos;
+                if(rng == nullptr)
+                {
+                    set_error("pe_synth: failed to create RANDOM_GENERATOR4 for $urandom/$random");
+                    return false;
+                }
+
+                // q3..q0 (pins 0..3) -> $urandom[3:0]
+                for(::std::size_t i{}; i < 4; ++i)
+                {
+                    auto const sig = vd.bits.index_unchecked(i);
+                    auto* out = b.signal(sig);
+                    if(out == nullptr) { continue; }
+                    if(!connect_driver(rng, i, out)) { return false; }
+                }
+
+                if(!connect_pin(rng, 4, clk)) { return false; }
+                if(!connect_pin(rng, 5, rstn)) { return false; }
             }
 
             // Children.

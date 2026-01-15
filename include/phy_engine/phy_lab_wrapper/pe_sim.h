@@ -225,6 +225,7 @@ inline std::size_t expected_prop_arity(int element_code)
         case PHY_ENGINE_E_DIGITAL_T_BAR_FF: return 0;
         case PHY_ENGINE_E_DIGITAL_JKFF: return 0;
         case PHY_ENGINE_E_DIGITAL_COUNTER4: return 1;
+        case PHY_ENGINE_E_DIGITAL_RANDOM_GENERATOR4: return 1;
         default: throw std::runtime_error("unknown property arity for PE element code: " + std::to_string(element_code));
     }
 }
@@ -544,60 +545,30 @@ private:
             // ---- Macro: 4-bit LFSR-like generator (Random Generator) ----
             // PL pins:
             //   outputs: 0=o_up(MSB),1=o_upmid,2=o_lowmid,3=o_low(LSB)
-            //   inputs : 4=i_up(clock),5=i_low(seed/enable; if unconnected, uses const1 to avoid all-zero lock)
+            //   inputs : 4=i_up(clock),5=i_low(reset_n; active-low; if unconnected, treated as reset_n=1)
             if (model_id == "Random Generator")
             {
-                bool seed_connected = pl_pin_used[pl_id][5];
+                bool rstn_connected = pl_pin_used[pl_id][5];
 
-                auto const1 = add_pe_element(PHY_ENGINE_E_DIGITAL_INPUT, {1.0}, "");
+                // PE primitive: `PHY_ENGINE_E_DIGITAL_RANDOM_GENERATOR4` (RANDOM_GENERATOR4),
+                // so it stays compact and matches the PE digital model library.
+                auto rng = add_pe_element(PHY_ENGINE_E_DIGITAL_RANDOM_GENERATOR4, {1.0}, "");
 
-                auto d0 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
-                auto d1 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
-                auto d2 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
-                auto d3 = add_pe_element(PHY_ENGINE_E_DIGITAL_DFF, {}, "");
+                // outputs (MSB..LSB): RANDOM_GENERATOR4 pins 0..3 are q3..q0.
+                pin_map[pl_id][0] = endpoint{rng, 0};
+                pin_map[pl_id][1] = endpoint{rng, 1};
+                pin_map[pl_id][2] = endpoint{rng, 2};
+                pin_map[pl_id][3] = endpoint{rng, 3};
 
-                // feedback = q3 XOR q2
-                auto x0 = add_pe_element(PHY_ENGINE_E_DIGITAL_XOR, {}, "");
-                // new_msb = feedback XOR seed
-                auto x1 = add_pe_element(PHY_ENGINE_E_DIGITAL_XOR, {}, "");
+                // clk/reset_n
+                pin_map[pl_id][4] = endpoint{rng, 4};
+                pin_map[pl_id][5] = endpoint{rng, 5};
 
-                endpoint d0_d{d0, 0}, d0_clk{d0, 1}, d0_q{d0, 2};
-                endpoint d1_d{d1, 0}, d1_clk{d1, 1}, d1_q{d1, 2};
-                endpoint d2_d{d2, 0}, d2_clk{d2, 1}, d2_q{d2, 2};
-                endpoint d3_d{d3, 0}, d3_clk{d3, 1}, d3_q{d3, 2};
-
-                // Shared clock node: expose via pin4, and wire to all DFF clocks.
-                pin_map[pl_id][4] = d0_clk;
-                add_wire(d0_clk, d1_clk);
-                add_wire(d0_clk, d2_clk);
-                add_wire(d0_clk, d3_clk);
-
-                // Shift: q3->d2, q2->d1, q1->d0
-                add_wire(d3_q, d2_d);
-                add_wire(d2_q, d1_d);
-                add_wire(d1_q, d0_d);
-
-                // feedback XOR chain: x0 = q3 XOR q2, x1 = x0 XOR seed
-                add_wire(d3_q, endpoint{x0, 0});
-                add_wire(d2_q, endpoint{x0, 1});
-                add_wire(endpoint{x0, 2}, endpoint{x1, 0});
-
-                if (seed_connected)
+                if (!rstn_connected)
                 {
-                    pin_map[pl_id][5] = endpoint{x1, 1};
+                    auto const1 = add_pe_element(PHY_ENGINE_E_DIGITAL_INPUT, {1.0}, "");
+                    add_wire(endpoint{const1, 0}, endpoint{rng, 5});
                 }
-                else
-                {
-                    add_wire(endpoint{const1, 0}, endpoint{x1, 1});
-                }
-
-                add_wire(endpoint{x1, 2}, d3_d);
-
-                // outputs (MSB..LSB)
-                pin_map[pl_id][0] = d3_q;
-                pin_map[pl_id][1] = d2_q;
-                pin_map[pl_id][2] = d1_q;
-                pin_map[pl_id][3] = d0_q;
                 continue;
             }
 

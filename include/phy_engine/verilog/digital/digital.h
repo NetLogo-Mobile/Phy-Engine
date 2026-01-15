@@ -837,7 +837,7 @@ namespace phy_engine::verilog::digital
                 continue;
             }
 
-            if(details::is_alpha(c))
+            if(details::is_alpha(c) || c == u8'$')
             {
                 ::std::size_t const l0{line};
                 ::std::size_t const c0{col};
@@ -3278,6 +3278,36 @@ namespace phy_engine::verilog::digital
                 {
                     ::fast_io::u8string name{t0.text};
                     p->consume();
+
+                    // System functions (subset):
+                    // - `$urandom` / `$random` are lowered to a hidden 4-bit RNG bus `$urandom[3:0]`.
+                    // - Optional argument lists are parsed and ignored (seed is not supported in this subset).
+                    if(name == u8"$urandom" || name == u8"$random")
+                    {
+                        if(p->accept_sym(u8'('))
+                        {
+                            if(!p->accept_sym(u8')'))
+                            {
+                                for(;;)
+                                {
+                                    (void)parse_expr();
+                                    if(p->accept_sym(u8')')) { break; }
+                                    if(!p->accept_sym(u8','))
+                                    {
+                                        p->err(p->peek(), u8"expected ',' or ')' in $urandom/$random argument list");
+                                        while(!p->eof() && !p->accept_sym(u8')')) { p->consume(); }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        auto& vd{declare_vector_range(p, *m, u8"$urandom", 3, 0, false, false)};
+                        ::fast_io::vector<::std::size_t> roots{};
+                        roots.resize(vd.bits.size());
+                        for(::std::size_t i{}; i < vd.bits.size(); ++i) { roots.index_unchecked(i) = make_signal_root(vd.bits.index_unchecked(i)); }
+                        return make_vector_with_range(::std::move(roots), vd.msb, vd.lsb, false);
+                    }
 
                     if(subst_idents && (base.scalar_root == SIZE_MAX && !base.is_vector))
                     {
@@ -7557,6 +7587,90 @@ namespace phy_engine::verilog::digital
             if(inst.mod == nullptr) { return; }
             auto const& m{*inst.mod};
             auto& st{inst.state};
+
+            // System RNG bus update:
+            // `$urandom` / `$random` are parsed as `$urandom[3:0]` and behave like a small clocked LFSR.
+            if(auto itv = m.vectors.find(::fast_io::u8string{u8"$urandom"}); itv != m.vectors.end())
+            {
+                auto const& vd = itv->second;
+                if(vd.bits.size() == 4)
+                {
+                    auto find_sig = [&](::fast_io::u8string_view nm) noexcept -> ::std::size_t
+                    {
+                        auto it = m.signal_index.find(::fast_io::u8string{nm});
+                        return (it == m.signal_index.end()) ? SIZE_MAX : it->second;
+                    };
+
+                    auto const clk_sig{find_sig(u8"clk")};
+                    auto const rst_sig0{find_sig(u8"rst_n")};
+                    auto const rst_sig1{find_sig(u8"reset_n")};
+
+                    auto set_bus = [&](logic_t v) noexcept
+                    {
+                        for(auto const sig : vd.bits)
+                        {
+                            if(sig < st.values.size()) { st.values.index_unchecked(sig) = v; }
+                        }
+                    };
+
+                    logic_t rstn{logic_t::true_state};
+                    ::std::size_t const rst_sig = (rst_sig0 != SIZE_MAX) ? rst_sig0 : rst_sig1;
+                    if(rst_sig != SIZE_MAX && rst_sig < st.values.size())
+                    {
+                        rstn = st.values.index_unchecked(rst_sig);
+                        if(rstn == logic_t::high_impedence_state) { rstn = logic_t::true_state; }
+                    }
+                    rstn = normalize_z_to_x(rstn);
+
+                    if(rstn == logic_t::false_state)
+                    {
+                        set_bus(logic_t::false_state);
+                    }
+                    else if(is_unknown(rstn))
+                    {
+                        set_bus(logic_t::indeterminate_state);
+                    }
+                    else if(clk_sig != SIZE_MAX && clk_sig < st.values.size() && clk_sig < st.prev_values.size())
+                    {
+                        auto const a{normalize_z_to_x(st.prev_values.index_unchecked(clk_sig))};
+                        auto const b{normalize_z_to_x(st.values.index_unchecked(clk_sig))};
+                        bool const posedge = (a == logic_t::false_state) && (b == logic_t::true_state);
+                        if(posedge)
+                        {
+                            bool unknown_state{};
+                            ::std::uint8_t state_u{};
+                            for(::std::size_t i{}; i < 4; ++i)
+                            {
+                                auto const sig = vd.bits.index_unchecked(i);
+                                if(sig >= st.values.size()) { unknown_state = true; break; }
+                                auto const v{normalize_z_to_x(st.values.index_unchecked(sig))};
+                                if(is_unknown(v)) { unknown_state = true; break; }
+                                if(v == logic_t::true_state) { state_u |= static_cast<::std::uint8_t>(1u << (3u - static_cast<unsigned>(i))); }
+                            }
+
+                            if(unknown_state)
+                            {
+                                set_bus(logic_t::indeterminate_state);
+                            }
+                            else
+                            {
+                                bool const b3 = ((state_u >> 3u) & 1u) != 0u;
+                                bool const b2 = ((state_u >> 2u) & 1u) != 0u;
+                                bool const feedback = (b3 ^ b2) ^ true;  // fixed injection avoids all-zero lock
+                                auto const next_u = static_cast<::std::uint8_t>(((state_u << 1u) & 0x0E) | static_cast<::std::uint8_t>(feedback));
+
+                                for(::std::size_t i{}; i < 4; ++i)
+                                {
+                                    auto const sig = vd.bits.index_unchecked(i);
+                                    if(sig >= st.values.size()) { continue; }
+                                    bool const bit = ((next_u >> (3u - static_cast<unsigned>(i))) & 1u) != 0u;
+                                    st.values.index_unchecked(sig) = bit ? logic_t::true_state : logic_t::false_state;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             for(auto const& ff: m.always_ffs)
             {

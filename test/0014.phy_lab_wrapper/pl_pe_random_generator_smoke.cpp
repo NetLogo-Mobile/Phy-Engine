@@ -13,15 +13,15 @@ int main()
     ex.entitle("pl_pe_random_generator_smoke");
 
     auto clk = ex.add_circuit_element("Logic Input", position{0.0, 0.0, 0.0});
-    auto seed = ex.add_circuit_element("Logic Input", position{0.0, 0.0, 1.0});
+    auto rstn = ex.add_circuit_element("Logic Input", position{0.0, 0.0, 1.0});
     auto rng = ex.add_circuit_element("Random Generator", position{1.0, 0.0, 0.0});
     auto out_lsb = ex.add_circuit_element("Logic Output", position{2.0, 0.0, 0.0});
 
     ex.get_element(clk).data()["Properties"]["开关"] = 0;
-    ex.get_element(seed).data()["Properties"]["开关"] = 1; // provide non-zero seed injection
+    ex.get_element(rstn).data()["Properties"]["开关"] = 0; // reset asserted (active-low)
 
     ex.connect(clk, 0, rng, 4);
-    ex.connect(seed, 0, rng, 5);
+    ex.connect(rstn, 0, rng, 5);
 
     // Observe LSB (pin3 in PL -> internal bit0)
     ex.connect(rng, 3, out_lsb, 0);
@@ -44,7 +44,13 @@ int main()
         c.write_back_to_pl(ex, s);
     };
 
-    // Run a few ticks and expect the output bit to change at least once.
+    // While in reset, output must be 0.
+    for (int i = 0; i < 2; ++i) { tick(); }
+    auto r0 = ex.get_element(out_lsb).data()["Properties"].value("状态", 0.0);
+    assert(r0 == 0.0);
+
+    // Release reset and expect the output bit to change at least once.
+    ex.get_element(rstn).data()["Properties"]["开关"] = 1;
     tick();
     auto first = ex.get_element(out_lsb).data()["Properties"].value("状态", 0.0);
 
@@ -62,4 +68,3 @@ int main()
 
     assert(changed);
 }
-
