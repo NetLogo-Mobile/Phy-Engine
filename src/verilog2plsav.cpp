@@ -333,6 +333,8 @@ static void usage(char const* argv0)
                  "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
                  "options:\n"
                  "  --layout fast|cluster|spectral|hier|force   Layout algorithm (default: fast)\n"
+                 "  --layout3d xy|hier|force|pack               Use 3D layout variant (z step is fixed at 0.02)\n"
+                 "  --layout3d-z-base Z                         3D layout base Z (default: 0; b/c start at 0.02)\n"
                  "  --no-wires                                 Disable auto wire generation\n"
                  "  --layout-step STEP                         Layout grid step (default: 0.01)\n"
                  "  --layout-min-step STEP                     Minimum step for auto-refine (default: 0.001)\n"
@@ -406,6 +408,43 @@ parse_layout_mode(std::optional<std::string> const& s)
     return std::nullopt;
 }
 
+enum class layout3d_kind : int
+{
+    xy = 0,     // 2D layout + z step per call
+    hier = 1,   // hierarchical layering in z
+    force = 2,  // 3D force-directed
+    pack = 3,   // packing in xy + z step per call
+};
+
+static std::optional<layout3d_kind> parse_layout3d_kind(std::optional<std::string> const& s)
+{
+    if(!s) { return std::nullopt; }
+    auto const& v = *s;
+    if(v == "xy" || v == "XY" || v == "lift2d" || v == "0") { return layout3d_kind::xy; }
+    if(v == "hier" || v == "hierarchical" || v == "layer" || v == "layers" || v == "1") { return layout3d_kind::hier; }
+    if(v == "force" || v == "force3d" || v == "2") { return layout3d_kind::force; }
+    if(v == "pack" || v == "packing" || v == "3") { return layout3d_kind::pack; }
+
+    // Legacy aliases (kept for compatibility).
+    if(v == "a" || v == "A" || v == "a3d" || v == "A3D") { return layout3d_kind::xy; }
+    if(v == "b" || v == "B" || v == "b3d" || v == "B3D") { return layout3d_kind::hier; }
+    if(v == "c" || v == "C" || v == "c3d" || v == "C3D") { return layout3d_kind::force; }
+    if(v == "d" || v == "D" || v == "d3d" || v == "D3D") { return layout3d_kind::pack; }
+    return std::nullopt;
+}
+
+static char const* layout3d_name(layout3d_kind k) noexcept
+{
+    switch(k)
+    {
+        case layout3d_kind::xy: return "xy";
+        case layout3d_kind::hier: return "hier";
+        case layout3d_kind::force: return "force";
+        case layout3d_kind::pack: return "pack";
+        default: return "unknown";
+    }
+}
+
 static ::phy_engine::verilog::digital::compiled_module const*
 find_top_module(::phy_engine::verilog::digital::compiled_design const& d, std::optional<std::string> const& top_override)
 {
@@ -475,6 +514,27 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "error: invalid --layout value\n");
         return 12;
     }
+
+    auto layout3d_arg = arg_after(argc, argv, "--layout3d");
+    auto layout3d = parse_layout3d_kind(layout3d_arg);
+    if(layout3d_arg && !layout3d)
+    {
+        std::fprintf(stderr, "error: invalid --layout3d value\n");
+        return 13;
+    }
+    auto layout3d_z_base_arg = arg_after(argc, argv, "--layout3d-z-base");
+    double layout3d_z_base = 0.0;
+    if(layout3d_z_base_arg)
+    {
+        auto v = parse_double(*layout3d_z_base_arg);
+        if(!v)
+        {
+            std::fprintf(stderr, "error: invalid --layout3d-z-base value\n");
+            return 14;
+        }
+        layout3d_z_base = *v;
+    }
+
     bool const generate_wires = !has_flag(argc, argv, "--no-wires");
     bool const layout_refine = !has_flag(argc, argv, "--no-layout-refine");
 
@@ -752,6 +812,14 @@ int main(int argc, char** argv)
         // stay at `fixed_pos` (0,0,0) and pile up visually.
         auto const demand = estimate_required_cells(r.ex, aopt);
 
+        if(layout3d)
+        {
+            std::fprintf(stderr,
+                         "[verilog2plsav] note: using 3D layout (*_3d): %s, z_step=%.2f\n",
+                         layout3d_name(*layout3d),
+                         ::phy_engine::phy_lab_wrapper::auto_layout::z_step_3d);
+        }
+
         ::phy_engine::phy_lab_wrapper::auto_layout::stats st{};
         for(std::size_t attempt{}; attempt < 10; ++attempt)
         {
@@ -768,14 +836,47 @@ int main(int argc, char** argv)
             double const layout_y_min = generate_wires ? (-extent * third) : (-extent);
             double const layout_y_max = generate_wires ? (extent * third) : (extent);
 
-            st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex,
-                                                                    position{-extent, layout_y_min, 0.0},
-                                                                    position{extent, layout_y_max, 0.0},
-                                                                    0.0,
-                                                                    aopt);
+            auto const corner0 = position{-extent, layout_y_min, 0.0};
+            auto const corner1 = position{extent, layout_y_max, 0.0};
+            if(layout3d)
+            {
+                // Keep z stable across retry attempts: retries are internal, not user-visible layout steps.
+                double z_io = layout3d_z_base;
+                double const z_base_bc = layout3d_z_base + ::phy_engine::phy_lab_wrapper::auto_layout::z_step_3d;
+
+                switch(*layout3d)
+                {
+                    case layout3d_kind::xy:
+                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_a_3d(r.ex, corner0, corner1, z_io, aopt);
+                        break;
+                    case layout3d_kind::hier:
+                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_b_3d(r.ex, corner0, corner1, z_base_bc, aopt);
+                        break;
+                    case layout3d_kind::force:
+                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_c_3d(r.ex, corner0, corner1, z_base_bc, aopt);
+                        break;
+                    case layout3d_kind::pack:
+                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_d_3d(r.ex, corner0, corner1, z_io, aopt);
+                        break;
+                    default:
+                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
+                        break;
+                }
+            }
+            else
+            {
+                st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
+            }
 
             // If this mode fell back (e.g., cluster->fast) or there are still skipped elements, try again with smaller steps.
-            if(st.skipped == 0 && st.mode == aopt.mode) { break; }
+            if(layout3d)
+            {
+                if(st.skipped == 0) { break; }
+            }
+            else
+            {
+                if(st.skipped == 0 && st.mode == aopt.mode) { break; }
+            }
             if(layout_refine)
             {
                 aopt.step_x = std::max(aopt.step_x * 0.92, layout_min_step);
