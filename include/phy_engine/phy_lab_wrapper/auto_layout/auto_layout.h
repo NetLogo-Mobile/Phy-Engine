@@ -133,6 +133,9 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
         std::size_t skipped{};
     };
 
+    // NOTE: All `*_3d` APIs use a fixed Z spacing in native coordinates.
+    inline constexpr double z_step_3d{0.02};
+
     namespace detail
     {
         struct cell
@@ -653,6 +656,13 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             std::vector<double> y;
         };
 
+        struct embedding3d
+        {
+            std::vector<double> x;
+            std::vector<double> y;
+            std::vector<double> z;
+        };
+
         inline void normalize_to_unit(std::vector<double>& v) noexcept
         {
             if(v.empty()) { return; }
@@ -683,6 +693,27 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(vecs.size() >= 3) { out.y = vecs[2]; }
             normalize_to_unit(out.x);
             normalize_to_unit(out.y);
+            return out;
+        }
+
+        inline embedding3d spectral_embedding3d(weighted_adj const& g, options const& opt)
+        {
+            auto const n = g.size();
+            embedding3d out{};
+            out.x.assign(n, 0.5);
+            out.y.assign(n, 0.5);
+            out.z.assign(n, 0.5);
+            if(n == 0) { return out; }
+            if(n == 1) { return out; }
+
+            auto const k = std::min<std::size_t>(std::max<std::size_t>(4, opt.spectral_eigenvectors), n);
+            auto vecs = top_eigenvectors(g, k, opt.spectral_iterations, opt.random_seed);
+            if(vecs.size() >= 2) { out.x = vecs[1]; }
+            if(vecs.size() >= 3) { out.y = vecs[2]; }
+            if(vecs.size() >= 4) { out.z = vecs[3]; }
+            normalize_to_unit(out.x);
+            normalize_to_unit(out.y);
+            normalize_to_unit(out.z);
             return out;
         }
 
@@ -1677,6 +1708,604 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 .skipped = skipped_count,
             };
         }
+
+        inline stats layout_cpu_packing(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        {
+            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+
+            auto ctx = build_context(ex, corner0, corner1, opt);
+
+            auto degree = [&](std::size_t idx) -> std::size_t { return ctx.adj[idx].size(); };
+            std::stable_sort(ctx.movable.begin(),
+                             ctx.movable.end(),
+                             [&](std::size_t a, std::size_t b)
+                             {
+                                 auto const& ea = ex.elements()[a];
+                                 auto const& eb = ex.elements()[b];
+                                 if(ea.is_big_element() != eb.is_big_element()) { return ea.is_big_element() > eb.is_big_element(); }
+                                 auto const da = degree(a);
+                                 auto const db = degree(b);
+                                 if(da != db) { return da > db; }
+                                 return ea.identifier() < eb.identifier();
+                             });
+
+            std::size_t placed_count{};
+            std::size_t skipped_count{};
+
+            for(auto idx: ctx.movable)
+            {
+                auto const fp = element_footprint(ex.elements()[idx], opt);
+                auto const win = full_window(ctx.w, ctx.h, fp);
+                if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+
+                std::optional<cell> chosen{};
+                for(int y = win->min_y; y <= win->max_y && !chosen; ++y)
+                {
+                    for(int x = win->min_x; x <= win->max_x; ++x)
+                    {
+                        cell c{x, y};
+                        if(!ctx.occ.can_place(c, fp)) { continue; }
+                        chosen = c;
+                        break;
+                    }
+                }
+
+                if(!chosen)
+                {
+                    ++skipped_count;
+                    continue;
+                }
+
+                ctx.occ.occupy(*chosen, fp, static_cast<int>(idx));
+                ctx.placed[idx] = *chosen;
+                ++placed_count;
+            }
+
+            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+
+            return stats{
+                .mode = opt.mode,
+                .grid_w = ctx.w,
+                .grid_h = ctx.h,
+                .step_x = opt.step_x,
+                .step_y = opt.step_y,
+                .fixed_obstacles = ctx.fixed_obstacles,
+                .placed = placed_count,
+                .skipped = skipped_count,
+            };
+        }
+
+        struct fixed_anchor
+        {
+            std::size_t idx{};
+            cell c{};
+            footprint fp{};
+            double z_native{};
+        };
+
+        inline std::vector<fixed_anchor> collect_fixed_anchors(experiment const& ex, context& ctx, options const& opt)
+        {
+            std::vector<fixed_anchor> out{};
+            out.reserve(ex.elements().size());
+
+            for(std::size_t i{}; i < ex.elements().size(); ++i)
+            {
+                auto const& e = ex.elements()[i];
+                if(e.participate_in_layout()) { continue; }
+
+                auto const native_pos =
+                    e.is_element_xyz() ? element_xyz::to_native(e.element_position(), ex.element_xyz_origin(), e.is_big_element()) : e.element_position();
+                auto c = snap_native_to_cell(ctx.bounds, opt.step_x, opt.step_y, native_pos);
+                // Fixed elements outside the layout bounds should not act as anchors.
+                if(c.x < 0 || c.y < 0) { continue; }
+
+                auto const fp = element_footprint(e, opt);
+                if(ctx.w < fp.w || ctx.h < fp.h) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                c.x = std::clamp(c.x, 0, static_cast<int>(ctx.w - fp.w));
+                c.y = std::clamp(c.y, 0, static_cast<int>(ctx.h - fp.h));
+
+                ctx.placed[i] = c;  // used as an anchor in placement_cost()
+                out.push_back(fixed_anchor{
+                    .idx = i,
+                    .c = c,
+                    .fp = fp,
+                    .z_native = native_pos.z,
+                });
+            }
+            return out;
+        }
+
+        inline bool same_z_plane(double a, double b) noexcept
+        {
+            // Allow a small tolerance so values that were previously snapped still match.
+            return std::fabs(a - b) <= (z_step_3d * 0.5 + 1e-12);
+        }
+
+        inline stats layout_cpu_b_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt)
+        {
+            if(!std::isfinite(z_base)) { throw std::invalid_argument("auto_layout: z_base must be finite"); }
+
+            // In 3D, different Z planes are allowed to overlap in (x,y), so we handle per-layer occupancy ourselves.
+            auto opt_ctx = opt;
+            opt_ctx.respect_fixed_elements = false;
+            auto ctx = build_context(ex, corner0, corner1, opt_ctx);
+
+            auto const fixed = collect_fixed_anchors(ex, ctx, opt);
+
+            if(ctx.movable.empty())
+            {
+                return stats{
+                    .mode = mode::hierarchical,
+                    .grid_w = ctx.w,
+                    .grid_h = ctx.h,
+                    .step_x = opt.step_x,
+                    .step_y = opt.step_y,
+                    .fixed_obstacles = 0,
+                    .placed = 0,
+                    .skipped = 0,
+                };
+            }
+
+            auto const n = ex.elements().size();
+            std::vector<int> level(n, -1);
+            std::queue<std::size_t> q;
+
+            for(std::size_t i{}; i < n; ++i)
+            {
+                auto const mid = ex.elements()[i].data().value("ModelID", "");
+                if(is_input_like(mid))
+                {
+                    level[i] = 0;
+                    q.push(i);
+                }
+            }
+
+            if(q.empty())
+            {
+                // Fallback: use highest-degree movable node as source.
+                auto best = ctx.movable.front();
+                for(auto idx: ctx.movable)
+                {
+                    if(ctx.adj[idx].size() > ctx.adj[best].size()) { best = idx; }
+                }
+                level[best] = 0;
+                q.push(best);
+            }
+
+            while(!q.empty())
+            {
+                auto const v = q.front();
+                q.pop();
+                auto const lv = level[v];
+                for(auto nb: ctx.adj[v])
+                {
+                    if(level[nb] != -1) { continue; }
+                    level[nb] = lv + 1;
+                    q.push(nb);
+                }
+            }
+
+            int max_level{};
+            for(auto idx: ctx.movable)
+            {
+                auto const lv = (level[idx] < 0) ? 0 : level[idx];
+                level[idx] = lv;
+                if(lv > max_level) { max_level = lv; }
+            }
+
+            auto const L = static_cast<std::size_t>(max_level);
+            std::vector<std::vector<std::size_t>> layers(L + 1);
+            for(auto idx: ctx.movable) { layers[static_cast<std::size_t>(level[idx])].push_back(idx); }
+
+            auto degree = [&](std::size_t idx) -> std::size_t { return ctx.adj[idx].size(); };
+            for(auto& layer_nodes: layers)
+            {
+                std::stable_sort(layer_nodes.begin(),
+                                 layer_nodes.end(),
+                                 [&](std::size_t a, std::size_t b)
+                                 {
+                                     auto const& ea = ex.elements()[a];
+                                     auto const& eb = ex.elements()[b];
+                                     if(ea.is_big_element() != eb.is_big_element()) { return ea.is_big_element() > eb.is_big_element(); }
+                                     auto const da = degree(a);
+                                     auto const db = degree(b);
+                                     if(da != db) { return da > db; }
+                                     return ea.identifier() < eb.identifier();
+                                 });
+            }
+
+            std::size_t fixed_obstacles{};
+            std::size_t placed_count{};
+            std::size_t skipped_count{};
+
+            for(std::size_t l{}; l < layers.size(); ++l)
+            {
+                auto const z_layer = z_base + static_cast<double>(l) * z_step_3d;
+
+                occupancy occ_layer(ctx.w, ctx.h);
+                if(opt.respect_fixed_elements)
+                {
+                    for(auto const& f: fixed)
+                    {
+                        if(!same_z_plane(f.z_native, z_layer)) { continue; }
+                        if(!occ_layer.can_place(f.c, f.fp)) { continue; }
+                        occ_layer.occupy(f.c, f.fp, static_cast<int>(f.idx));
+                        ++fixed_obstacles;
+                    }
+                }
+
+                auto const& nodes = layers[l];
+                if(nodes.empty()) { continue; }
+
+                auto const k = nodes.size();
+                for(std::size_t rank{}; rank < k; ++rank)
+                {
+                    auto const idx = nodes[rank];
+                    auto const fp = element_footprint(ex.elements()[idx], opt);
+                    auto const win = full_window(ctx.w, ctx.h, fp);
+                    if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+
+                    int const rank_y = static_cast<int>(std::llround(((static_cast<double>(rank) + 0.5) / static_cast<double>(k)) * static_cast<double>(ctx.h - 1)));
+
+                    std::int64_t sum_x{};
+                    std::int64_t sum_y{};
+                    std::size_t cnt{};
+                    for(auto nb: ctx.adj[idx])
+                    {
+                        if(!ctx.placed[nb]) { continue; }
+                        sum_x += ctx.placed[nb]->x;
+                        sum_y += ctx.placed[nb]->y;
+                        ++cnt;
+                    }
+
+                    int ideal_x{};
+                    int ideal_y{};
+
+                    if(cnt != 0)
+                    {
+                        ideal_x = static_cast<int>(std::llround(static_cast<double>(sum_x) / static_cast<double>(cnt)));
+                        double const avg_y = static_cast<double>(sum_y) / static_cast<double>(cnt);
+                        ideal_y = static_cast<int>(std::llround(0.5 * avg_y + 0.5 * static_cast<double>(rank_y)));
+                    }
+                    else
+                    {
+                        if(max_level == 0) { ideal_x = static_cast<int>(ctx.w / 2); }
+                        else
+                        {
+                            double const t = static_cast<double>(l) / static_cast<double>(max_level);
+                            ideal_x = static_cast<int>(std::llround(t * static_cast<double>(ctx.w - 1)));
+                        }
+                        ideal_y = rank_y;
+                    }
+
+                    cell ideal{ideal_x, ideal_y};
+                    ideal.x = std::clamp(ideal.x, win->min_x, win->max_x);
+                    ideal.y = std::clamp(ideal.y, win->min_y, win->max_y);
+
+                    auto chosen =
+                        choose_cell(occ_layer, ideal, fp, ctx.adj[idx], ctx.placed, opt.max_candidates_per_element, opt.max_search_radius, 0.3, 2.0, win);
+                    if(!chosen)
+                    {
+                        ++skipped_count;
+                        continue;
+                    }
+
+                    occ_layer.occupy(*chosen, fp, static_cast<int>(idx));
+                    ctx.placed[idx] = *chosen;
+                    ++placed_count;
+
+                    auto const native_pos = cell_to_native(ctx.bounds, opt.step_x, opt.step_y, *chosen, z_layer);
+                    set_element_native_position(ex, ex.get_element(ex.elements()[idx].identifier()), native_pos);
+                }
+            }
+
+            return stats{
+                .mode = mode::hierarchical,
+                .grid_w = ctx.w,
+                .grid_h = ctx.h,
+                .step_x = opt.step_x,
+                .step_y = opt.step_y,
+                .fixed_obstacles = fixed_obstacles,
+                .placed = placed_count,
+                .skipped = skipped_count,
+            };
+        }
+
+        inline stats layout_cpu_c_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt)
+        {
+            if(!std::isfinite(z_base)) { throw std::invalid_argument("auto_layout: z_base must be finite"); }
+
+            auto opt_ctx = opt;
+            opt_ctx.respect_fixed_elements = false;
+            auto ctx = build_context(ex, corner0, corner1, opt_ctx);
+
+            auto const fixed = collect_fixed_anchors(ex, ctx, opt);
+
+            if(ctx.movable.empty())
+            {
+                return stats{
+                    .mode = mode::force,
+                    .grid_w = ctx.w,
+                    .grid_h = ctx.h,
+                    .step_x = opt.step_x,
+                    .step_y = opt.step_y,
+                    .fixed_obstacles = 0,
+                    .placed = 0,
+                    .skipped = 0,
+                };
+            }
+
+            std::vector<int> to_sub(ex.elements().size(), -1);
+            for(std::size_t i{}; i < ctx.movable.size(); ++i) { to_sub[ctx.movable[i]] = static_cast<int>(i); }
+
+            // Build induced graph for movable nodes.
+            weighted_adj g(ctx.movable.size());
+            std::vector<edge_pair> edges;
+            for(std::size_t si{}; si < ctx.movable.size(); ++si)
+            {
+                auto const oi = ctx.movable[si];
+                for(auto const nb: ctx.adj[oi])
+                {
+                    auto const sj = to_sub[nb];
+                    if(sj < 0) { continue; }
+                    if(static_cast<std::size_t>(sj) == si) { continue; }
+                    g[si].push_back(weighted_edge{static_cast<std::size_t>(sj), 1.0});
+                    if(si < static_cast<std::size_t>(sj)) { edges.push_back(edge_pair{si, static_cast<std::size_t>(sj), 1.0}); }
+                }
+            }
+
+            // Edges to fixed anchors (only attract in x/y).
+            std::vector<anchor_edge> anchors;
+            anchors.reserve(ctx.movable.size());
+            for(std::size_t si{}; si < ctx.movable.size(); ++si)
+            {
+                auto const oi = ctx.movable[si];
+                for(auto const nb: ctx.adj[oi])
+                {
+                    if(to_sub[nb] >= 0) { continue; }
+                    if(!ctx.placed[nb]) { continue; }
+                    auto const c = *ctx.placed[nb];
+                    double const ax = (ctx.w <= 1) ? 0.5 : (static_cast<double>(c.x) / static_cast<double>(ctx.w - 1));
+                    double const ay = (ctx.h <= 1) ? 0.5 : (static_cast<double>(c.y) / static_cast<double>(ctx.h - 1));
+                    anchors.push_back(anchor_edge{si, ax, ay, 1.0});
+                }
+            }
+
+            // Initialize continuous coordinates from spectral embedding.
+            auto const emb = spectral_embedding3d(g, opt);
+            std::vector<double> x = emb.x;
+            std::vector<double> y = emb.y;
+            std::vector<double> z = emb.z;
+
+            auto const bins_xy = std::max<std::size_t>(4, opt.force_bins);
+            auto const bins_z = std::max<std::size_t>(2, std::min<std::size_t>(8, bins_xy));
+            auto const iters = std::max<std::size_t>(1, opt.force_iterations);
+            auto const k_attr = opt.force_attraction;
+            auto const k_rep = opt.force_repulsion;
+
+            std::vector<double> fx(ctx.movable.size(), 0.0);
+            std::vector<double> fy(ctx.movable.size(), 0.0);
+            std::vector<double> fz(ctx.movable.size(), 0.0);
+            std::vector<std::vector<std::size_t>> buckets(bins_xy * bins_xy * bins_z);
+
+            auto clamp01 = [](double v) -> double { return std::min(1.0, std::max(0.0, v)); };
+            auto bin_idx = [&](double px, double py, double pz) -> std::size_t
+            {
+                auto bx = static_cast<int>(std::floor(clamp01(px) * static_cast<double>(bins_xy)));
+                auto by = static_cast<int>(std::floor(clamp01(py) * static_cast<double>(bins_xy)));
+                auto bz = static_cast<int>(std::floor(clamp01(pz) * static_cast<double>(bins_z)));
+                bx = std::clamp(bx, 0, static_cast<int>(bins_xy - 1));
+                by = std::clamp(by, 0, static_cast<int>(bins_xy - 1));
+                bz = std::clamp(bz, 0, static_cast<int>(bins_z - 1));
+                return (static_cast<std::size_t>(bz) * bins_xy + static_cast<std::size_t>(by)) * bins_xy + static_cast<std::size_t>(bx);
+            };
+
+            for(std::size_t it{}; it < iters; ++it)
+            {
+                for(auto& b: buckets) { b.clear(); }
+                for(std::size_t i{}; i < ctx.movable.size(); ++i) { buckets[bin_idx(x[i], y[i], z[i])].push_back(i); }
+
+                std::fill(fx.begin(), fx.end(), 0.0);
+                std::fill(fy.begin(), fy.end(), 0.0);
+                std::fill(fz.begin(), fz.end(), 0.0);
+
+                // Repulsion (local, approximate).
+                for(std::size_t bz{}; bz < bins_z; ++bz)
+                {
+                    for(std::size_t by{}; by < bins_xy; ++by)
+                    {
+                        for(std::size_t bx{}; bx < bins_xy; ++bx)
+                        {
+                            auto const b0 = (bz * bins_xy + by) * bins_xy + bx;
+                            auto const& v0 = buckets[b0];
+                            for(auto i: v0)
+                            {
+                                auto const i_bx = static_cast<int>(bx);
+                                auto const i_by = static_cast<int>(by);
+                                auto const i_bz = static_cast<int>(bz);
+                                for(int dz_i = -1; dz_i <= 1; ++dz_i)
+                                {
+                                    for(int dy_i = -1; dy_i <= 1; ++dy_i)
+                                    {
+                                        for(int dx_i = -1; dx_i <= 1; ++dx_i)
+                                        {
+                                            auto const nbx = i_bx + dx_i;
+                                            auto const nby = i_by + dy_i;
+                                            auto const nbz = i_bz + dz_i;
+                                            if(nbx < 0 || nby < 0 || nbz < 0) { continue; }
+                                            if(nbx >= static_cast<int>(bins_xy) || nby >= static_cast<int>(bins_xy) || nbz >= static_cast<int>(bins_z)) { continue; }
+                                            auto const& v1 =
+                                                buckets[(static_cast<std::size_t>(nbz) * bins_xy + static_cast<std::size_t>(nby)) * bins_xy + static_cast<std::size_t>(nbx)];
+                                            for(auto j: v1)
+                                            {
+                                                if(j <= i) { continue; }
+                                                double dxp = x[i] - x[j];
+                                                double dyp = y[i] - y[j];
+                                                double dzp = z[i] - z[j];
+                                                double const d2 = dxp * dxp + dyp * dyp + dzp * dzp + 1e-6;
+                                                double const inv = k_rep / d2;
+                                                fx[i] += dxp * inv;
+                                                fy[i] += dyp * inv;
+                                                fz[i] += dzp * inv;
+                                                fx[j] -= dxp * inv;
+                                                fy[j] -= dyp * inv;
+                                                fz[j] -= dzp * inv;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Attraction (edges).
+                for(auto const& e: edges)
+                {
+                    auto const a = e.a;
+                    auto const b = e.b;
+                    double const dxp = x[b] - x[a];
+                    double const dyp = y[b] - y[a];
+                    double const dzp = z[b] - z[a];
+                    fx[a] += dxp * (k_attr * e.w);
+                    fy[a] += dyp * (k_attr * e.w);
+                    fz[a] += dzp * (k_attr * e.w);
+                    fx[b] -= dxp * (k_attr * e.w);
+                    fy[b] -= dyp * (k_attr * e.w);
+                    fz[b] -= dzp * (k_attr * e.w);
+                }
+
+                // Attraction to fixed anchors (x/y only).
+                for(auto const& a: anchors)
+                {
+                    double const dxp = a.x - x[a.a];
+                    double const dyp = a.y - y[a.a];
+                    fx[a.a] += dxp * (k_attr * a.w);
+                    fy[a.a] += dyp * (k_attr * a.w);
+                }
+
+                // Integrate with annealing-like step.
+                double const t = 1.0 - (static_cast<double>(it) / static_cast<double>(iters));
+                double const step = 0.2 * t;
+                for(std::size_t i{}; i < ctx.movable.size(); ++i)
+                {
+                    x[i] = clamp01(x[i] + std::clamp(fx[i], -step, step));
+                    y[i] = clamp01(y[i] + std::clamp(fy[i], -step, step));
+                    z[i] = clamp01(z[i] + std::clamp(fz[i], -step, step));
+                }
+            }
+
+            // Quantize Z into multiple planes, then snap each plane to the 2D grid collision-free.
+            auto const planes = [&]() -> std::size_t
+            {
+                auto const n = ctx.movable.size();
+                if(n == 0) { return 0; }
+                auto p = static_cast<std::size_t>(std::ceil(std::sqrt(static_cast<double>(n))));
+                p = std::max<std::size_t>(1, p);
+                p = std::min<std::size_t>(p, n);
+                p = std::min<std::size_t>(p, 64);
+                return p;
+            }();
+            if(planes == 0) { return stats{.mode = mode::force}; }
+
+            auto plane_of = [&](double zn) -> std::size_t
+            {
+                if(planes <= 1) { return 0; }
+                auto p = static_cast<int>(std::llround(clamp01(zn) * static_cast<double>(planes - 1)));
+                p = std::clamp(p, 0, static_cast<int>(planes - 1));
+                return static_cast<std::size_t>(p);
+            };
+
+            std::vector<std::vector<std::size_t>> by_plane(planes);
+            for(auto idx: ctx.movable)
+            {
+                auto const si = to_sub[idx];
+                if(si < 0) { continue; }
+                by_plane[plane_of(z[static_cast<std::size_t>(si)])].push_back(idx);
+            }
+
+            auto degree = [&](std::size_t idx) -> std::size_t { return ctx.adj[idx].size(); };
+            for(auto& nodes: by_plane)
+            {
+                std::stable_sort(nodes.begin(),
+                                 nodes.end(),
+                                 [&](std::size_t a, std::size_t b)
+                                 {
+                                     auto const& ea = ex.elements()[a];
+                                     auto const& eb = ex.elements()[b];
+                                     if(ea.is_big_element() != eb.is_big_element()) { return ea.is_big_element() > eb.is_big_element(); }
+                                     auto const da = degree(a);
+                                     auto const db = degree(b);
+                                     if(da != db) { return da > db; }
+                                     return ea.identifier() < eb.identifier();
+                                 });
+            }
+
+            std::size_t fixed_obstacles{};
+            std::size_t placed_count{};
+            std::size_t skipped_count{};
+
+            for(std::size_t plane{}; plane < planes; ++plane)
+            {
+                auto const z_layer = z_base + static_cast<double>(plane) * z_step_3d;
+
+                occupancy occ_layer(ctx.w, ctx.h);
+                if(opt.respect_fixed_elements)
+                {
+                    for(auto const& f: fixed)
+                    {
+                        if(!same_z_plane(f.z_native, z_layer)) { continue; }
+                        if(!occ_layer.can_place(f.c, f.fp)) { continue; }
+                        occ_layer.occupy(f.c, f.fp, static_cast<int>(f.idx));
+                        ++fixed_obstacles;
+                    }
+                }
+
+                for(auto idx: by_plane[plane])
+                {
+                    auto const fp = element_footprint(ex.elements()[idx], opt);
+                    auto const win = full_window(ctx.w, ctx.h, fp);
+                    if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+
+                    auto const si = to_sub[idx];
+                    auto const u = (si >= 0) ? x[static_cast<std::size_t>(si)] : 0.5;
+                    auto const v = (si >= 0) ? y[static_cast<std::size_t>(si)] : 0.5;
+
+                    cell ideal{
+                        static_cast<int>(std::llround(u * static_cast<double>(ctx.w - 1))),
+                        static_cast<int>(std::llround(v * static_cast<double>(ctx.h - 1))),
+                    };
+                    ideal.x = std::clamp(ideal.x, win->min_x, win->max_x);
+                    ideal.y = std::clamp(ideal.y, win->min_y, win->max_y);
+
+                    auto chosen =
+                        choose_cell(occ_layer, ideal, fp, ctx.adj[idx], ctx.placed, opt.max_candidates_per_element, opt.max_search_radius, 0.35, 1.2, win);
+                    if(!chosen)
+                    {
+                        ++skipped_count;
+                        continue;
+                    }
+
+                    occ_layer.occupy(*chosen, fp, static_cast<int>(idx));
+                    ctx.placed[idx] = *chosen;
+                    ++placed_count;
+
+                    auto const native_pos = cell_to_native(ctx.bounds, opt.step_x, opt.step_y, *chosen, z_layer);
+                    set_element_native_position(ex, ex.get_element(ex.elements()[idx].identifier()), native_pos);
+                }
+            }
+
+            return stats{
+                .mode = mode::force,
+                .grid_w = ctx.w,
+                .grid_h = ctx.h,
+                .step_x = opt.step_x,
+                .step_y = opt.step_y,
+                .fixed_obstacles = fixed_obstacles,
+                .placed = placed_count,
+                .skipped = skipped_count,
+            };
+        }
     }  // namespace detail
 
     inline stats layout(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt = {})
@@ -1698,5 +2327,37 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             case mode::force: return detail::layout_cpu_force(ex, corner0, corner1, z_fixed, opt);
             default: return detail::layout_cpu_fast(ex, corner0, corner1, z_fixed, opt);
         }
+    }
+
+    // `*_3d` entry points:
+    // - All 3D layouts use `z_step_3d` spacing in native coordinates.
+    // - `layout_a_3d` / `layout_d_3d` advance `z_io` by `z_step_3d` on success.
+
+    inline stats layout_a_3d(experiment& ex, position corner0, position corner1, double& z_io, options const& opt = {})
+    {
+        if(!std::isfinite(z_io)) { throw std::invalid_argument("auto_layout: z_io must be finite"); }
+        double const z_next = z_io + z_step_3d;
+        auto st = layout(ex, corner0, corner1, z_next, opt);
+        z_io = z_next;
+        return st;
+    }
+
+    inline stats layout_b_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt = {})
+    {
+        return detail::layout_cpu_b_3d(ex, corner0, corner1, z_base, opt);
+    }
+
+    inline stats layout_c_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt = {})
+    {
+        return detail::layout_cpu_c_3d(ex, corner0, corner1, z_base, opt);
+    }
+
+    inline stats layout_d_3d(experiment& ex, position corner0, position corner1, double& z_io, options const& opt = {})
+    {
+        if(!std::isfinite(z_io)) { throw std::invalid_argument("auto_layout: z_io must be finite"); }
+        double const z_next = z_io + z_step_3d;
+        auto st = detail::layout_cpu_packing(ex, corner0, corner1, z_next, opt);
+        z_io = z_next;
+        return st;
     }
 }  // namespace phy_engine::phy_lab_wrapper::auto_layout

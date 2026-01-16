@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -119,6 +120,150 @@ int main()
                 }
             }
         }
+    }
+
+    // 3D algorithms smoke.
+    auto check_no_overlap_by_plane = [&](experiment const& ex, bounds2d const& bounds, options const& opt) {
+        auto const grid_w = static_cast<std::size_t>(std::floor((bounds.max_x - bounds.min_x) / opt.step_x + 1e-12)) + 1;
+        auto const grid_h = static_cast<std::size_t>(std::floor((bounds.max_y - bounds.min_y) / opt.step_y + 1e-12)) + 1;
+        assert(grid_w > 0 && grid_h > 0);
+
+        auto key = [&](std::size_t x, std::size_t y) -> std::size_t { return y * grid_w + x; };
+        std::unordered_map<long long, std::unordered_set<std::size_t>> used_by_plane;
+
+        for(auto const& e : ex.elements())
+        {
+            auto const native = to_native(ex, e);
+            auto const plane = static_cast<long long>(std::llround(native.z / z_step_3d));
+            auto& used = used_by_plane[plane];
+
+            auto const fp = e.is_big_element() ? opt.big_element : opt.small_element;
+            auto ix_i = static_cast<int>(std::llround((native.x - bounds.min_x) / opt.step_x));
+            auto iy_i = static_cast<int>(std::llround((native.y - bounds.min_y) / opt.step_y));
+            ix_i = std::clamp(ix_i, 0, static_cast<int>(grid_w - fp.w));
+            iy_i = std::clamp(iy_i, 0, static_cast<int>(grid_h - fp.h));
+            auto const ix = static_cast<std::size_t>(ix_i);
+            auto const iy = static_cast<std::size_t>(iy_i);
+
+            for(std::size_t dy{}; dy < fp.h; ++dy)
+            {
+                for(std::size_t dx{}; dx < fp.w; ++dx)
+                {
+                    auto const k = key(ix + dx, iy + dy);
+                    assert(!used.contains(k));
+                    used.insert(k);
+                }
+            }
+        }
+    };
+
+    auto build_ex = [&]() {
+        auto ex = experiment::create(experiment_type::circuit);
+        ex.set_element_xyz(true, position{0.0, 0.0, 0.0});
+
+        // Fixed corner markers (should not be moved).
+        auto lt = ex.add_circuit_element("Student Source", {-1.0, 1.0, 0.0}, false, false, false);
+        auto lb = ex.add_circuit_element("Incandescent Lamp", {-1.0, -1.0, 0.0}, false, false, false);
+        auto rt = ex.add_circuit_element("Simple Switch", {1.0, 1.0, 0.0}, false, false, false);
+        auto rb = ex.add_circuit_element("Battery Source", {1.0, -1.0, 0.0}, false, false, false);
+        (void)lt;
+        (void)lb;
+        (void)rt;
+        (void)rb;
+
+        std::vector<std::string> ids;
+        ids.reserve(32);
+
+        for(std::size_t i{}; i < 20; ++i) { ids.push_back(ex.add_circuit_element("And Gate", {0.0, 0.0, 0.0})); }
+        auto big = ex.add_circuit_element("Counter", {0.0, 0.0, 0.0}, std::nullopt, true, true);
+        ids.push_back(big);
+
+        for(std::size_t i{}; i + 1 < ids.size(); ++i) { ex.connect(ids[i], 0, ids[i + 1], 1); }
+
+        return std::pair{std::move(ex), std::move(ids)};
+    };
+
+    auto base_opt = [&]() {
+        options opt;
+        opt.step_x = 0.16;
+        opt.step_y = 0.08;
+        opt.small_element = {1, 1};
+        opt.big_element = {2, 2};
+        opt.respect_fixed_elements = true;
+        return opt;
+    };
+
+    {
+        auto [ex, ids] = build_ex();
+        auto opt = base_opt();
+        opt.mode = mode::hierarchical;
+        double z = 0.0;
+
+        auto const st = layout_a_3d(ex, {-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, z, opt);
+        assert(st.placed == ids.size());
+        assert(st.skipped == 0);
+        assert(std::fabs(z - z_step_3d) < 1e-12);
+
+        auto const bounds = normalize_bounds({-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, opt.margin_x, opt.margin_y);
+        check_no_overlap_by_plane(ex, bounds, opt);
+    }
+
+    {
+        auto [ex, ids] = build_ex();
+        auto opt = base_opt();
+        double z = 0.0;
+
+        auto const st = layout_d_3d(ex, {-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, z, opt);
+        assert(st.placed == ids.size());
+        assert(st.skipped == 0);
+        assert(std::fabs(z - z_step_3d) < 1e-12);
+
+        auto const bounds = normalize_bounds({-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, opt.margin_x, opt.margin_y);
+        check_no_overlap_by_plane(ex, bounds, opt);
+    }
+
+    {
+        auto [ex, ids] = build_ex();
+        auto opt = base_opt();
+
+        auto const st = layout_b_3d(ex, {-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, 0.0, opt);
+        assert(st.placed == ids.size());
+        assert(st.skipped == 0);
+
+        bool any_nonzero_plane = false;
+        for(auto const& e : ex.elements())
+        {
+            auto const native = to_native(ex, e);
+            auto const k = native.z / z_step_3d;
+            assert(std::fabs(k - std::round(k)) < 1e-9);
+            if(std::fabs(native.z) > 1e-12) { any_nonzero_plane = true; }
+        }
+        assert(any_nonzero_plane);
+
+        auto const bounds = normalize_bounds({-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, opt.margin_x, opt.margin_y);
+        check_no_overlap_by_plane(ex, bounds, opt);
+    }
+
+    {
+        auto [ex, ids] = build_ex();
+        auto opt = base_opt();
+
+        auto const st = layout_c_3d(ex, {-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, 0.0, opt);
+        assert(st.placed == ids.size());
+        assert(st.skipped == 0);
+
+        bool any_nonzero_plane = false;
+        for(auto const& e : ex.elements())
+        {
+            auto const native = to_native(ex, e);
+            auto const k = native.z / z_step_3d;
+            assert(std::fabs(k - std::round(k)) < 1e-9);
+            if(std::fabs(native.z) > 1e-12) { any_nonzero_plane = true; }
+        }
+        assert(any_nonzero_plane);
+
+        auto const bounds = normalize_bounds({-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, opt.margin_x, opt.margin_y);
+        check_no_overlap_by_plane(ex, bounds, opt);
     }
 
     return 0;
