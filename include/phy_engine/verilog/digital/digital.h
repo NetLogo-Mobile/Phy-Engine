@@ -952,17 +952,45 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            // preprocessor/directive: skip whole line for now
-            if(c == u8'`')
+            // string literal (not interpreted by this subset, but must not be tokenized as identifiers)
+            if(c == u8'"')
             {
-                auto const [l0, c0]{remap_line_col(p, line, col)};
-                out.errors.push_back(
-                    {::fast_io::u8string{u8"verilog preprocessor directives are not supported yet"}, static_cast<::std::size_t>(p - base), l0, c0});
-                while(p < e && *p != u8'\n')
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(*p);
+                ++p;
+                bool closed{};
+                while(p < e)
                 {
+                    char8_t const nc{*p};
+                    if(nc == u8'\\')
+                    {
+                        bump(*p);
+                        ++p;
+                        if(p < e)
+                        {
+                            bump(*p);
+                            ++p;
+                        }
+                        continue;
+                    }
+                    if(nc == u8'"')
+                    {
+                        bump(*p);
+                        ++p;
+                        closed = true;
+                        break;
+                    }
                     bump(*p);
                     ++p;
                 }
+                if(!closed)
+                {
+                    auto const [rl, rc]{remap_line_col(b, l0, c0)};
+                    out.errors.push_back({::fast_io::u8string{u8"unterminated string literal"}, static_cast<::std::size_t>(b - base), rl, rc});
+                }
+                make_tok(token_kind::symbol, b, p, l0, c0);
                 continue;
             }
 
@@ -2911,8 +2939,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_add(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                ::std::size_t const w0{::std::max(width(a), width(b))};
-                ::std::size_t const w{w0 + 1};
+                // Verilog sizing: '+' result width is max operand width (no carry-out bit).
+                ::std::size_t const w{::std::max(width(a), width(b))};
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
@@ -2953,8 +2981,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_sub(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                ::std::size_t const w0{::std::max(width(a), width(b))};
-                ::std::size_t const w{w0 + 1};
+                // Verilog sizing: '-' result width is max operand width (no borrow-out bit).
+                ::std::size_t const w{::std::max(width(a), width(b))};
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {

@@ -614,17 +614,26 @@ int main(int argc, char** argv)
     auto const in_path_s = in_path.string();
     ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] compile ", ::fast_io::mnp::os_c_str(in_path_s.c_str()), "\n");
     auto cr = ::phy_engine::verilog::digital::compile(src, copt);
-    if(!cr.errors.empty() || cr.modules.empty())
+    if(!cr.errors.empty())
     {
-        auto const path_s = in_path.string();
         diagnostic_options dop{};
-        dop.filename = u8sv{reinterpret_cast<char8_t const*>(path_s.data()), path_s.size()};
+        dop.filename = u8sv{reinterpret_cast<char8_t const*>(in_path_s.data()), in_path_s.size()};
 
         auto const diag = format_compile_errors(cr, src, dop);
-        if(!diag.empty())
+        if(!diag.empty()) { ::fast_io::io::perr(::fast_io::u8err(), u8sv{diag.data(), diag.size()}); }
+        if(cr.modules.empty())
         {
-            ::fast_io::io::perr(::fast_io::u8err(), u8sv{diag.data(), diag.size()});
+            ::fast_io::io::perr(::fast_io::err(),
+                                "note: no Verilog `module` was successfully parsed; check that the input is a Verilog source file\n");
         }
+        return 1;
+    }
+    if(cr.modules.empty())
+    {
+        ::fast_io::io::perr(::fast_io::err(),
+                            "error: no Verilog `module` found in input: ",
+                            ::fast_io::mnp::os_c_str(in_path_s.c_str()),
+                            "\n");
         return 1;
     }
 

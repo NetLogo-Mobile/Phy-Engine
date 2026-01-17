@@ -49,6 +49,10 @@ struct options
     // Default is false because PE->PL is expected to be explicit about what is supported.
     bool keep_unknown_as_placeholders{false};
 
+    // If true, drop unconnected PE `INPUT` models (i.e. the input pin's node has no other pins).
+    // Default is false to preserve a faithful PE->PL element mapping.
+    bool drop_dangling_logic_inputs{false};
+
     struct placement_context
     {
         std::string_view pe_model_name;      // e.g. "OUTPUT"
@@ -346,9 +350,9 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
                 throw std::runtime_error("pe_to_pl: unsupported conversion for PE digital model: " + name);
             }
 
-            // Drop dangling Logic Inputs (PE INPUT models with no connections).
+            // Optionally drop dangling Logic Inputs (PE INPUT models with no connections).
             // This commonly happens after aggressive synthesis/optimization where unused constants/ports remain.
-            if(mapping.model_id == pl_model_id::logic_input)
+            if(opt.drop_dangling_logic_inputs && mapping.model_id == pl_model_id::logic_input)
             {
                 auto pv = m->ptr->generate_pin_view();
                 if(pv.size >= 1)
