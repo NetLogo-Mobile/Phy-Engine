@@ -12,7 +12,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -233,9 +232,10 @@ static void refine_steps_to_fit_table(std::size_t required_cells,
     if(!grid_ok(aopt.step_x, aopt.step_y))
     {
         auto const safe = std::max(effective_min_step, 1e-6);
-        std::fprintf(stderr,
-                     "[verilog2plsav] warning: layout step too small; clamping step to %.6f to fit max grid\n",
-                     safe);
+        ::fast_io::io::perr(::fast_io::err(),
+                            "[verilog2plsav] warning: layout step too small; clamping step to ",
+                            ::fast_io::mnp::fixed(safe),
+                            " to fit max grid\n");
         aopt.step_x = safe;
         aopt.step_y = safe;
     }
@@ -327,22 +327,23 @@ static void reposition_io_elements(experiment& ex,
 
 static void usage(char const* argv0)
 {
-    std::fprintf(stderr,
-                 "usage: %s OUT.sav IN.v [--top TOP_MODULE]\n"
-                 "  - Compiles Verilog (subset), synthesizes to PE netlist with optimizations,\n"
-                 "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
-                 "options:\n"
-                 "  --layout fast|cluster|spectral|hier|force   Layout algorithm (default: fast)\n"
-                 "  --layout3d xy|hier|force|pack               Use 3D layout variant (z step is fixed at 0.02)\n"
-                 "  --layout3d-z-base Z                         3D layout base Z (default: 0; b/c start at 0.02)\n"
-                 "  --no-wires                                 Disable auto wire generation\n"
-                 "  --layout-step STEP                         Layout grid step (default: 0.01)\n"
-                 "  --layout-min-step STEP                     Minimum step for auto-refine (default: 0.001)\n"
-                 "  --layout-fill FACTOR                       Capacity safety factor (>=1, default: 1.25)\n"
-                 "  --no-layout-refine                         Disable step auto-refinement\n"
-                 "  --cluster-max-nodes N                      Cluster macro max nodes (default: 24)\n"
-                 "  --cluster-channel-spacing N                Cluster macro spacing in cells (default: 2)\n",
-                 argv0);
+    ::fast_io::io::perr(::fast_io::err(),
+                        "usage: ",
+                        ::fast_io::mnp::os_c_str(argv0),
+                        " OUT.sav IN.v [--top TOP_MODULE]\n"
+                        "  - Compiles Verilog (subset), synthesizes to PE netlist with optimizations,\n"
+                        "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
+                        "options:\n"
+                        "  --layout fast|cluster|spectral|hier|force   Layout algorithm (default: fast)\n"
+                        "  --layout3d xy|hier|force|pack               Use 3D layout variant (z step is fixed at 0.02)\n"
+                        "  --layout3d-z-base Z                         3D layout base Z (default: 0; b/c start at 0.02)\n"
+                        "  --no-wires                                 Disable auto wire generation\n"
+                        "  --layout-step STEP                         Layout grid step (default: 0.01)\n"
+                        "  --layout-min-step STEP                     Minimum step for auto-refine (default: 0.001)\n"
+                        "  --layout-fill FACTOR                       Capacity safety factor (>=1, default: 1.25)\n"
+                        "  --no-layout-refine                         Disable step auto-refinement\n"
+                        "  --cluster-max-nodes N                      Cluster macro max nodes (default: 24)\n"
+                        "  --cluster-channel-spacing N                Cluster macro spacing in cells (default: 2)\n");
 }
 
 static std::optional<std::string> arg_after(int argc, char** argv, std::string_view flag)
@@ -511,7 +512,7 @@ int main(int argc, char** argv)
     auto layout_mode = parse_layout_mode(layout_mode_arg);
     if(!layout_mode)
     {
-        std::fprintf(stderr, "error: invalid --layout value\n");
+        ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout value\n");
         return 12;
     }
 
@@ -519,7 +520,7 @@ int main(int argc, char** argv)
     auto layout3d = parse_layout3d_kind(layout3d_arg);
     if(layout3d_arg && !layout3d)
     {
-        std::fprintf(stderr, "error: invalid --layout3d value\n");
+        ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout3d value\n");
         return 13;
     }
     auto layout3d_z_base_arg = arg_after(argc, argv, "--layout3d-z-base");
@@ -529,7 +530,7 @@ int main(int argc, char** argv)
         auto v = parse_double(*layout3d_z_base_arg);
         if(!v)
         {
-            std::fprintf(stderr, "error: invalid --layout3d-z-base value\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout3d-z-base value\n");
             return 14;
         }
         layout3d_z_base = *v;
@@ -544,7 +545,7 @@ int main(int argc, char** argv)
         auto v = parse_double(*s);
         if(!v || !(*v > 0.0))
         {
-            std::fprintf(stderr, "error: invalid --layout-step\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout-step\n");
             return 13;
         }
         layout_step = *v;
@@ -556,7 +557,7 @@ int main(int argc, char** argv)
         auto v = parse_double(*s);
         if(!v || !(*v > 0.0))
         {
-            std::fprintf(stderr, "error: invalid --layout-min-step\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout-min-step\n");
             return 14;
         }
         layout_min_step = *v;
@@ -568,7 +569,7 @@ int main(int argc, char** argv)
         auto v = parse_double(*s);
         if(!v || !(*v >= 1.0))
         {
-            std::fprintf(stderr, "error: invalid --layout-fill (must be >= 1.0)\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout-fill (must be >= 1.0)\n");
             return 15;
         }
         layout_fill = *v;
@@ -580,7 +581,7 @@ int main(int argc, char** argv)
         auto v = parse_size(*s);
         if(!v || *v == 0)
         {
-            std::fprintf(stderr, "error: invalid --cluster-max-nodes\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --cluster-max-nodes\n");
             return 16;
         }
         cluster_max_nodes = *v;
@@ -592,7 +593,7 @@ int main(int argc, char** argv)
         auto v = parse_size(*s);
         if(!v)
         {
-            std::fprintf(stderr, "error: invalid --cluster-channel-spacing\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --cluster-channel-spacing\n");
             return 17;
         }
         cluster_channel_spacing = *v;
@@ -610,7 +611,8 @@ int main(int argc, char** argv)
     copt.preprocess.user = __builtin_addressof(ictx);
     copt.preprocess.include_resolver = include_resolver_fs;
 
-    std::fprintf(stderr, "[verilog2plsav] compile %s\n", in_path.string().c_str());
+    auto const in_path_s = in_path.string();
+    ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] compile ", ::fast_io::mnp::os_c_str(in_path_s.c_str()), "\n");
     auto cr = ::phy_engine::verilog::digital::compile(src, copt);
     if(!cr.errors.empty() || cr.modules.empty())
     {
@@ -621,7 +623,7 @@ int main(int argc, char** argv)
         auto const diag = format_compile_errors(cr, src, dop);
         if(!diag.empty())
         {
-            std::fprintf(stderr, "%.*s", static_cast<int>(diag.size()), reinterpret_cast<char const*>(diag.data()));
+            ::fast_io::io::perr(::fast_io::u8err(), u8sv{diag.data(), diag.size()});
         }
         return 1;
     }
@@ -630,11 +632,12 @@ int main(int argc, char** argv)
     auto const* top_mod = find_top_module(design, top_override);
     if(top_mod == nullptr) { return 3; }
 
-    std::fprintf(stderr,
-                 "[verilog2plsav] top=%.*s (ports=%zu)\n",
-                 static_cast<int>(top_mod->name.size()),
-                 reinterpret_cast<char const*>(top_mod->name.data()),
-                 top_mod->ports.size());
+    ::fast_io::io::perr(::fast_io::u8err(),
+                        u8"[verilog2plsav] top=",
+                        u8sv{top_mod->name.data(), top_mod->name.size()},
+                        u8" (ports=",
+                        top_mod->ports.size(),
+                        u8")\n");
 
     auto top_inst = ::phy_engine::verilog::digital::elaborate(design, *top_mod);
     if(top_inst.mod == nullptr) { return 4; }
@@ -677,7 +680,7 @@ int main(int argc, char** argv)
         }
         else
         {
-            std::fprintf(stderr, "error: unsupported port dir (inout)\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: unsupported port dir (inout)\n");
             return 9;
         }
     }
@@ -693,13 +696,13 @@ int main(int argc, char** argv)
         .optimize_adders = true,
     };
 
-    std::fprintf(stderr, "[verilog2plsav] synthesize_to_pe_netlist\n");
+    ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] synthesize_to_pe_netlist\n");
     if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt))
     {
-        std::fprintf(stderr,
-                     "error: synthesize_to_pe_netlist failed: %.*s\n",
-                     static_cast<int>(err.message.size()),
-                     reinterpret_cast<char const*>(err.message.data()));
+        ::fast_io::io::perr(::fast_io::u8err(),
+                            u8"error: synthesize_to_pe_netlist failed: ",
+                            u8sv{err.message.data(), err.message.size()},
+                            u8"\n");
         return 10;
     }
 
@@ -770,7 +773,7 @@ int main(int argc, char** argv)
         return std::nullopt;
     };
 
-    std::fprintf(stderr, "[verilog2plsav] pe_to_pl convert\n");
+    ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] pe_to_pl convert\n");
     auto r = ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt);
 
     // Keep IO elements fixed for layout.
@@ -816,10 +819,12 @@ int main(int argc, char** argv)
 
         if(layout3d)
         {
-            std::fprintf(stderr,
-                         "[verilog2plsav] note: using 3D layout (*_3d): %s, z_step=%.2f\n",
-                         layout3d_name(*layout3d),
-                         ::phy_engine::phy_lab_wrapper::auto_layout::z_step_3d);
+            ::fast_io::io::perr(::fast_io::err(),
+                                "[verilog2plsav] note: using 3D layout (*_3d): ",
+                                ::fast_io::mnp::os_c_str(layout3d_name(*layout3d)),
+                                ", z_step=",
+                                ::fast_io::mnp::fixed(::phy_engine::phy_lab_wrapper::auto_layout::z_step_3d),
+                                "\n");
         }
 
         ::phy_engine::phy_lab_wrapper::auto_layout::stats st{};
@@ -886,32 +891,45 @@ int main(int argc, char** argv)
             }
         }
 
-        std::fprintf(stderr,
-                     "[verilog2plsav] layout=%d extent=%.3f step=(%.4f,%.4f) grid=%zux%zu placed=%zu skipped=%zu fixed=%zu\n",
-                     static_cast<int>(st.mode),
-                     extent,
-                     aopt.step_x,
-                     aopt.step_y,
-                     st.grid_w,
-                     st.grid_h,
-                     st.placed,
-                     st.skipped,
-                     st.fixed_obstacles);
+        ::fast_io::io::perr(::fast_io::err(),
+                            "[verilog2plsav] layout=",
+                            static_cast<int>(st.mode),
+                            " extent=",
+                            ::fast_io::mnp::fixed(extent),
+                            " step=(",
+                            ::fast_io::mnp::fixed(aopt.step_x),
+                            ",",
+                            ::fast_io::mnp::fixed(aopt.step_y),
+                            ") grid=",
+                            st.grid_w,
+                            "x",
+                            st.grid_h,
+                            " placed=",
+                            st.placed,
+                            " skipped=",
+                            st.skipped,
+                            " fixed=",
+                            st.fixed_obstacles,
+                            "\n");
     }
 
     r.ex.save(out_path, 2);
 
     if(!std::filesystem::exists(out_path))
     {
-        std::fprintf(stderr, "error: failed to write %s\n", out_path.string().c_str());
+        auto const out_path_s = out_path.string();
+        ::fast_io::io::perr(::fast_io::err(), "error: failed to write ", ::fast_io::mnp::os_c_str(out_path_s.c_str()), "\n");
         return 11;
     }
-    std::fprintf(stderr, "[verilog2plsav] wrote %s\n", out_path.string().c_str());
+    {
+        auto const out_path_s = out_path.string();
+        ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] wrote ", ::fast_io::mnp::os_c_str(out_path_s.c_str()), "\n");
+    }
     return 0;
     }
     catch(std::exception const& e)
     {
-        std::fprintf(stderr, "error: %s\n", e.what());
+        ::fast_io::io::perr(::fast_io::err(), "error: ", ::fast_io::mnp::os_c_str(e.what()), "\n");
         return 99;
     }
 }

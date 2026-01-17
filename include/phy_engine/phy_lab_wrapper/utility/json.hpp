@@ -8486,7 +8486,22 @@ scan_number_done:
             {
                 // escape control characters
                 std::array<char, 9> cs{{}};
-                static_cast<void>((std::snprintf)(cs.data(), cs.size(), "<U+%.4X>", static_cast<unsigned char>(c))); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
+                {
+                    auto hex_upper = [](unsigned v) noexcept -> char {
+                        v &= 0xFu;
+                        return static_cast<char>(v < 10u ? ('0' + v) : ('A' + (v - 10u)));
+                    };
+                    unsigned const uv = static_cast<unsigned>(static_cast<unsigned char>(c));
+                    cs[0] = '<';
+                    cs[1] = 'U';
+                    cs[2] = '+';
+                    cs[3] = hex_upper(uv >> 12u);
+                    cs[4] = hex_upper(uv >> 8u);
+                    cs[5] = hex_upper(uv >> 4u);
+                    cs[6] = hex_upper(uv >> 0u);
+                    cs[7] = '>';
+                    cs[8] = '\0';
+                }
                 result += cs.data();
             }
             else
@@ -10113,7 +10128,16 @@ class binary_reader
             default: // anything else not supported (yet)
             {
                 std::array<char, 3> cr{{}};
-                static_cast<void>((std::snprintf)(cr.data(), cr.size(), "%.2hhX", static_cast<unsigned char>(element_type))); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
+                {
+                    auto hex_upper = [](unsigned v) noexcept -> char {
+                        v &= 0xFu;
+                        return static_cast<char>(v < 10u ? ('0' + v) : ('A' + (v - 10u)));
+                    };
+                    unsigned const uv = static_cast<unsigned>(static_cast<unsigned char>(element_type));
+                    cr[0] = hex_upper(uv >> 4u);
+                    cr[1] = hex_upper(uv >> 0u);
+                    cr[2] = '\0';
+                }
                 const std::string cr_str{cr.data()};
                 return sax->parse_error(element_type_parse_position, cr_str,
                                         parse_error::create(114, element_type_parse_position, concat("Unsupported BSON record type 0x", cr_str), nullptr));
@@ -12734,7 +12758,16 @@ class binary_reader
     std::string get_token_string() const
     {
         std::array<char, 3> cr{{}};
-        static_cast<void>((std::snprintf)(cr.data(), cr.size(), "%.2hhX", static_cast<unsigned char>(current))); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
+        {
+            auto hex_upper = [](unsigned v) noexcept -> char {
+                v &= 0xFu;
+                return static_cast<char>(v < 10u ? ('0' + v) : ('A' + (v - 10u)));
+            };
+            unsigned const uv = static_cast<unsigned>(static_cast<unsigned char>(current));
+            cr[0] = hex_upper(uv >> 4u);
+            cr[1] = hex_upper(uv >> 0u);
+            cr[2] = '\0';
+        }
         return std::string{cr.data()};
     }
 
@@ -19186,17 +19219,40 @@ class serializer
                             {
                                 if (codepoint <= 0xFFFF)
                                 {
-                                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
-                                    static_cast<void>((std::snprintf)(string_buffer.data() + bytes, 7, "\\u%04x",
-                                                                      static_cast<std::uint16_t>(codepoint)));
+                                    auto hex_lower = [](std::uint16_t v, unsigned shift) noexcept -> char {
+                                        unsigned const d = static_cast<unsigned>((v >> shift) & 0xFu);
+                                        return static_cast<char>(d < 10u ? ('0' + d) : ('a' + (d - 10u)));
+                                    };
+                                    std::uint16_t const v = static_cast<std::uint16_t>(codepoint);
+                                    string_buffer[bytes + 0] = '\\';
+                                    string_buffer[bytes + 1] = 'u';
+                                    string_buffer[bytes + 2] = hex_lower(v, 12u);
+                                    string_buffer[bytes + 3] = hex_lower(v, 8u);
+                                    string_buffer[bytes + 4] = hex_lower(v, 4u);
+                                    string_buffer[bytes + 5] = hex_lower(v, 0u);
                                     bytes += 6;
                                 }
                                 else
                                 {
-                                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
-                                    static_cast<void>((std::snprintf)(string_buffer.data() + bytes, 13, "\\u%04x\\u%04x",
-                                                                      static_cast<std::uint16_t>(0xD7C0u + (codepoint >> 10u)),
-                                                                      static_cast<std::uint16_t>(0xDC00u + (codepoint & 0x3FFu))));
+                                    auto hex_lower = [](std::uint16_t v, unsigned shift) noexcept -> char {
+                                        unsigned const d = static_cast<unsigned>((v >> shift) & 0xFu);
+                                        return static_cast<char>(d < 10u ? ('0' + d) : ('a' + (d - 10u)));
+                                    };
+                                    std::uint16_t const hi = static_cast<std::uint16_t>(0xD7C0u + (codepoint >> 10u));
+                                    std::uint16_t const lo = static_cast<std::uint16_t>(0xDC00u + (codepoint & 0x3FFu));
+
+                                    string_buffer[bytes + 0] = '\\';
+                                    string_buffer[bytes + 1] = 'u';
+                                    string_buffer[bytes + 2] = hex_lower(hi, 12u);
+                                    string_buffer[bytes + 3] = hex_lower(hi, 8u);
+                                    string_buffer[bytes + 4] = hex_lower(hi, 4u);
+                                    string_buffer[bytes + 5] = hex_lower(hi, 0u);
+                                    string_buffer[bytes + 6] = '\\';
+                                    string_buffer[bytes + 7] = 'u';
+                                    string_buffer[bytes + 8] = hex_lower(lo, 12u);
+                                    string_buffer[bytes + 9] = hex_lower(lo, 8u);
+                                    string_buffer[bytes + 10] = hex_lower(lo, 4u);
+                                    string_buffer[bytes + 11] = hex_lower(lo, 0u);
                                     bytes += 12;
                                 }
                             }
@@ -19548,53 +19604,10 @@ class serializer
 
     void dump_float(number_float_t x, std::false_type /*is_ieee_single_or_double*/)
     {
-        // get number of digits for a float -> text -> float round-trip
-        static constexpr auto d = std::numeric_limits<number_float_t>::max_digits10;
+        auto* begin = number_buffer.data();
+        auto* end = ::nlohmann::detail::to_chars(begin, begin + number_buffer.size(), x);
 
-        // the actual conversion
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg,hicpp-vararg)
-        std::ptrdiff_t len = (std::snprintf)(number_buffer.data(), number_buffer.size(), "%.*g", d, x);
-
-        // negative value indicates an error
-        JSON_ASSERT(len > 0);
-        // check if buffer was large enough
-        JSON_ASSERT(static_cast<std::size_t>(len) < number_buffer.size());
-
-        // erase thousands separator
-        if (thousands_sep != '\0')
-        {
-            // NOLINTNEXTLINE(readability-qualified-auto,llvm-qualified-auto): std::remove returns an iterator, see https://github.com/nlohmann/json/issues/3081
-            const auto end = std::remove(number_buffer.begin(), number_buffer.begin() + len, thousands_sep);
-            std::fill(end, number_buffer.end(), '\0');
-            JSON_ASSERT((end - number_buffer.begin()) <= len);
-            len = (end - number_buffer.begin());
-        }
-
-        // convert decimal point to '.'
-        if (decimal_point != '\0' && decimal_point != '.')
-        {
-            // NOLINTNEXTLINE(readability-qualified-auto,llvm-qualified-auto): std::find returns an iterator, see https://github.com/nlohmann/json/issues/3081
-            const auto dec_pos = std::find(number_buffer.begin(), number_buffer.end(), decimal_point);
-            if (dec_pos != number_buffer.end())
-            {
-                *dec_pos = '.';
-            }
-        }
-
-        o->write_characters(number_buffer.data(), static_cast<std::size_t>(len));
-
-        // determine if we need to append ".0"
-        const bool value_is_int_like =
-            std::none_of(number_buffer.begin(), number_buffer.begin() + len + 1,
-                         [](char c)
-        {
-            return c == '.' || c == 'e';
-        });
-
-        if (value_is_int_like)
-        {
-            o->write_characters(".0", 2);
-        }
+        o->write_characters(begin, static_cast<size_t>(end - begin));
     }
 
     /*!

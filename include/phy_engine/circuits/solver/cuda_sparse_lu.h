@@ -5,12 +5,13 @@
     #include <complex>
     #include <cstddef>
     #include <cstring>
-    #include <cstdio>
     #include <chrono>
     #include <cstdlib>
     #include <memory>
     #include <utility>
     #include <vector>
+
+    #include <fast_io/fast_io.h>
 
     #include <cuda_runtime.h>
     #include <cuComplex.h>
@@ -495,7 +496,7 @@ namespace phy_engine::solver
             if(debug)
             {
                 char const* name = (solver_mode == 1) ? "ilu0" : (solver_mode == 2) ? "cg" : "qr";
-                std::fprintf(stderr, "[phy_engine][cuda] solver=%s n=%d nnz=%d\n", name, n, nnz);
+                ::fast_io::io::perr("[phy_engine][cuda] solver=", name, " n=", n, " nnz=", nnz, "\n");
             }
 
             if(solver_mode == 1)
@@ -503,7 +504,7 @@ namespace phy_engine::solver
                 if(solve_csr_real_ilu0_bicgstab(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern)) { return true; }
                 if(debug)
                 {
-                    std::fprintf(stderr, "[phy_engine][cuda] ilu0_bicgstab failed, falling back to QR solver\n");
+                    ::fast_io::io::perr("[phy_engine][cuda] ilu0_bicgstab failed, falling back to QR solver\n");
                 }
             }
             else if(solver_mode == 2)
@@ -511,7 +512,7 @@ namespace phy_engine::solver
                 if(solve_csr_real_cg_jacobi(n, nnz, row_ptr_host, col_ind_host, values_host, b_host, x_host, out, copy_pattern)) { return true; }
                 if(debug)
                 {
-                    std::fprintf(stderr, "[phy_engine][cuda] cg_jacobi failed, falling back to QR solver\n");
+                    ::fast_io::io::perr("[phy_engine][cuda] cg_jacobi failed, falling back to QR solver\n");
                 }
             }
 
@@ -632,14 +633,19 @@ namespace phy_engine::solver
                 }
                 if(st != CUSOLVER_STATUS_SUCCESS && debug)
                 {
-                    std::fprintf(stderr,
-                                 "[phy_engine][cuda] csrqrsvBatched failed: st=%d n=%d nnz=%d internal=%zu workspace=%zu buf=%zu (fallback=csrlsvqr)\n",
-                                 static_cast<int>(st),
-                                 n,
-                                 nnz,
-                                 last_csrqr_internal_bytes_d,
-                                 last_csrqr_workspace_bytes_d,
-                                 csrqr_buffer_bytes_d);
+                    ::fast_io::io::perr("[phy_engine][cuda] csrqrsvBatched failed: st=",
+                                        static_cast<int>(st),
+                                        " n=",
+                                        n,
+                                        " nnz=",
+                                        nnz,
+                                        " internal=",
+                                        last_csrqr_internal_bytes_d,
+                                        " workspace=",
+                                        last_csrqr_workspace_bytes_d,
+                                        " buf=",
+                                        csrqr_buffer_bytes_d,
+                                        " (fallback=csrlsvqr)\n");
                 }
             }
             if(st != CUSOLVER_STATUS_SUCCESS)
@@ -1451,8 +1457,19 @@ namespace phy_engine::solver
 
             if(debug)
             {
-                std::fprintf(stderr, "[phy_engine][cuda][cg_jacobi] n=%d nnz=%d it=%d it_max=%d r_rel=%.3e tol=%.3e\n",
-                             n, nnz, it, it_max, (b_norm != 0.0) ? (r_norm / b_norm) : 0.0, tol);
+                ::fast_io::io::perr("[phy_engine][cuda][cg_jacobi] n=",
+                                    n,
+                                    " nnz=",
+                                    nnz,
+                                    " it=",
+                                    it,
+                                    " it_max=",
+                                    it_max,
+                                    " r_rel=",
+                                    ::fast_io::mnp::scientific((b_norm != 0.0) ? (r_norm / b_norm) : 0.0, 3),
+                                    " tol=",
+                                    ::fast_io::mnp::scientific(tol, 3),
+                                    "\n");
             }
 
             return (r_norm / b_norm) < tol * 10;
@@ -1637,7 +1654,7 @@ namespace phy_engine::solver
                 auto const zp = cusparseXcsrilu02_zeroPivot(cusparse_handle, ilu_info_d, &pivot);
                 if(zp == CUSPARSE_STATUS_ZERO_PIVOT)
                 {
-                    if(debug) { std::fprintf(stderr, "[phy_engine][cuda][ilu0] zero pivot during analysis at row=%d\n", pivot); }
+                    if(debug) { ::fast_io::io::perr("[phy_engine][cuda][ilu0] zero pivot during analysis at row=", pivot, "\n"); }
                     destroy_events();
                     return false;
                 }
@@ -1653,7 +1670,7 @@ namespace phy_engine::solver
                 auto const zp = cusparseXcsrilu02_zeroPivot(cusparse_handle, ilu_info_d, &pivot);
                 if(zp == CUSPARSE_STATUS_ZERO_PIVOT)
                 {
-                    if(debug) { std::fprintf(stderr, "[phy_engine][cuda][ilu0] zero pivot during factorization at row=%d\n", pivot); }
+                    if(debug) { ::fast_io::io::perr("[phy_engine][cuda][ilu0] zero pivot during factorization at row=", pivot, "\n"); }
                     destroy_events();
                     return false;
                 }
@@ -1990,14 +2007,19 @@ namespace phy_engine::solver
             destroy_events();
             if(debug)
             {
-                std::fprintf(stderr,
-                             "[phy_engine][cuda][ilu0_bicgstab] n=%d nnz=%d it=%d it_max=%d r_rel=%.3e tol=%.3e (true_resid)\n",
-                             n,
-                             nnz,
-                             it,
-                             it_max,
-                             (b_norm != 0.0) ? (r_norm / b_norm) : 0.0,
-                             tol);
+                ::fast_io::io::perr("[phy_engine][cuda][ilu0_bicgstab] n=",
+                                    n,
+                                    " nnz=",
+                                    nnz,
+                                    " it=",
+                                    it,
+                                    " it_max=",
+                                    it_max,
+                                    " r_rel=",
+                                    ::fast_io::mnp::scientific((b_norm != 0.0) ? (r_norm / b_norm) : 0.0, 3),
+                                    " tol=",
+                                    ::fast_io::mnp::scientific(tol, 3),
+                                    " (true_resid)\n");
             }
             return (r_norm / b_norm) < tol * 10;
         }
