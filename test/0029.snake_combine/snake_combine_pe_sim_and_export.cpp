@@ -422,7 +422,7 @@ int main()
         // Layout core area above the display: y in [1.25, 2.0], x in [-1, 1].
         {
             ::phy_engine::phy_lab_wrapper::auto_layout::options aopt{};
-            aopt.mode = ::phy_engine::phy_lab_wrapper::auto_layout::mode::hierarchical;
+            aopt.layout_mode = ::phy_engine::phy_lab_wrapper::auto_layout::mode::hierarchical;
             aopt.respect_fixed_elements = true;
             aopt.small_element = {1, 1};
             aopt.big_element = {2, 2};

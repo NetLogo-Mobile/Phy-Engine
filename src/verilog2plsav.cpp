@@ -797,7 +797,7 @@ int main(int argc, char** argv)
     // Auto-layout internal elements into the requested region.
     {
         ::phy_engine::phy_lab_wrapper::auto_layout::options aopt{};
-        aopt.mode = *layout_mode;
+        aopt.layout_mode = *layout_mode;
         aopt.respect_fixed_elements = true;
         aopt.small_element = {1, 1};
         aopt.big_element = {2, 2};
@@ -807,7 +807,7 @@ int main(int argc, char** argv)
         // Finer grid => more available subcells (prevents pile-up without enlarging the desk).
         aopt.step_x = layout_step;
         aopt.step_y = layout_step;
-        if(aopt.mode == ::phy_engine::phy_lab_wrapper::auto_layout::mode::cluster)
+        if(aopt.layout_mode == ::phy_engine::phy_lab_wrapper::auto_layout::mode::cluster)
         {
             // More sub-blocks / macro tiles for a chip-like feel.
             aopt.cluster_max_nodes = cluster_max_nodes;
@@ -891,7 +891,7 @@ int main(int argc, char** argv)
             }
             else
             {
-                if(st.skipped == 0 && st.mode == aopt.mode) { break; }
+                if(st.skipped == 0 && st.layout_mode == aopt.layout_mode) { break; }
             }
             if(layout_refine)
             {
@@ -902,7 +902,7 @@ int main(int argc, char** argv)
 
         ::fast_io::io::perr(::fast_io::err(),
                             "[verilog2plsav] layout=",
-                            static_cast<int>(st.mode),
+                            static_cast<int>(st.layout_mode),
                             " extent=",
                             ::fast_io::mnp::fixed(extent),
                             " step=(",

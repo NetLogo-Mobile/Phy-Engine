@@ -63,7 +63,7 @@ int main()
         }
 
         options opt;
-        opt.mode = layout_mode;
+        opt.layout_mode = layout_mode;
         opt.step_x = 0.16;
         opt.step_y = 0.08;
         opt.small_element = {1, 1};
@@ -196,7 +196,7 @@ int main()
     {
         auto [ex, ids] = build_ex();
         auto opt = base_opt();
-        opt.mode = mode::hierarchical;
+        opt.layout_mode = mode::hierarchical;
         double z = 0.0;
 
         auto const st = layout_a_3d(ex, {-1.0, -1.0, 0.0}, {1.0, 1.0, 0.0}, z, opt);

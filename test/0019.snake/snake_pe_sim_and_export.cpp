@@ -263,7 +263,7 @@ int main()
         // corner0 = (-1, 1.25, 0), corner1 = (1, 2, 0).
         {
             ::phy_engine::phy_lab_wrapper::auto_layout::options aopt{};
-            aopt.mode = ::phy_engine::phy_lab_wrapper::auto_layout::mode::hierarchical;
+            aopt.layout_mode = ::phy_engine::phy_lab_wrapper::auto_layout::mode::hierarchical;
             aopt.respect_fixed_elements = true;
             aopt.small_element = {1, 1};
             aopt.big_element = {2, 2};
@@ -339,7 +339,7 @@ int main()
                 for(std::size_t attempt{}; attempt < 10; ++attempt)
                 {
                     st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
-                    if(st.skipped == 0 && st.mode == aopt.mode) { break; }
+                    if(st.skipped == 0 && st.layout_mode == aopt.layout_mode) { break; }
                     aopt.step_x = std::max(aopt.step_x * 0.92, min_step);
                     aopt.step_y = std::max(aopt.step_y * 0.92, min_step);
                     if(!grid_ok(aopt.step_x, aopt.step_y)) { break; }

@@ -79,8 +79,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
 
     struct options
     {
-        backend backend{backend::cpu};
-        mode mode{mode::fast};
+        backend backend_kind{backend::cpu};
+        mode layout_mode{mode::fast};
 
         // Discretize positions in native coordinates.
         double step_x{element_xyz::x_unit};
@@ -123,7 +123,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
 
     struct stats
     {
-        mode mode{mode::fast};
+        mode layout_mode{mode::fast};
         std::size_t grid_w{};
         std::size_t grid_h{};
         double step_x{};
@@ -520,7 +520,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
 
             return stats{
-                .mode = opt.mode,
+                .layout_mode = opt.layout_mode,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -725,7 +725,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(ctx.movable.empty())
             {
                 return stats{
-                    .mode = opt.mode,
+                    .layout_mode = opt.layout_mode,
                     .grid_w = ctx.w,
                     .grid_h = ctx.h,
                     .step_x = opt.step_x,
@@ -801,7 +801,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
 
             return stats{
-                .mode = opt.mode,
+                .layout_mode = opt.layout_mode,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -824,7 +824,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(ctx.movable.empty())
             {
                 return stats{
-                    .mode = opt.mode,
+                    .layout_mode = opt.layout_mode,
                     .grid_w = ctx.w,
                     .grid_h = ctx.h,
                     .step_x = opt.step_x,
@@ -1003,7 +1003,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
 
             return stats{
-                .mode = opt.mode,
+                .layout_mode = opt.layout_mode,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -1037,7 +1037,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(ctx.movable.empty())
             {
                 return stats{
-                    .mode = opt.mode,
+                    .layout_mode = opt.layout_mode,
                     .grid_w = ctx.w,
                     .grid_h = ctx.h,
                     .step_x = opt.step_x,
@@ -1233,7 +1233,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
 
             return stats{
-                .mode = opt.mode,
+                .layout_mode = opt.layout_mode,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -1260,7 +1260,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(ctx.movable.empty())
             {
                 return stats{
-                    .mode = opt.mode,
+                    .layout_mode = opt.layout_mode,
                     .grid_w = ctx.w,
                     .grid_h = ctx.h,
                     .step_x = opt.step_x,
@@ -1605,7 +1605,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 {
                     // Fallback: if macro placement fails, degrade to fast global placement.
                     options opt2 = opt;
-                    opt2.mode = mode::fast;
+                    opt2.layout_mode = mode::fast;
                     return layout_cpu_fast(ex, corner0, corner1, z_fixed, opt2);
                 }
                 occ_macro.occupy(*chosen, blocks[cid].outer, static_cast<int>(cid));
@@ -1698,7 +1698,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
 
             return stats{
-                .mode = opt.mode,
+                .layout_mode = opt.layout_mode,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -1764,7 +1764,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
 
             return stats{
-                .mode = opt.mode,
+                .layout_mode = opt.layout_mode,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -1835,7 +1835,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(ctx.movable.empty())
             {
                 return stats{
-                    .mode = mode::hierarchical,
+                    .layout_mode = mode::hierarchical,
                     .grid_w = ctx.w,
                     .grid_h = ctx.h,
                     .step_x = opt.step_x,
@@ -2000,7 +2000,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             }
 
             return stats{
-                .mode = mode::hierarchical,
+                .layout_mode = mode::hierarchical,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -2024,7 +2024,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             if(ctx.movable.empty())
             {
                 return stats{
-                    .mode = mode::force,
+                    .layout_mode = mode::force,
                     .grid_w = ctx.w,
                     .grid_h = ctx.h,
                     .step_x = opt.step_x,
@@ -2206,7 +2206,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 p = std::min<std::size_t>(p, 64);
                 return p;
             }();
-            if(planes == 0) { return stats{.mode = mode::force}; }
+            if(planes == 0) { return stats{.layout_mode = mode::force}; }
 
             auto plane_of = [&](double zn) -> std::size_t
             {
@@ -2296,7 +2296,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             }
 
             return stats{
-                .mode = mode::force,
+                .layout_mode = mode::force,
                 .grid_w = ctx.w,
                 .grid_h = ctx.h,
                 .step_x = opt.step_x,
@@ -2310,15 +2310,15 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
 
     inline stats layout(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt = {})
     {
-        if(opt.backend == backend::cuda)
+        if(opt.backend_kind == backend::cuda)
         {
             if(!opt.cuda.fn) { throw std::runtime_error("auto_layout: CUDA backend requested but no dispatch function is provided"); }
             auto const bounds = normalize_bounds(corner0, corner1, opt.margin_x, opt.margin_y);
             opt.cuda.fn(ex, bounds, z_fixed, opt.cuda.opt_opaque);
-            return stats{.mode = opt.mode};
+            return stats{.layout_mode = opt.layout_mode};
         }
 
-        switch(opt.mode)
+        switch(opt.layout_mode)
         {
             case mode::fast: return detail::layout_cpu_fast(ex, corner0, corner1, z_fixed, opt);
             case mode::cluster: return detail::layout_cpu_cluster(ex, corner0, corner1, z_fixed, opt);
