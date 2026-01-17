@@ -536,6 +536,133 @@ namespace phy_engine::verilog::digital
             char8_t const* p{text.data()};
             char8_t const* const e{text.data() + text.size()};
             ::std::size_t line{1};
+            bool in_block_comment{};
+
+            auto expand_line_with_comments = [&](::fast_io::u8string_view line_text, ::std::size_t line_no, bool& in_block) noexcept -> expand_result
+            {
+                expand_result r{};
+                r.text.reserve(line_text.size());
+                r.map.reserve(line_text.size());
+
+                auto append_char = [&](char8_t ch, ::std::size_t l, ::std::size_t c) noexcept
+                {
+                    r.text.push_back(ch);
+                    r.map.push_back({static_cast<::std::uint32_t>(l), static_cast<::std::uint32_t>(c)});
+                };
+
+                auto append_passthrough = [&](::fast_io::u8string_view v, ::std::size_t l, ::std::size_t c0) noexcept
+                {
+                    for(::std::size_t i{}; i < v.size(); ++i) { append_char(v[i], l, c0 + i); }
+                };
+
+                auto append_expanded = [&](expand_result const& er) noexcept
+                {
+                    r.text.append(::fast_io::u8string_view{er.text.data(), er.text.size()});
+                    for(auto const& sp: er.map) { r.map.push_back(sp); }
+                };
+
+                auto find_string_end = [&](::std::size_t i) noexcept -> ::std::size_t
+                {
+                    // i points to the opening '"'
+                    ::std::size_t j{i + 1};
+                    while(j < line_text.size())
+                    {
+                        char8_t const c{line_text[j]};
+                        if(c == u8'\\')
+                        {
+                            if(j + 1 < line_text.size())
+                            {
+                                j += 2;
+                                continue;
+                            }
+                        }
+                        if(c == u8'"') { return j + 1; }
+                        ++j;
+                    }
+                    return line_text.size();
+                };
+
+                auto find_block_comment_end = [&](::std::size_t i) noexcept -> ::std::size_t
+                {
+                    // i points to the first char after "/*"
+                    ::std::size_t j{i};
+                    while(j + 1 < line_text.size())
+                    {
+                        if(line_text[j] == u8'*' && line_text[j + 1] == u8'/') { return j + 2; }
+                        ++j;
+                    }
+                    return line_text.size();
+                };
+
+                ::std::size_t i{};
+                while(i < line_text.size())
+                {
+                    if(in_block)
+                    {
+                        auto const end_pos{find_block_comment_end(i)};
+                        append_passthrough(::fast_io::u8string_view{line_text.data() + i, end_pos - i}, line_no, 1 + i);
+                        if(end_pos < line_text.size()) { in_block = false; }
+                        i = end_pos;
+                        continue;
+                    }
+
+                    // Find next special: string start or comment start.
+                    ::std::size_t j{i};
+                    while(j < line_text.size())
+                    {
+                        char8_t const c{line_text[j]};
+                        if(c == u8'"') { break; }
+                        if(c == u8'/' && j + 1 < line_text.size() && (line_text[j + 1] == u8'/' || line_text[j + 1] == u8'*')) { break; }
+                        ++j;
+                    }
+
+                    if(j > i)
+                    {
+                        auto const seg{::fast_io::u8string_view{line_text.data() + i, j - i}};
+                        auto const er{expand_text(expand_text, seg, line_no, 1 + i, 0)};
+                        append_expanded(er);
+                        i = j;
+                        continue;
+                    }
+
+                    if(i >= line_text.size()) { break; }
+                    char8_t const c{line_text[i]};
+
+                    if(c == u8'"')
+                    {
+                        auto const end_pos{find_string_end(i)};
+                        append_passthrough(::fast_io::u8string_view{line_text.data() + i, end_pos - i}, line_no, 1 + i);
+                        i = end_pos;
+                        continue;
+                    }
+
+                    if(c == u8'/' && i + 1 < line_text.size())
+                    {
+                        char8_t const n{line_text[i + 1]};
+                        if(n == u8'/')
+                        {
+                            // Line comment: no macro expansion inside.
+                            append_passthrough(::fast_io::u8string_view{line_text.data() + i, line_text.size() - i}, line_no, 1 + i);
+                            break;
+                        }
+                        if(n == u8'*')
+                        {
+                            // Block comment: no macro expansion inside, possibly spanning lines.
+                            auto const end_pos{find_block_comment_end(i + 2)};
+                            append_passthrough(::fast_io::u8string_view{line_text.data() + i, end_pos - i}, line_no, 1 + i);
+                            if(end_pos >= line_text.size()) { in_block = true; }
+                            i = end_pos;
+                            continue;
+                        }
+                    }
+
+                    // Fallback (should be rare because we scan specials above).
+                    append_char(c, line_no, 1 + i);
+                    ++i;
+                }
+
+                return r;
+            };
 
             while(p < e)
             {
@@ -551,7 +678,7 @@ namespace phy_engine::verilog::digital
                 char8_t const* q{line_begin};
                 while(q < logical_end && details::is_space(*q) && *q != u8'\n' && *q != u8'\r') { ++q; }
 
-                bool const is_directive{q < logical_end && *q == u8'`'};
+                bool const is_directive{!in_block_comment && q < logical_end && *q == u8'`'};
 
                 if(is_directive)
                 {
@@ -696,9 +823,11 @@ namespace phy_engine::verilog::digital
                 }
                 else if(current_active())
                 {
-                    // Expand macros (object-like and function-like): `NAME / `NAME(...)
-                    auto const expanded{
-                        expand_text(expand_text, ::fast_io::u8string_view{line_begin, static_cast<::std::size_t>(logical_end - line_begin)}, line, 1, 0)};
+                    // Expand macros (object-like and function-like): `NAME / `NAME(...), but never inside comments/strings.
+                    auto const expanded{expand_line_with_comments(
+                        ::fast_io::u8string_view{line_begin, static_cast<::std::size_t>(logical_end - line_begin)},
+                        line,
+                        in_block_comment)};
                     out.output.append(::fast_io::u8string_view{expanded.text.data(), expanded.text.size()});
                     for(auto const& sp: expanded.map) { out.source_map.push_back(sp); }
                     out.output.push_back(u8'\n');
@@ -1388,6 +1517,196 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<compiled_module> modules{};
         ::fast_io::vector<compile_error> errors{};
     };
+
+    struct diagnostic_options
+    {
+        ::fast_io::u8string_view filename{};
+        bool show_source_line{true};
+        bool show_caret{true};
+    };
+
+    namespace diagnostic_details
+    {
+        inline void append_sv(::fast_io::u8string& out, ::fast_io::u8string_view sv) noexcept
+        {
+            out.reserve(out.size() + sv.size());
+            for(char8_t c: sv) { out.push_back(c); }
+        }
+
+        inline void append_cstr(::fast_io::u8string& out, char const* s) noexcept
+        {
+            for(; *s; ++s) { out.push_back(static_cast<char8_t>(*s)); }
+        }
+
+        inline void append_u64(::fast_io::u8string& out, ::std::size_t v) noexcept
+        {
+            char buf[32];
+            auto const* const b{buf};
+            auto const* const e{buf + sizeof(buf)};
+            auto const r{::std::to_chars(const_cast<char*>(b), const_cast<char*>(e), v)};
+            if(r.ec != ::std::errc{}) [[unlikely]] { return; }
+            for(auto const* p{b}; p != r.ptr; ++p) { out.push_back(static_cast<char8_t>(*p)); }
+        }
+
+        struct line_index
+        {
+            ::fast_io::vector<::std::size_t> line_starts{};  // 1-based lines: line_starts[line-1]
+        };
+
+        inline line_index build_line_index(::fast_io::u8string_view src) noexcept
+        {
+            line_index idx{};
+            idx.line_starts.push_back(0);
+            for(::std::size_t i{}; i < src.size(); ++i)
+            {
+                if(src[i] == u8'\n')
+                {
+                    if(i + 1 <= src.size()) { idx.line_starts.push_back(i + 1); }
+                }
+            }
+            return idx;
+        }
+
+        inline ::fast_io::u8string_view line_view(::fast_io::u8string_view src, line_index const& idx, ::std::size_t line) noexcept
+        {
+            if(line == 0 || idx.line_starts.empty() || line > idx.line_starts.size()) { return {}; }
+            ::std::size_t const start{idx.line_starts.index_unchecked(line - 1)};
+            if(start > src.size()) { return {}; }
+            ::std::size_t end{src.size()};
+            if(line < idx.line_starts.size()) { end = idx.line_starts.index_unchecked(line) - 1; }  // exclude '\n'
+            if(end > src.size()) { end = src.size(); }
+            if(end > start && src[end - 1] == u8'\r') { --end; }  // handle CRLF
+            return ::fast_io::u8string_view{src.data() + start, end - start};
+        }
+
+        inline void append_error_header(::fast_io::u8string& out,
+                                        compile_error const& err,
+                                        ::fast_io::u8string_view filename) noexcept
+        {
+            if(!filename.empty())
+            {
+                append_sv(out, filename);
+                out.push_back(u8':');
+            }
+            append_u64(out, err.line);
+            out.push_back(u8':');
+            append_u64(out, err.column);
+            append_cstr(out, ": error: ");
+            append_sv(out, ::fast_io::u8string_view{err.message.data(), err.message.size()});
+            out.push_back(u8'\n');
+        }
+    }  // namespace diagnostic_details
+
+    inline ::fast_io::u8string format_compile_error(compile_error const& err,
+                                                    ::fast_io::u8string_view src,
+                                                    diagnostic_options const& opt = {}) noexcept
+    {
+        using namespace diagnostic_details;
+
+        ::fast_io::u8string out{};
+        append_error_header(out, err, opt.filename);
+
+        if(!(opt.show_source_line || opt.show_caret)) { return out; }
+        if(src.empty()) { return out; }
+
+        auto const idx{build_line_index(src)};
+        auto const line_text{line_view(src, idx, err.line)};
+        if(line_text.empty()) { return out; }
+
+        if(opt.show_source_line)
+        {
+            append_cstr(out, "  ");
+            append_sv(out, line_text);
+            out.push_back(u8'\n');
+        }
+
+        if(opt.show_caret)
+        {
+            append_cstr(out, "  ");
+
+            ::std::size_t col{err.column};
+            if(col == 0) { col = 1; }
+            if(col > line_text.size() + 1) { col = line_text.size() + 1; }
+
+            // Keep tabs to preserve visual alignment in terminals that treat tabs specially.
+            for(::std::size_t i{1}; i < col; ++i)
+            {
+                char8_t const ch{(i - 1) < line_text.size() ? line_text[i - 1] : u8' '};
+                out.push_back(ch == u8'\t' ? u8'\t' : u8' ');
+            }
+            out.push_back(u8'^');
+            out.push_back(u8'\n');
+        }
+
+        return out;
+    }
+
+    inline ::fast_io::u8string format_compile_errors(::fast_io::vector<compile_error> const& errors,
+                                                     ::fast_io::u8string_view src,
+                                                     diagnostic_options const& opt = {}) noexcept
+    {
+        using namespace diagnostic_details;
+
+        ::fast_io::u8string out{};
+        if(errors.empty()) { return out; }
+
+        // Build line index once for all errors (can be large when there are many).
+        auto const idx{build_line_index(src)};
+
+        for(::std::size_t i{}; i < errors.size(); ++i)
+        {
+            auto const& err{errors.index_unchecked(i)};
+            append_error_header(out, err, opt.filename);
+
+            if(!(opt.show_source_line || opt.show_caret) || src.empty())
+            {
+                if(i + 1 != errors.size()) { out.push_back(u8'\n'); }
+                continue;
+            }
+
+            auto const line_text{line_view(src, idx, err.line)};
+            if(line_text.empty())
+            {
+                if(i + 1 != errors.size()) { out.push_back(u8'\n'); }
+                continue;
+            }
+
+            if(opt.show_source_line)
+            {
+                append_cstr(out, "  ");
+                append_sv(out, line_text);
+                out.push_back(u8'\n');
+            }
+
+            if(opt.show_caret)
+            {
+                append_cstr(out, "  ");
+
+                ::std::size_t col{err.column};
+                if(col == 0) { col = 1; }
+                if(col > line_text.size() + 1) { col = line_text.size() + 1; }
+
+                for(::std::size_t c{1}; c < col; ++c)
+                {
+                    char8_t const ch{(c - 1) < line_text.size() ? line_text[c - 1] : u8' '};
+                    out.push_back(ch == u8'\t' ? u8'\t' : u8' ');
+                }
+                out.push_back(u8'^');
+                out.push_back(u8'\n');
+            }
+
+            if(i + 1 != errors.size()) { out.push_back(u8'\n'); }
+        }
+
+        return out;
+    }
+
+    inline ::fast_io::u8string format_compile_errors(compile_result const& cr,
+                                                     ::fast_io::u8string_view src,
+                                                     diagnostic_options const& opt = {}) noexcept
+    {
+        return format_compile_errors(cr.errors, src, opt);
+    }
 
     namespace details
     {

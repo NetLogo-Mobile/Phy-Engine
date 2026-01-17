@@ -188,6 +188,7 @@
 
 - `compile_result.errors` 非空时通常表示编译失败
 - `compile_result.modules` 是“编译单元内所有 module”
+- 可用 `format_compile_error(...)` / `format_compile_errors(...)`（`digital.h` 提供）把 `compile_error` 格式化成 `file:line:column` + 源码行 + `^` 的可读输出
 
 ### D4) `build_design(compile_result&&) -> compiled_design`
 
@@ -384,4 +385,3 @@
 - `plw_experiment_dump(handle, indent)`
 - `plw_experiment_add_circuit_element(handle, model_id, x,y,z, element_xyz_coords)`
 - `plw_experiment_connect(handle, src_id, src_pin, dst_id, dst_pin, color_value)`
-

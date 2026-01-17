@@ -614,12 +614,14 @@ int main(int argc, char** argv)
     auto cr = ::phy_engine::verilog::digital::compile(src, copt);
     if(!cr.errors.empty() || cr.modules.empty())
     {
-        for(auto const& e : cr.errors)
+        auto const path_s = in_path.string();
+        diagnostic_options dop{};
+        dop.filename = u8sv{reinterpret_cast<char8_t const*>(path_s.data()), path_s.size()};
+
+        auto const diag = format_compile_errors(cr, src, dop);
+        if(!diag.empty())
         {
-            std::fprintf(stderr,
-                         "error: %.*s\n",
-                         static_cast<int>(e.message.size()),
-                         reinterpret_cast<char const*>(e.message.data()));
+            std::fprintf(stderr, "%.*s", static_cast<int>(diag.size()), reinterpret_cast<char const*>(diag.data()));
         }
         return 1;
     }
