@@ -532,6 +532,12 @@ public:
             props = json{{"高电平", 3.0}, {"低电平", 0.0}, {"锁定", 1.0}, {"开关", 0.0}};
             stats = json{{"电流", 0.0}, {"电压", 0.0}, {"功率", 0.0}};
         }
+        else if (mid == "Resistor")
+        {
+            // Common PL property set: resistance + lock flag.
+            props = json{{"电阻", 1000.0}, {"锁定", 1.0}};
+            stats = json{{"电流", 0.0}, {"电压", 0.0}, {"功率", 0.0}};
+        }
         else if (mid == "Logic Output")
         {
             props = json{{"状态", 0.0}, {"高电平", 3.0}, {"低电平", 0.0}, {"锁定", 1.0}};
@@ -557,12 +563,30 @@ public:
             stats = json{{"7", 0.0}, {"6", 0.0}, {"5", 0.0}, {"4", 0.0}, {"3", 0.0}, {"2", 0.0}, {"1", 0.0}, {"0", 0.0}, {"十进制", 0.0}};
         }
 
+        bool is_locked{};
+        if (props.is_object())
+        {
+            auto it = props.find("锁定");
+            if (it != props.end())
+            {
+                // PhysicsLab uses "锁定" as a numeric/bool-ish toggle; keep IsLocked consistent.
+                if (it->is_boolean())
+                {
+                    is_locked = it->get<bool>();
+                }
+                else if (it->is_number_float() || it->is_number_integer() || it->is_number_unsigned())
+                {
+                    is_locked = it->get<double>() != 0.0;
+                }
+            }
+        }
+
         e.data_ = json{
             {"ModelID", std::move(model_id)},
             {"Identifier", detail::rand_string(33)},
             {"Label", nullptr},
             {"IsBroken", false},
-            {"IsLocked", false},
+            {"IsLocked", is_locked},
             {"Properties", std::move(props)},
             {"Statistics", std::move(stats)},
             {"Position", ""},
