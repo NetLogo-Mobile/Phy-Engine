@@ -261,6 +261,19 @@ int main()
     auto alu_y = make_bus(nl, 16);
     auto alu_op = make_bus(nl, 3);
 
+    // Split ALU into independent layers (ops + selector).
+    auto alu_y_addsub = make_bus(nl, 16);
+    auto alu_y_and = make_bus(nl, 16);
+    auto alu_y_or = make_bus(nl, 16);
+    auto alu_y_xor = make_bus(nl, 16);
+    auto alu_y_mov = make_bus(nl, 16);
+    auto alu_y_shl = make_bus(nl, 16);
+    auto alu_y_shr = make_bus(nl, 16);
+    auto& n_alu_sub = ::phy_engine::netlist::create_node(nl);
+    auto& n_alu_cf_addsub = ::phy_engine::netlist::create_node(nl);
+    auto& n_alu_cf_shl = ::phy_engine::netlist::create_node(nl);
+    auto& n_alu_cf_shr = ::phy_engine::netlist::create_node(nl);
+
     auto& n_pc_we = ::phy_engine::netlist::create_node(nl);
     auto& n_reg_we = ::phy_engine::netlist::create_node(nl);
     auto& n_alu_b_sel = ::phy_engine::netlist::create_node(nl);
@@ -287,7 +300,7 @@ int main()
         std::vector<::phy_engine::model::model_base const*> pe_models{};
     };
     std::vector<layer> layers{};
-    layers.reserve(12);
+    layers.reserve(20);
 
     auto synth_layer = [&](char const* layer_name,
                            std::filesystem::path const& vpath,
@@ -457,18 +470,101 @@ int main()
         }
     }
 
-    // alu16(op[2:0],a[15:0],b[15:0],y[15:0],zf,cf,sf)
+    // Split ALU: each op is its own layer, plus a selector layer.
+    // alu16_sub_decode(op[2:0],sub)
     {
         std::vector<::phy_engine::model::node_t*> ports{};
-        ports.reserve(54);
+        ports.reserve(4);
         for(auto* n : alu_op) { ports.push_back(n); }
+        ports.push_back(&n_alu_sub);
+        synth_layer("alu16_sub_decode", dir / "alu16_sub_decode.v", u8"alu16_sub_decode", ports);
+    }
+    // alu16_addsub(sub,a[15:0],b[15:0],y[15:0],cf)
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(50);
+        ports.push_back(&n_alu_sub);
         for(auto* n : rf_rdata_a) { ports.push_back(n); }
         for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_addsub) { ports.push_back(n); }
+        ports.push_back(&n_alu_cf_addsub);
+        synth_layer("alu16_addsub", dir / "alu16_addsub.v", u8"alu16_addsub", ports);
+    }
+    // alu16_and(a[15:0],b[15:0],y[15:0])
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(48);
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_and) { ports.push_back(n); }
+        synth_layer("alu16_and", dir / "alu16_and.v", u8"alu16_and", ports);
+    }
+    // alu16_or(a[15:0],b[15:0],y[15:0])
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(48);
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_or) { ports.push_back(n); }
+        synth_layer("alu16_or", dir / "alu16_or.v", u8"alu16_or", ports);
+    }
+    // alu16_xor(a[15:0],b[15:0],y[15:0])
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(48);
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_xor) { ports.push_back(n); }
+        synth_layer("alu16_xor", dir / "alu16_xor.v", u8"alu16_xor", ports);
+    }
+    // alu16_mov(b[15:0],y[15:0])
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(32);
+        for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_mov) { ports.push_back(n); }
+        synth_layer("alu16_mov", dir / "alu16_mov.v", u8"alu16_mov", ports);
+    }
+    // alu16_shl(a[15:0],b[15:0],y[15:0],cf)
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(49);
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_shl) { ports.push_back(n); }
+        ports.push_back(&n_alu_cf_shl);
+        synth_layer("alu16_shl", dir / "alu16_shl.v", u8"alu16_shl", ports);
+    }
+    // alu16_shr(a[15:0],b[15:0],y[15:0],cf)
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(49);
+        for(auto* n : rf_rdata_a) { ports.push_back(n); }
+        for(auto* n : alu_b) { ports.push_back(n); }
+        for(auto* n : alu_y_shr) { ports.push_back(n); }
+        ports.push_back(&n_alu_cf_shr);
+        synth_layer("alu16_shr", dir / "alu16_shr.v", u8"alu16_shr", ports);
+    }
+    // alu16_select(op[2:0],y_addsub[15:0],cf_addsub,y_and[15:0],y_or[15:0],y_xor[15:0],y_mov[15:0],y_shl[15:0],cf_shl,y_shr[15:0],cf_shr,y[15:0],zf,cf,sf)
+    {
+        std::vector<::phy_engine::model::node_t*> ports{};
+        ports.reserve(137);
+        for(auto* n : alu_op) { ports.push_back(n); }
+        for(auto* n : alu_y_addsub) { ports.push_back(n); }
+        ports.push_back(&n_alu_cf_addsub);
+        for(auto* n : alu_y_and) { ports.push_back(n); }
+        for(auto* n : alu_y_or) { ports.push_back(n); }
+        for(auto* n : alu_y_xor) { ports.push_back(n); }
+        for(auto* n : alu_y_mov) { ports.push_back(n); }
+        for(auto* n : alu_y_shl) { ports.push_back(n); }
+        ports.push_back(&n_alu_cf_shl);
+        for(auto* n : alu_y_shr) { ports.push_back(n); }
+        ports.push_back(&n_alu_cf_shr);
         for(auto* n : alu_y) { ports.push_back(n); }
         ports.push_back(&n_alu_zf);
         ports.push_back(&n_alu_cf);
         ports.push_back(&n_alu_sf);
-        synth_layer("alu16", dir / "alu16.v", u8"alu16", ports);
+        synth_layer("alu16_select", dir / "alu16_select.v", u8"alu16_select", ports);
     }
 
     // Add chip-level pins as PE OUTPUT models (so PL uses "Logic Output" for both inputs and outputs).

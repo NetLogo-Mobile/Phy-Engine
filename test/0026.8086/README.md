@@ -14,7 +14,7 @@ The example is a tiny **16-bit toy CPU** (not a full x86/8086 implementation) bu
 - `control16`: control unit (PC / reg write / ALU op)
 - `imm_ext8_to_16`: sign-extend immediate
 - `regfile4x16`: 4×16 register file
-- `alu16`: 16-bit ALU
+- `alu16`: 16-bit ALU (split into `alu16_*` op blocks + `alu16_select`)
 - `flag1`: 1-bit Z flag register
 
 The C++ test runs a small ROM program and asserts final register values and `halt`.

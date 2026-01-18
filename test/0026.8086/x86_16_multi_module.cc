@@ -75,7 +75,29 @@ int main()
     auto const imm_s = read_file_text(dir / "imm_ext8_to_16.v");
     auto const rf_s = read_file_text(dir / "regfile4x16.v");
     auto const mux_s = read_file_text(dir / "mux16.v");
-    auto const alu_s = read_file_text(dir / "alu16.v");
+    auto const alu_addsub_s = read_file_text(dir / "alu16_addsub.v");
+    auto const alu_and_s = read_file_text(dir / "alu16_and.v");
+    auto const alu_or_s = read_file_text(dir / "alu16_or.v");
+    auto const alu_xor_s = read_file_text(dir / "alu16_xor.v");
+    auto const alu_mov_s = read_file_text(dir / "alu16_mov.v");
+    auto const alu_shl_s = read_file_text(dir / "alu16_shl.v");
+    auto const alu_shr_s = read_file_text(dir / "alu16_shr.v");
+    auto const alu_sub_dec_s = read_file_text(dir / "alu16_sub_decode.v");
+    auto const alu_sel_s = read_file_text(dir / "alu16_select.v");
+    auto const alu_top_s = read_file_text(dir / "alu16.v");
+    std::string alu_s{};
+    alu_s.reserve(alu_addsub_s.size() + alu_and_s.size() + alu_or_s.size() + alu_xor_s.size() + alu_mov_s.size() +
+                  alu_shl_s.size() + alu_shr_s.size() + alu_sel_s.size() + alu_top_s.size() + 16);
+    alu_s.append(alu_addsub_s).append("\n");
+    alu_s.append(alu_and_s).append("\n");
+    alu_s.append(alu_or_s).append("\n");
+    alu_s.append(alu_xor_s).append("\n");
+    alu_s.append(alu_mov_s).append("\n");
+    alu_s.append(alu_shl_s).append("\n");
+    alu_s.append(alu_shr_s).append("\n");
+    alu_s.append(alu_sub_dec_s).append("\n");
+    alu_s.append(alu_sel_s).append("\n");
+    alu_s.append(alu_top_s).append("\n");
     auto const flg_s = read_file_text(dir / "flag1.v");
 
     ::phy_engine::circult c{};
