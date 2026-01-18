@@ -42,6 +42,14 @@ struct options
     // Keep higher-level PL macro elements when possible (e.g., COUNTER4 -> "Counter").
     bool keep_pl_macros{true};
 
+    // If true, include PE linear/passive models (e.g., Resistance, VDC) in the export.
+    // Default is false to preserve legacy behavior where PE->PL was digital-only.
+    bool include_linear{false};
+
+    // If true, add a "Ground Component" element and connect PE ground_node to it.
+    // Useful for mixed-signal exports; ignored unless `include_linear` (or other analog models) create ground connections.
+    bool include_ground{false};
+
     // If true, generate PL wires for each PE net (node) from collected endpoints.
     bool generate_wires{true};
 
@@ -112,9 +120,21 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
     auto const name_u8 = (mb.ptr == nullptr) ? ::fast_io::u8string_view{} : mb.ptr->get_model_name();
     auto const name = u8sv_to_string(name_u8);
 
+    // Linear / passive
+    if(opt.include_linear)
+    {
+        if(name == "Resistance") { return identity_mapping(std::string(pl_model_id::resistor), 2); }
+        if(name == "VDC") { return identity_mapping(std::string(pl_model_id::battery_source), 2); }
+        if(name == "capacitor") { return identity_mapping(std::string(pl_model_id::basic_capacitor), 2); }
+        if(name == "inductor") { return identity_mapping(std::string(pl_model_id::basic_inductor), 2); }
+    }
+
     // Digital I/O
     if(name == "INPUT") { return identity_mapping(std::string(pl_model_id::logic_input), 1); }
     if(name == "OUTPUT") { return identity_mapping(std::string(pl_model_id::logic_output), 1); }
+
+    // Controllers
+    if(name == "Comparator") { return identity_mapping(std::string(pl_model_id::comparator), 3); }
 
     // Basic gates
     if(name == "YES") { return identity_mapping(std::string(pl_model_id::yes_gate), 2); }
@@ -317,6 +337,29 @@ inline void try_set_pl_properties_for_element(experiment& ex,
         }
         ex.get_element(element_id).data()["Properties"]["开关"] = static_cast<double>(sw);
     }
+
+    if(name == "Resistance")
+    {
+        auto v = mb.ptr->get_attribute(0);
+        if(v.type != ::phy_engine::model::variant_type::d) { return; }
+        ex.get_element(element_id).data()["Properties"]["电阻"] = v.d;
+    }
+
+    if(name == "VDC")
+    {
+        auto v = mb.ptr->get_attribute(0);
+        if(v.type != ::phy_engine::model::variant_type::d) { return; }
+        ex.get_element(element_id).data()["Properties"]["电压"] = v.d;
+    }
+
+    if(name == "Comparator")
+    {
+        auto ll = mb.ptr->get_attribute(0);
+        auto hl = mb.ptr->get_attribute(1);
+        if(ll.type == ::phy_engine::model::variant_type::d) { ex.get_element(element_id).data()["Properties"]["低电平"] = ll.d; }
+        if(hl.type == ::phy_engine::model::variant_type::d) { ex.get_element(element_id).data()["Properties"]["高电平"] = hl.d; }
+        ex.get_element(element_id).data()["Properties"]["锁定"] = 1.0;
+    }
 }
 }  // namespace detail
 
@@ -324,6 +367,8 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
 {
     result out;
     out.ex = experiment::create(experiment_type::circuit);
+
+    std::optional<std::string> ground_element_id{};
 
     // PE model -> PL element id + per-pin mapping.
     struct mapped_element
@@ -340,7 +385,11 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
         {
             if(m->type != ::phy_engine::model::model_type::normal) { continue; }
             if(m->ptr == nullptr) { continue; }
-            if(m->ptr->get_device_type() != ::phy_engine::model::model_device_type::digital) { continue; }
+            auto const dt = m->ptr->get_device_type();
+            if(dt != ::phy_engine::model::model_device_type::digital)
+            {
+                if(!(opt.include_linear && dt == ::phy_engine::model::model_device_type::linear)) { continue; }
+            }
 
             auto mapping = detail::map_pe_model_to_pl(*m, opt, out.warnings);
             if(mapping.model_id.empty())
@@ -387,6 +436,11 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
         }
     }
 
+    if(opt.include_ground)
+    {
+        ground_element_id = out.ex.add_circuit_element(std::string(pl_model_id::ground_component), opt.fixed_pos, opt.element_xyz_coords, false);
+    }
+
     // 2) Collect nets (PE node -> list of PL endpoints).
     std::unordered_map<::phy_engine::model::node_t const*, std::vector<pl_endpoint>> node_eps{};
 
@@ -396,7 +450,11 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
         {
             if(m->type != ::phy_engine::model::model_type::normal) { continue; }
             if(m->ptr == nullptr) { continue; }
-            if(m->ptr->get_device_type() != ::phy_engine::model::model_device_type::digital) { continue; }
+            auto const dt = m->ptr->get_device_type();
+            if(dt != ::phy_engine::model::model_device_type::digital)
+            {
+                if(!(opt.include_linear && dt == ::phy_engine::model::model_device_type::linear)) { continue; }
+            }
 
             auto it_m = model_map.find(m);
             if(it_m == model_map.end()) { continue; }
@@ -413,6 +471,11 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
                 node_eps[node].push_back(pl_endpoint{it_m->second.element_id, it_pin->second});
             }
         }
+    }
+
+    if(ground_element_id)
+    {
+        node_eps[__builtin_addressof(nl.ground_node)].push_back(pl_endpoint{*ground_element_id, 0});
     }
 
     out.nets.reserve(node_eps.size());

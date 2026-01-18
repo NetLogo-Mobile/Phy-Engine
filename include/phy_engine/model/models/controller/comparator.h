@@ -95,9 +95,13 @@ namespace phy_engine::model
             }
             else
             {
-                node_o->node_information.dn.state =
+                auto const next =
                     vA >= vB ? ::phy_engine::model::digital_node_statement_t::true_state : ::phy_engine::model::digital_node_statement_t::false_state;
-                table.tables.insert(node_o);
+                if(node_o->node_information.dn.state != next)
+                {
+                    node_o->node_information.dn.state = next;
+                    table.tables.insert(node_o);
+                }
             }
         }
         return {};
@@ -112,4 +116,3 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_generate_pin_view<comparator>);
 }  // namespace phy_engine::model
-

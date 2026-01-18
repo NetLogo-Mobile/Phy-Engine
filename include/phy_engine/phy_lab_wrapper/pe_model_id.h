@@ -19,6 +19,7 @@ inline constexpr ::std::string_view battery_source = "Battery Source";
 inline constexpr ::std::string_view simple_switch = "Simple Switch";
 inline constexpr ::std::string_view push_switch = "Push Switch";
 inline constexpr ::std::string_view air_switch = "Air Switch";
+inline constexpr ::std::string_view comparator = "Comparator";
 
 // Coupled devices
 inline constexpr ::std::string_view transformer = "Transformer";
