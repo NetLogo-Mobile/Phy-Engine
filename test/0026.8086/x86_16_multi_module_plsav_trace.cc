@@ -65,9 +65,25 @@ std::uint16_t read_u16(std::vector<::phy_engine::model::node_t*> const& bus_msb_
     return v;
 }
 
+std::uint16_t read_u16_n(std::vector<::phy_engine::model::node_t*> const& bus_msb_to_lsb, std::uint16_t mask)
+{
+    return static_cast<std::uint16_t>(read_u16(bus_msb_to_lsb) & mask);
+}
+
 bool read_bool(::phy_engine::model::node_t const& n)
 {
     return n.node_information.dn.state == ::phy_engine::model::digital_node_statement_t::true_state;
+}
+
+bool read_bool_strict(::phy_engine::model::node_t const& n, char const* name)
+{
+    auto const st = n.node_information.dn.state;
+    if(st != ::phy_engine::model::digital_node_statement_t::true_state && st != ::phy_engine::model::digital_node_statement_t::false_state)
+    {
+        std::fprintf(stderr, "%s is not binary (X/Z)\n", (name == nullptr ? "node" : name));
+        std::abort();
+    }
+    return st == ::phy_engine::model::digital_node_statement_t::true_state;
 }
 
 std::string bin16(std::uint16_t v)
@@ -98,6 +114,7 @@ int main()
     // with per-clock-step behavior. Enable printing with:
     //   PHY_ENGINE_TRACE_0026_PLSAV=1
     bool const trace = (std::getenv("PHY_ENGINE_TRACE_0026_PLSAV") != nullptr);
+    bool const trace_layers = (std::getenv("PHY_ENGINE_TRACE_0026_PLSAV_LAYERS") != nullptr);
 
     auto const dir = std::filesystem::path(__FILE__).parent_path();
 
@@ -392,37 +409,109 @@ int main()
                      bin16(r0).c_str(),
                      static_cast<unsigned>(r1),
                      bin16(r1).c_str());
+
+        if(trace_layers)
+        {
+            // Keep this to <=10 "layer groups" for readability.
+            auto const pc_next_v = static_cast<unsigned>(read_u16_n(pc_next, 0xffu));
+            auto const pc_we = read_bool(n_pc_we);
+            auto const rom_v = static_cast<unsigned>(read_u16(rom_data));
+
+            auto const op_v = static_cast<unsigned>(read_u16_n(opcode, 0x0fu));
+            auto const dst_v = static_cast<unsigned>(read_u16_n(reg_dst, 0x03u));
+            auto const src_v = static_cast<unsigned>(read_u16_n(reg_src, 0x03u));
+            auto const imm8_v = static_cast<unsigned>(read_u16_n(imm8, 0xffu));
+
+            auto const reg_we = read_bool(n_reg_we);
+            auto const waddr_v = static_cast<unsigned>(read_u16_n(rf_waddr, 0x03u));
+            auto const ra_v = static_cast<unsigned>(read_u16_n(rf_raddr_a, 0x03u));
+            auto const rb_v = static_cast<unsigned>(read_u16_n(rf_raddr_b, 0x03u));
+            auto const bsel = read_bool(n_alu_b_sel);
+            auto const alu_op_v = static_cast<unsigned>(read_u16_n(alu_op, 0x07u));
+            auto const fwez = read_bool(n_flags_we_z);
+            auto const fwec = read_bool(n_flags_we_c);
+            auto const fwes = read_bool(n_flags_we_s);
+
+            auto const imm16_v = static_cast<unsigned>(read_u16(imm16));
+            auto const rda_v = static_cast<unsigned>(read_u16(rf_rdata_a));
+            auto const rdb_v = static_cast<unsigned>(read_u16(rf_rdata_b));
+            auto const alu_b_v = static_cast<unsigned>(read_u16(alu_b));
+            auto const alu_y_v = static_cast<unsigned>(read_u16(alu_y));
+            auto const zf = read_bool(n_alu_zf);
+            auto const cf = read_bool(n_alu_cf);
+            auto const sf = read_bool(n_alu_sf);
+            auto const fz = read_bool(n_flag_z);
+            auto const fc = read_bool(n_flag_c);
+            auto const fs = read_bool(n_flag_s);
+
+            std::fprintf(stdout,
+                         "  [pc8] next=%02x we=%d | [rom] data=%04x | [dec] op=%x dst=%u src=%u imm8=%02x |"
+                         " [ctl] reg_we=%d wa=%u ra=%u rb=%u bsel=%d alu_op=%u fwe(zcs)=%d%d%d |"
+                         " [imm] imm16=%04x | [rf] rA=%04x rB=%04x | [mux] b=%04x | [alu] y=%04x zcs=%d%d%d | [flg] zcs=%d%d%d\n",
+                         pc_next_v,
+                         pc_we ? 1 : 0,
+                         rom_v,
+                         op_v,
+                         dst_v,
+                         src_v,
+                         imm8_v,
+                         reg_we ? 1 : 0,
+                         waddr_v,
+                         ra_v,
+                         rb_v,
+                         bsel ? 1 : 0,
+                         alu_op_v,
+                         fwez ? 1 : 0,
+                         fwec ? 1 : 0,
+                         fwes ? 1 : 0,
+                         imm16_v,
+                         rda_v,
+                         rdb_v,
+                         alu_b_v,
+                         alu_y_v,
+                         zf ? 1 : 0,
+                         cf ? 1 : 0,
+                         sf ? 1 : 0,
+                         fz ? 1 : 0,
+                         fc ? 1 : 0,
+                         fs ? 1 : 0);
+        }
     };
 
-    auto do_step = [&](char const* tag, auto&& apply_inputs) {
+    auto do_step = [&](char const* tag, std::optional<bool> expected_clk, auto&& apply_inputs) {
         auto const t_step0 = ::fast_io::posix_clock_gettime(::fast_io::posix_clock_id::monotonic_raw);
         apply_inputs();
         settle(4);
+        if(expected_clk)
+        {
+            auto const got = read_bool_strict(nclk, "clk");
+            if(got != *expected_clk) { throw std::runtime_error(std::string("clk check failed: ") + tag); }
+        }
         auto const t_step1 = ::fast_io::posix_clock_gettime(::fast_io::posix_clock_id::monotonic_raw);
         sim_step_ns = timestamp_to_ns(t_step1 - t_step0);
         dump(tag);
     };
 
     // Reset and initial fetch (same sequence as x86_16_multi_module.cc):
-    do_step("reset", [&] {
+    do_step("reset", false, [&] {
         set_rstn(false);
         set_clk(false);
     });
 
-    do_step("clk=1", [&] { set_clk(true); });
-    do_step("rst=1", [&] { set_rstn(true); });
-    do_step("fetch", [&] { set_clk(false); });
+    do_step("clk=1", true, [&] { set_clk(true); });
+    do_step("rst=1", true, [&] { set_rstn(true); });
+    do_step("fetch", false, [&] { set_clk(false); });
 
     bool halted{};
     for(int cycle = 0; cycle < 64; ++cycle)
     {
         // Execute on posedge.
-        do_step("exec", [&] { set_clk(true); });
+        do_step("exec", true, [&] { set_clk(true); });
         halted = read_bool(n_halt);
         if(halted) { break; }
 
         // Fetch next instruction on negedge.
-        do_step("fetch", [&] { set_clk(false); });
+        do_step("fetch", false, [&] { set_clk(false); });
     }
 
     assert(halted && "CPU did not reach HLT within cycle budget");

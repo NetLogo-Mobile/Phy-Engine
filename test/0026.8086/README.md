@@ -37,6 +37,56 @@ Outputs:
 - `halt`
 - `dbg_r0[15:0]`
 - `dbg_r1[15:0]`
+- `dbg_r2[15:0]`
+- `dbg_r3[15:0]`
+
+## Debug/Trace Environment Variables
+
+This directory includes two debugging helpers:
+
+- Exporter: `test/0026.8086/x86_16_multi_module_export_plsav.cc`
+- PE trace sim: `test/0026.8086/x86_16_multi_module_plsav_trace.cc`
+
+Set the following environment variables to enable extra debug features.
+
+### Exporter (`x86_16_multi_module_export_plsav.cc`)
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_MINIMAL`
+  - When set (to any value), exports only the minimal pin set (no extra internal debug signals).
+  - Adds groups such as `pc_next[*]`, `rom_data[*]`, `ir[*]`, decoded fields (`opcode[*]`, `reg_dst[*]`, `reg_src[*]`), control signals (`pc_we`, `reg_we`, `alu_b_sel`, `flags_we_*`), regfile ports, and ALU ports/flags.
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_OUTPUT_COLS`
+  - Integer (default `1`). Controls how many columns the *output pin groups* are split into in the PhysicsLab IO region.
+  - Useful when `PHY_ENGINE_TRACE_0026_EXPORT_DEBUG_PINS` is enabled and you need more “columns/rows” visible for debugging.
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_SKIP_PINS`
+  - When set, skips calling `add_pin_outputs()` (no exported IO pins are created as `Logic Output` elements).
+  - Intended only for A/B testing whether the pin export itself affects file size/layout.
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_VALIDATE_PINS`
+  - When set, validates that every expected pin label (inputs + outputs) appears exactly once as a `Logic Output` element in the generated `.sav`.
+  - Fails fast with an exception if any label is missing or duplicated.
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_LAYERS`
+  - When set, prints a short summary of synthesized PE “layers” (module name and model count), capped to the first 10 layers.
+  - Helps correlate “which module/layer” might be responsible for PE vs PL behavior differences.
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_VALIDATE_LAYOUT`
+  - When set, performs a basic post-export layout sanity check on the generated `.sav` content:
+    - pins have valid `Position` strings,
+    - pins are on the IO plane (`z == 0`),
+    - inputs are in the top band and outputs in the bottom band,
+    - non-pin elements have non-trivial Z layering (not collapsed at the origin).
+
+### PE Trace (`x86_16_multi_module_plsav_trace.cc`)
+
+- `PHY_ENGINE_TRACE_0026_PLSAV`
+  - When set, prints a per-step trace including `clk/rst_n/halt/pc/ir/dbg_r0/dbg_r1` and timing (`sim_ns` and `t_ns`).
+
+- `PHY_ENGINE_TRACE_0026_PLSAV_LAYERS`
+  - When set (and `PHY_ENGINE_TRACE_0026_PLSAV` is set), prints one extra “layer summary” line per step.
+  - The summary is intentionally compact (≤10 groups) and includes key inter-module nets and control signals:
+    - `pc_next/pc_we`, `rom_data`, decoded fields, control signals, regfile ports, mux/ALU ports, and latched flags.
 
 ## Implemented ISA (toy, 16-bit)
 

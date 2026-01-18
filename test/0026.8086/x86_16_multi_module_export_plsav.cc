@@ -7,10 +7,13 @@
 
 #include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
 #include <phy_engine/phy_lab_wrapper/auto_layout/auto_layout.h>
+#include <phy_engine/phy_lab_wrapper/physicslab.h>
 
 #include <cstddef>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -21,11 +24,24 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <limits>
 
 namespace
 {
 using ::phy_engine::phy_lab_wrapper::position;
 using u8sv = ::fast_io::u8string_view;
+
+static int env_i32(char const* name, int def)
+{
+    auto const* s = std::getenv(name);
+    if(s == nullptr || *s == '\0') { return def; }
+    char* end{};
+    long v = std::strtol(s, &end, 10);
+    if(end == s) { return def; }
+    if(v < std::numeric_limits<int>::min()) { return def; }
+    if(v > std::numeric_limits<int>::max()) { return def; }
+    return static_cast<int>(v);
+}
 
 std::string read_file_text(std::filesystem::path const& path)
 {
@@ -120,6 +136,210 @@ static bool is_named_pin_element(::phy_engine::phy_lab_wrapper::element const& e
     auto it_label = e.data().find("Label");
     if(it_label == e.data().end() || !it_label->is_string()) { return false; }
     return pin_names.find(it_label->get<std::string>()) != pin_names.end();
+}
+
+static void validate_exported_pin_labels(::phy_engine::phy_lab_wrapper::experiment const& ex,
+                                        std::unordered_set<std::string> const& expected_pin_labels)
+{
+    std::unordered_map<std::string, int> seen{};
+    seen.reserve(expected_pin_labels.size());
+
+    for(auto const& e : ex.elements())
+    {
+        if(!is_logic_output_element(e)) { continue; }
+        auto it_label = e.data().find("Label");
+        if(it_label == e.data().end() || !it_label->is_string()) { continue; }
+        auto const label = it_label->get<std::string>();
+        if(expected_pin_labels.find(label) == expected_pin_labels.end()) { continue; }
+        ++seen[label];
+    }
+
+    std::vector<std::string> missing{};
+    std::vector<std::string> dup{};
+    missing.reserve(expected_pin_labels.size());
+
+    for(auto const& s : expected_pin_labels)
+    {
+        auto it = seen.find(s);
+        if(it == seen.end()) { missing.push_back(s); }
+        else if(it->second != 1) { dup.push_back(s + " x" + std::to_string(it->second)); }
+    }
+
+    if(!missing.empty() || !dup.empty())
+    {
+        std::string msg = "pin export validation failed:";
+        if(!missing.empty())
+        {
+            msg += " missing=[";
+            for(std::size_t i{}; i < missing.size(); ++i)
+            {
+                if(i) { msg += ","; }
+                msg += missing[i];
+            }
+            msg += "]";
+        }
+        if(!dup.empty())
+        {
+            msg += " dup=[";
+            for(std::size_t i{}; i < dup.size(); ++i)
+            {
+                if(i) { msg += ","; }
+                msg += dup[i];
+            }
+            msg += "]";
+        }
+        throw std::runtime_error(msg);
+    }
+}
+
+struct pl_xyz
+{
+    double x{};
+    double z{};
+    double y{};
+};
+
+static std::optional<double> parse_pl_double(std::string_view s)
+{
+    std::string tmp(s);
+    char* end{};
+    double v = std::strtod(tmp.c_str(), &end);
+    if(end == tmp.c_str()) { return std::nullopt; }
+    if(end != tmp.c_str() + tmp.size()) { return std::nullopt; }
+    return v;
+}
+
+static std::optional<pl_xyz> parse_pl_position(std::string_view s)
+{
+    // PhysicsLab stores positions as "x,z,y".
+    pl_xyz out{};
+    double* fields[3]{&out.x, &out.z, &out.y};
+    std::size_t field{};
+
+    std::size_t i{};
+    while(field < 3)
+    {
+        while(i < s.size() && (s[i] == ' ' || s[i] == '\t')) { ++i; }
+        if(i >= s.size()) { return std::nullopt; }
+
+        auto const start = i;
+        while(i < s.size() && s[i] != ',') { ++i; }
+        auto token = s.substr(start, i - start);
+        while(!token.empty() && (token.back() == ' ' || token.back() == '\t')) { token.remove_suffix(1); }
+        if(token.empty()) { return std::nullopt; }
+
+        auto v = parse_pl_double(token);
+        if(!v) { return std::nullopt; }
+        *fields[field++] = *v;
+
+        if(i < s.size() && s[i] == ',') { ++i; }
+    }
+
+    return out;
+}
+
+static bool is_output_pin_label(std::string const& label)
+{
+    return label == "halt" || label.starts_with("pc[") || label.starts_with("dbg_r0[") || label.starts_with("dbg_r1[");
+}
+
+static void push_bus(std::vector<std::string>& out, std::string const& base, int width)
+{
+    for(int bit = 0; bit < width; ++bit) { out.push_back(base + "[" + std::to_string(bit) + "]"); }
+}
+
+static void bind_bus(std::unordered_map<std::string, ::phy_engine::model::node_t*>& node_by_pin,
+                     std::string const& base,
+                     std::vector<::phy_engine::model::node_t*> const& bus_msb_to_lsb)
+{
+    auto const width = static_cast<int>(bus_msb_to_lsb.size());
+    for(int bit = 0; bit < width; ++bit)
+    {
+        node_by_pin[base + "[" + std::to_string(bit) + "]"] = bus_msb_to_lsb[static_cast<std::size_t>((width - 1) - bit)];
+    }
+}
+
+static void validate_layout_basic_plsav_json(nlohmann::json const& root,
+                                            std::unordered_set<std::string> const& pin_labels,
+                                            double extent,
+                                            double third,
+                                            double z_step)
+{
+    // Goal: catch "everything at 0,0,0" / pins not placed / no Z layering.
+    if(!root.contains("Experiment") || !root["Experiment"].is_object()) { throw std::runtime_error("plsav: missing Experiment"); }
+    if(!root["Experiment"].contains("StatusSave") || !root["Experiment"]["StatusSave"].is_string())
+    {
+        throw std::runtime_error("plsav: missing Experiment.StatusSave");
+    }
+
+    auto status = nlohmann::json::parse(root["Experiment"]["StatusSave"].get<std::string>());
+    if(!status.contains("Elements") || !status["Elements"].is_array()) { throw std::runtime_error("plsav: missing StatusSave.Elements"); }
+
+    std::size_t pin_count{};
+    std::size_t nonpin_count{};
+    std::unordered_set<std::string> pos_unique{};
+    pos_unique.reserve(status["Elements"].size());
+
+    double z_max_nonpin{};
+
+    for(auto const& e : status["Elements"])
+    {
+        if(!e.is_object()) { continue; }
+        if(!e.contains("Position") || !e["Position"].is_string()) { continue; }
+        auto const pos_s = e["Position"].get<std::string>();
+        pos_unique.insert(pos_s);
+
+        bool const is_logic_output = (e.contains("ModelID") && e["ModelID"].is_string() && e["ModelID"].get<std::string>() == "Logic Output");
+        std::string label{};
+        if(e.contains("Label") && e["Label"].is_string()) { label = e["Label"].get<std::string>(); }
+        bool const is_pin = is_logic_output && !label.empty() && (pin_labels.find(label) != pin_labels.end());
+
+        if(is_pin)
+        {
+            ++pin_count;
+
+            auto parsed = parse_pl_position(pos_s);
+            if(!parsed) { throw std::runtime_error("pin position parse failed: " + label + " pos=" + pos_s); }
+
+            if(std::abs(parsed->z) > 1e-9) { throw std::runtime_error("pin z != 0: " + label + " pos=" + pos_s); }
+
+            double const in_y_min = extent * third;
+            double const in_y_max = extent;
+            double const out_y_min = -extent;
+            double const out_y_max = -extent * third;
+
+            if(label == "clk" || label == "rst_n")
+            {
+                if(!(parsed->y >= in_y_min && parsed->y <= in_y_max))
+                {
+                    throw std::runtime_error("input pin y out of range: " + label + " pos=" + pos_s);
+                }
+            }
+            else if(is_output_pin_label(label))
+            {
+                if(!(parsed->y >= out_y_min && parsed->y <= out_y_max))
+                {
+                    throw std::runtime_error("output pin y out of range: " + label + " pos=" + pos_s);
+                }
+            }
+        }
+        else
+        {
+            ++nonpin_count;
+            auto parsed = parse_pl_position(pos_s);
+            if(!parsed) { continue; }
+            z_max_nonpin = std::max(z_max_nonpin, std::abs(parsed->z));
+        }
+    }
+
+    if(pin_count != pin_labels.size())
+    {
+        throw std::runtime_error("layout validation: expected pin_count=" + std::to_string(pin_labels.size()) +
+                                 " got=" + std::to_string(pin_count));
+    }
+    if(nonpin_count == 0) { throw std::runtime_error("layout validation: no non-pin elements"); }
+    if(pos_unique.size() < 64) { throw std::runtime_error("layout validation: too few unique positions (possible collapse)"); }
+    if(z_max_nonpin < 0.5 * z_step) { throw std::runtime_error("layout validation: non-pin elements not layered in Z"); }
 }
 
 static std::vector<::phy_engine::model::node_t*> make_bus(::phy_engine::netlist::netlist& nl, std::size_t width)
@@ -229,6 +449,9 @@ int main()
     constexpr double z_step = 0.02;
     constexpr double layout_step = 0.01;
     constexpr double layout_min_step = 0.001;
+    // By default, export a "full" debug pin set for PhysicsLab.
+    // Set PHY_ENGINE_TRACE_0026_EXPORT_MINIMAL=1 to keep only the minimal pins.
+    bool const export_debug_pins = (std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_MINIMAL") == nullptr);
 
     auto const dir = std::filesystem::path(__FILE__).parent_path();
 
@@ -575,22 +798,99 @@ int main()
     std::vector<std::string> output_pins{
         "halt",
     };
-    for(int bit = 0; bit < 16; ++bit) { output_pins.push_back("dbg_r0[" + std::to_string(bit) + "]"); }
-    for(int bit = 0; bit < 16; ++bit) { output_pins.push_back("dbg_r1[" + std::to_string(bit) + "]"); }
+    push_bus(output_pins, "pc", 8);
+    push_bus(output_pins, "dbg_r0", 16);
+    push_bus(output_pins, "dbg_r1", 16);
+    push_bus(output_pins, "dbg_r2", 16);
+    push_bus(output_pins, "dbg_r3", 16);
+    if(export_debug_pins)
+    {
+        // Keep groups meaningful (by module/layer), but feel free to add/remove as needed.
+        push_bus(output_pins, "pc_next", 8);
+        push_bus(output_pins, "rom_data", 16);
+        push_bus(output_pins, "ir", 16);
+
+        push_bus(output_pins, "opcode", 4);
+        push_bus(output_pins, "reg_dst", 2);
+        push_bus(output_pins, "reg_src", 2);
+        push_bus(output_pins, "imm8", 8);
+        push_bus(output_pins, "imm16", 16);
+
+        output_pins.push_back("pc_we");
+        output_pins.push_back("reg_we");
+        output_pins.push_back("alu_b_sel");
+        output_pins.push_back("flags_we_z");
+        output_pins.push_back("flags_we_c");
+        output_pins.push_back("flags_we_s");
+
+        push_bus(output_pins, "rf_waddr", 2);
+        push_bus(output_pins, "rf_raddr_a", 2);
+        push_bus(output_pins, "rf_raddr_b", 2);
+        push_bus(output_pins, "rf_rdata_a", 16);
+        push_bus(output_pins, "rf_rdata_b", 16);
+
+        push_bus(output_pins, "alu_op", 3);
+        push_bus(output_pins, "alu_b", 16);
+        push_bus(output_pins, "alu_y", 16);
+        output_pins.push_back("alu_zf");
+        output_pins.push_back("alu_cf");
+        output_pins.push_back("alu_sf");
+        output_pins.push_back("flag_z");
+        output_pins.push_back("flag_c");
+        output_pins.push_back("flag_s");
+    }
 
     std::unordered_map<std::string, ::phy_engine::model::node_t*> node_by_pin{};
     node_by_pin["clk"] = &nclk;
     node_by_pin["rst_n"] = &nrstn;
     node_by_pin["halt"] = &n_halt;
-    for(int bit = 0; bit < 16; ++bit)
+    bind_bus(node_by_pin, "pc", pc);
+    bind_bus(node_by_pin, "dbg_r0", dbg_r0);
+    bind_bus(node_by_pin, "dbg_r1", dbg_r1);
+    bind_bus(node_by_pin, "dbg_r2", dbg_r2);
+    bind_bus(node_by_pin, "dbg_r3", dbg_r3);
+    if(export_debug_pins)
     {
-        // bus vectors stored MSB->LSB, but pin names are [bit] index (LSB=0).
-        node_by_pin["dbg_r0[" + std::to_string(bit) + "]"] = dbg_r0[static_cast<std::size_t>(15 - bit)];
-        node_by_pin["dbg_r1[" + std::to_string(bit) + "]"] = dbg_r1[static_cast<std::size_t>(15 - bit)];
+        bind_bus(node_by_pin, "pc_next", pc_next);
+        bind_bus(node_by_pin, "rom_data", rom_data);
+        bind_bus(node_by_pin, "ir", ir);
+
+        bind_bus(node_by_pin, "opcode", opcode);
+        bind_bus(node_by_pin, "reg_dst", reg_dst);
+        bind_bus(node_by_pin, "reg_src", reg_src);
+        bind_bus(node_by_pin, "imm8", imm8);
+        bind_bus(node_by_pin, "imm16", imm16);
+
+        node_by_pin["pc_we"] = &n_pc_we;
+        node_by_pin["reg_we"] = &n_reg_we;
+        node_by_pin["alu_b_sel"] = &n_alu_b_sel;
+        node_by_pin["flags_we_z"] = &n_flags_we_z;
+        node_by_pin["flags_we_c"] = &n_flags_we_c;
+        node_by_pin["flags_we_s"] = &n_flags_we_s;
+
+        bind_bus(node_by_pin, "rf_waddr", rf_waddr);
+        bind_bus(node_by_pin, "rf_raddr_a", rf_raddr_a);
+        bind_bus(node_by_pin, "rf_raddr_b", rf_raddr_b);
+        bind_bus(node_by_pin, "rf_rdata_a", rf_rdata_a);
+        bind_bus(node_by_pin, "rf_rdata_b", rf_rdata_b);
+
+        bind_bus(node_by_pin, "alu_op", alu_op);
+        bind_bus(node_by_pin, "alu_b", alu_b);
+        bind_bus(node_by_pin, "alu_y", alu_y);
+        node_by_pin["alu_zf"] = &n_alu_zf;
+        node_by_pin["alu_cf"] = &n_alu_cf;
+        node_by_pin["alu_sf"] = &n_alu_sf;
+        node_by_pin["flag_z"] = &n_flag_z;
+        node_by_pin["flag_c"] = &n_flag_c;
+        node_by_pin["flag_s"] = &n_flag_s;
     }
 
-    add_pin_outputs(nl, input_pins, node_by_pin);
-    add_pin_outputs(nl, output_pins, node_by_pin);
+    bool const export_pins = (std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_SKIP_PINS") == nullptr);
+    if(export_pins)
+    {
+        add_pin_outputs(nl, input_pins, node_by_pin);
+        add_pin_outputs(nl, output_pins, node_by_pin);
+    }
 
     // Convert to PhysicsLab experiment with 3D coordinates + wires.
     ::phy_engine::phy_lab_wrapper::pe_to_pl::options popt{};
@@ -640,9 +940,27 @@ int main()
         {
             auto const row = output_groups.row_by_base.at(base);
             auto const nrows = std::max<std::size_t>(1, output_groups.order.size());
-            auto const y = row_center_y(row, nrows, out_y_min, out_y_max);
+            // Arrange output groups in multiple columns to keep pins visible for debugging.
+            // 1 = old behavior. Recommend 2..6 when exporting lots of debug pins.
+            int ncols = env_i32("PHY_ENGINE_TRACE_0026_EXPORT_OUTPUT_COLS", 1);
+            if(ncols < 1) { ncols = 1; }
+            if(static_cast<std::size_t>(ncols) > nrows) { ncols = static_cast<int>(nrows); }
+
+            auto const rows_per_col = (nrows + static_cast<std::size_t>(ncols) - 1) / static_cast<std::size_t>(ncols);
+            auto const col = row / rows_per_col;
+            auto const row_in_col = row - col * rows_per_col;
+
+            auto const y = row_center_y(row_in_col, rows_per_col, out_y_min, out_y_max);
             auto const width = output_groups.width_by_base.at(base);
-            auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
+
+            double const gap = 0.06;  // between columns
+            double const total = 2.0 * extent;
+            double const avail = total - gap * static_cast<double>(ncols - 1);
+            double const col_w = avail / static_cast<double>(ncols);
+            double const x_min = -extent + static_cast<double>(col) * (col_w + gap);
+            double const x_max = x_min + col_w;
+
+            auto const x = x_for_bit_lsb_right(bit, width, x_min, x_max);
             return position{x, y, 0.0};
         }
 
@@ -666,6 +984,22 @@ int main()
         {
             r.ex.get_element(e.identifier()).set_participate_in_layout(false);
         }
+    }
+
+    if(std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_VALIDATE_PINS") != nullptr)
+    {
+        validate_exported_pin_labels(r.ex, all_pins);
+        std::fprintf(stderr, "[export] pin labels validated: %zu\n", all_pins.size());
+    }
+
+    if(std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_LAYERS") != nullptr)
+    {
+        std::fprintf(stderr, "[export] layers=%zu\n", layers.size());
+        for(std::size_t i{}; i < layers.size() && i < 10; ++i)
+        {
+            std::fprintf(stderr, "  [layer %02zu] %s models=%zu\n", i, layers[i].name.c_str(), layers[i].pe_models.size());
+        }
+        if(layers.size() > 10) { std::fprintf(stderr, "  ... (%zu more)\n", layers.size() - 10); }
     }
 
     // Per-module 3D layout: stack each synthesized module on its own Z plane.
@@ -727,6 +1061,13 @@ int main()
             aopt.step_x = std::max(aopt.step_x * 0.9, layout_min_step);
             aopt.step_y = std::max(aopt.step_y * 0.9, layout_min_step);
         }
+    }
+
+    if(std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_VALIDATE_LAYOUT") != nullptr)
+    {
+        auto root = r.ex.to_plsav_json();
+        validate_layout_basic_plsav_json(root, all_pins, extent, third, z_step);
+        std::fprintf(stderr, "[export] layout validated\n");
     }
 
     // Save.
