@@ -55,6 +55,33 @@ Set the following environment variables to enable extra debug features.
   - When set (to any value), exports only the minimal pin set (no extra internal debug signals).
   - Adds groups such as `pc_next[*]`, `rom_data[*]`, `ir[*]`, decoded fields (`opcode[*]`, `reg_dst[*]`, `reg_src[*]`), control signals (`pc_we`, `reg_we`, `alu_b_sel`, `flags_we_*`), regfile ports, and ALU ports/flags.
 
+- `PHY_ENGINE_TRACE_0026_EXPORT_EXTERN`
+  - When set (to any value), exports an additional set of **10 "extern" link-boundary probe groups** (module port-side signals).
+  - These are intended for debugging PE vs PhysicsLab differences around “module-to-module connections”.
+  - Pins added:
+    - `extern_rom_addr[7:0]` (ROM address input)
+    - `extern_ir_d[15:0]` (IR data input, from ROM)
+    - `extern_ctl_opcode[3:0]` (control unit opcode input)
+    - `extern_ctl_pc[7:0]` (control unit pc input)
+    - `extern_pc8_d[7:0]` and `extern_pc8_we` (pc8 inputs)
+    - `extern_rf_we`, `extern_rf_waddr[1:0]`, `extern_rf_raddr_a[1:0]`, `extern_rf_raddr_b[1:0]` (regfile inputs)
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_EXTERN_PC`
+  - When set (to any value), exports a **PC-adjacent** subset of extern probes (recommended first when you can only see `pc/ir` changing).
+  - Pins added:
+    - `extern_rom_addr[7:0]`
+    - `extern_ir_d[15:0]`
+    - `extern_pc8_d[7:0]`
+    - `extern_pc8_we`
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_FOCUS_PC`
+  - When set (to any value), exports a **small PC/IR-focused debug pin set** and keeps it near the top of the output list (so it stays visible on the desk).
+  - Also forces `PHY_ENGINE_TRACE_0026_EXPORT_EXTERN_PC` behavior (pc-adjacent extern probes).
+  - Pins added (in addition to the minimal outputs):
+    - `pc_next[7:0]`, `pc_we`
+    - `rom_data[15:0]`, `ir[15:0]`
+    - `opcode[3:0]`, `imm8[7:0]`
+
 - `PHY_ENGINE_TRACE_0026_EXPORT_OUTPUT_COLS`
   - Integer (default `1`). Controls how many columns the *output pin groups* are split into in the PhysicsLab IO region.
   - Useful when `PHY_ENGINE_TRACE_0026_EXPORT_DEBUG_PINS` is enabled and you need more “columns/rows” visible for debugging.

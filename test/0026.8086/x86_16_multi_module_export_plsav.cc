@@ -3,6 +3,7 @@
 #include <phy_engine/verilog/digital/pe_synth.h>
 
 #include <phy_engine/model/models/digital/logical/output.h>
+#include <phy_engine/model/models/digital/logical/yes.h>
 #include <phy_engine/netlist/operation.h>
 
 #include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
@@ -240,7 +241,9 @@ static std::optional<pl_xyz> parse_pl_position(std::string_view s)
 
 static bool is_output_pin_label(std::string const& label)
 {
-    return label == "halt" || label.starts_with("pc[") || label.starts_with("dbg_r0[") || label.starts_with("dbg_r1[");
+    // In this test, inputs are currently only clk/rst_n; everything else is treated as an output pin.
+    // Keep this conservative so layout validation covers newly-added debug pins.
+    return !(label == "clk" || label == "rst_n");
 }
 
 static void push_bus(std::vector<std::string>& out, std::string const& base, int width)
@@ -435,6 +438,27 @@ static void add_pin_outputs(::phy_engine::netlist::netlist& nl,
         if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *it->second)) { throw std::runtime_error("add_to_node failed"); }
     }
 }
+
+static void add_yes_buffer(::phy_engine::netlist::netlist& nl, ::phy_engine::model::node_t& in, ::phy_engine::model::node_t& out)
+{
+    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{});
+    (void)pos;
+    if(m == nullptr || m->ptr == nullptr) { throw std::runtime_error("failed to add YES"); }
+    if(!::phy_engine::netlist::add_to_node(nl, *m, 0, in)) { throw std::runtime_error("add_to_node(YES.i) failed"); }
+    if(!::phy_engine::netlist::add_to_node(nl, *m, 1, out)) { throw std::runtime_error("add_to_node(YES.o) failed"); }
+}
+
+static void add_yes_buffer_bus(::phy_engine::netlist::netlist& nl,
+                               std::vector<::phy_engine::model::node_t*> const& in_msb_to_lsb,
+                               std::vector<::phy_engine::model::node_t*> const& out_msb_to_lsb)
+{
+    if(in_msb_to_lsb.size() != out_msb_to_lsb.size()) { throw std::runtime_error("bus width mismatch"); }
+    for(std::size_t i{}; i < in_msb_to_lsb.size(); ++i)
+    {
+        if(in_msb_to_lsb[i] == nullptr || out_msb_to_lsb[i] == nullptr) { throw std::runtime_error("null bus node"); }
+        add_yes_buffer(nl, *in_msb_to_lsb[i], *out_msb_to_lsb[i]);
+    }
+}
 }  // namespace
 
 int main()
@@ -452,6 +476,26 @@ int main()
     // By default, export a "full" debug pin set for PhysicsLab.
     // Set PHY_ENGINE_TRACE_0026_EXPORT_MINIMAL=1 to keep only the minimal pins.
     bool const export_debug_pins = (std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_MINIMAL") == nullptr);
+    // Focused debug pin scope (recommended to localize issues near PC/IR first).
+    // When set, exports only a small PC-adjacent set (and keeps them near the top of the output list).
+    bool const export_focus_pc = (std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_FOCUS_PC") != nullptr);
+    enum class extern_mode
+    {
+        none,
+        pc_only,
+        full,
+    };
+    // Optional "extern" interfaces: add extra debug pins for link-boundary signals (module-to-module connections).
+    // - _PC: only PC-adjacent module links (recommended first)
+    // - (no suffix): broader set of links
+    extern_mode export_extern_mode = extern_mode::none;
+    if(std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_EXTERN") != nullptr) { export_extern_mode = extern_mode::full; }
+    else if(std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_EXTERN_PC") != nullptr) { export_extern_mode = extern_mode::pc_only; }
+    else if(export_focus_pc)
+    {
+        // When focusing on PC, always export pc-adjacent extern probes unless user asked for none explicitly.
+        export_extern_mode = extern_mode::pc_only;
+    }
 
     auto const dir = std::filesystem::path(__FILE__).parent_path();
 
@@ -515,6 +559,51 @@ int main()
     auto dbg_r1 = make_bus(nl, 16);
     auto dbg_r2 = make_bus(nl, 16);
     auto dbg_r3 = make_bus(nl, 16);
+
+    // Extern/link-boundary probe signals (non-intrusive):
+    // these are *copies* of module-to-module connection signals, exported as pins for PhysicsLab debugging.
+    std::vector<::phy_engine::model::node_t*> ext_rom_addr{};
+    std::vector<::phy_engine::model::node_t*> ext_ir_d{};
+    std::vector<::phy_engine::model::node_t*> ext_ctl_opcode{};
+    std::vector<::phy_engine::model::node_t*> ext_ctl_pc{};
+    std::vector<::phy_engine::model::node_t*> ext_pc8_d{};
+    ::phy_engine::model::node_t* ext_pc8_we{};
+    ::phy_engine::model::node_t* ext_rf_we{};
+    std::vector<::phy_engine::model::node_t*> ext_rf_waddr{};
+    std::vector<::phy_engine::model::node_t*> ext_rf_raddr_a{};
+    std::vector<::phy_engine::model::node_t*> ext_rf_raddr_b{};
+
+    if(export_extern_mode != extern_mode::none)
+    {
+        ext_rom_addr = make_bus(nl, 8);
+        ext_ir_d = make_bus(nl, 16);
+        ext_pc8_d = make_bus(nl, 8);
+        ext_pc8_we = __builtin_addressof(::phy_engine::netlist::create_node(nl));
+
+        // Drive extern probe nodes via explicit buffers to make link-boundary probing easier in PhysicsLab,
+        // without changing the original circuit connectivity.
+        add_yes_buffer_bus(nl, pc, ext_rom_addr);
+        add_yes_buffer_bus(nl, rom_data, ext_ir_d);
+        add_yes_buffer_bus(nl, pc_next, ext_pc8_d);
+        add_yes_buffer(nl, n_pc_we, *ext_pc8_we);
+
+        if(export_extern_mode == extern_mode::full)
+        {
+            ext_ctl_opcode = make_bus(nl, 4);
+            ext_ctl_pc = make_bus(nl, 8);
+            ext_rf_we = __builtin_addressof(::phy_engine::netlist::create_node(nl));
+            ext_rf_waddr = make_bus(nl, 2);
+            ext_rf_raddr_a = make_bus(nl, 2);
+            ext_rf_raddr_b = make_bus(nl, 2);
+
+            add_yes_buffer_bus(nl, opcode, ext_ctl_opcode);
+            add_yes_buffer_bus(nl, pc, ext_ctl_pc);
+            add_yes_buffer(nl, n_reg_we, *ext_rf_we);
+            add_yes_buffer_bus(nl, rf_waddr, ext_rf_waddr);
+            add_yes_buffer_bus(nl, rf_raddr_a, ext_rf_raddr_a);
+            add_yes_buffer_bus(nl, rf_raddr_b, ext_rf_raddr_b);
+        }
+    }
 
     // Convert each Verilog module independently to PE primitives and link via shared nodes.
     struct layer
@@ -803,7 +892,44 @@ int main()
     push_bus(output_pins, "dbg_r1", 16);
     push_bus(output_pins, "dbg_r2", 16);
     push_bus(output_pins, "dbg_r3", 16);
-    if(export_debug_pins)
+
+    if(export_focus_pc)
+    {
+        // Minimal-but-precise PC-adjacent debug outputs (ordered for quick localization).
+        // This avoids drowning in far-away signals when only PC/IR appear to change in PhysicsLab.
+        push_bus(output_pins, "pc_next", 8);
+        output_pins.push_back("pc_we");
+        push_bus(output_pins, "rom_data", 16);
+        push_bus(output_pins, "ir", 16);
+        push_bus(output_pins, "opcode", 4);
+        push_bus(output_pins, "imm8", 8);
+
+        // Note: export_extern_mode is already forced to pc_only above when export_focus_pc is set.
+    }
+
+    if(export_extern_mode == extern_mode::pc_only)
+    {
+        // PC-adjacent link probes (start here when PhysicsLab behavior diverges).
+        push_bus(output_pins, "extern_rom_addr", 8);
+        push_bus(output_pins, "extern_ir_d", 16);
+        push_bus(output_pins, "extern_pc8_d", 8);
+        output_pins.push_back("extern_pc8_we");
+    }
+    else if(export_extern_mode == extern_mode::full)
+    {
+        // 10 "extern" groups: link-boundary probes (module port-side signals).
+        push_bus(output_pins, "extern_rom_addr", 8);
+        push_bus(output_pins, "extern_ir_d", 16);
+        push_bus(output_pins, "extern_ctl_opcode", 4);
+        push_bus(output_pins, "extern_ctl_pc", 8);
+        push_bus(output_pins, "extern_pc8_d", 8);
+        output_pins.push_back("extern_pc8_we");
+        output_pins.push_back("extern_rf_we");
+        push_bus(output_pins, "extern_rf_waddr", 2);
+        push_bus(output_pins, "extern_rf_raddr_a", 2);
+        push_bus(output_pins, "extern_rf_raddr_b", 2);
+    }
+    if(export_debug_pins && !export_focus_pc)
     {
         // Keep groups meaningful (by module/layer), but feel free to add/remove as needed.
         push_bus(output_pins, "pc_next", 8);
@@ -849,7 +975,27 @@ int main()
     bind_bus(node_by_pin, "dbg_r1", dbg_r1);
     bind_bus(node_by_pin, "dbg_r2", dbg_r2);
     bind_bus(node_by_pin, "dbg_r3", dbg_r3);
-    if(export_debug_pins)
+    if(export_extern_mode == extern_mode::pc_only)
+    {
+        bind_bus(node_by_pin, "extern_rom_addr", ext_rom_addr);
+        bind_bus(node_by_pin, "extern_ir_d", ext_ir_d);
+        bind_bus(node_by_pin, "extern_pc8_d", ext_pc8_d);
+        node_by_pin["extern_pc8_we"] = ext_pc8_we;
+    }
+    else if(export_extern_mode == extern_mode::full)
+    {
+        bind_bus(node_by_pin, "extern_rom_addr", ext_rom_addr);
+        bind_bus(node_by_pin, "extern_ir_d", ext_ir_d);
+        bind_bus(node_by_pin, "extern_ctl_opcode", ext_ctl_opcode);
+        bind_bus(node_by_pin, "extern_ctl_pc", ext_ctl_pc);
+        bind_bus(node_by_pin, "extern_pc8_d", ext_pc8_d);
+        node_by_pin["extern_pc8_we"] = ext_pc8_we;
+        node_by_pin["extern_rf_we"] = ext_rf_we;
+        bind_bus(node_by_pin, "extern_rf_waddr", ext_rf_waddr);
+        bind_bus(node_by_pin, "extern_rf_raddr_a", ext_rf_raddr_a);
+        bind_bus(node_by_pin, "extern_rf_raddr_b", ext_rf_raddr_b);
+    }
+    if(export_debug_pins || export_focus_pc)
     {
         bind_bus(node_by_pin, "pc_next", pc_next);
         bind_bus(node_by_pin, "rom_data", rom_data);
