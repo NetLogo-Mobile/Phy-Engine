@@ -3272,7 +3272,7 @@ namespace phy_engine::verilog::digital
 
                 for(::std::size_t k{}; k < nbits; ++k)
                 {
-                    ::std::size_t const shift_by{1ull << k};
+                    ::std::size_t const shift_by = (static_cast<::std::size_t>(1) << k);
                     auto const sel{shv.index_unchecked(nbits - 1 - k)};  // LSB..MSB
 
                     ::fast_io::vector<::std::size_t> shifted{};
@@ -3320,7 +3320,7 @@ namespace phy_engine::verilog::digital
 
                 for(::std::size_t k{}; k < nbits; ++k)
                 {
-                    ::std::size_t const shift_by{1ull << k};
+                    ::std::size_t const shift_by = (static_cast<::std::size_t>(1) << k);
                     auto const sel{shv.index_unchecked(nbits - 1 - k)};  // LSB..MSB
 
                     ::fast_io::vector<::std::size_t> shifted{};
