@@ -1144,6 +1144,17 @@ namespace phy_engine::verilog::digital
                 make_tok(token_kind::symbol, b, p, l0, c0);
                 continue;
             }
+            if(c == u8'^' && p + 1 < e && p[1] == u8'~')
+            {
+                ::std::size_t const l0{line};
+                ::std::size_t const c0{col};
+                char8_t const* const b{p};
+                bump(p[0]);
+                bump(p[1]);
+                p += 2;
+                make_tok(token_kind::symbol, b, p, l0, c0);
+                continue;
+            }
             if(c == u8'=' && p + 1 < e && p[1] == u8'=')
             {
                 ::std::size_t const l0{line};
@@ -4078,6 +4089,11 @@ namespace phy_engine::verilog::digital
                     auto const a{parse_unary()};
                     return make_scalar(make_not(reduce_xor_root(a)));
                 }
+                if(p->accept_sym2(u8'^', u8'~'))
+                {
+                    auto const a{parse_unary()};
+                    return make_scalar(make_not(reduce_xor_root(a)));
+                }
                 if(p->accept_sym(u8'&'))
                 {
                     auto const a{parse_unary()};
@@ -4203,6 +4219,13 @@ namespace phy_engine::verilog::digital
                     {
                         auto const rhs{parse_and()};
                         lhs = bitwise_binary(lhs, rhs, expr_kind::binary_xor);
+                        continue;
+                    }
+                    if(p->accept_sym2(u8'~', u8'^') || p->accept_sym2(u8'^', u8'~'))
+                    {
+                        auto const rhs{parse_and()};
+                        auto const x{bitwise_binary(lhs, rhs, expr_kind::binary_xor)};
+                        lhs = bitwise_unary(x, expr_kind::unary_not);
                         continue;
                     }
                     return lhs;
