@@ -642,35 +642,44 @@ namespace phy_engine::model
                 u0 *= ::std::pow(ratio, -m.ute);
             }
 
-            double const phi_s{bsim3v32_phi_temp(m.phi, m.nch, m.Temp, m.tnom)};
+            double const nch_eff_raw{details::bsim3v32_lw_scale(m.nch, m.lnch, m.wnch, m.pnch, leff, weff, m.lref, m.wref)};
+            double const nch_eff{nch_eff_raw > 1.0 ? nch_eff_raw : (m.nch > 1.0 ? m.nch : 1e23)};
+            double const phi0_eff_geom{details::bsim3v32_lw_scale(m.phi, m.lphi, m.wphi, m.pphi, leff, weff, m.lref, m.wref)};
+            double const phi_s{bsim3v32_phi_temp(phi0_eff_geom, nch_eff, m.Temp, m.tnom)};
             double const vbm{(m.vbm < 0.0) ? m.vbm : -3.0};
             double const delta1{(m.delta1 > 0.0) ? m.delta1 : 1e-3};
             double const vbc{vbm};
             Real const vbseff{bsim3v32_vbseff(vbs, vbc, delta1)};
 
-            double const k1{(m.k1 != 0.0) ? m.k1 : m.gamma};
-            double const k2{m.k2};
-            double const k1ox{k1 * tox_ratio};
-            double const k2ox{k2 * tox_ratio};
+            double const gamma_eff_raw{details::bsim3v32_lw_scale(m.gamma, m.lgamma, m.wgamma, m.pgamma, leff, weff, m.lref, m.wref)};
+            double const gamma_eff{gamma_eff_raw > 0.0 ? gamma_eff_raw : 0.0};
+            double const k1_base{(m.k1 != 0.0) ? m.k1 : gamma_eff};
+            double const k1_eff{details::bsim3v32_lw_scale(k1_base, m.lk1, m.wk1, m.pk1, leff, weff, m.lref, m.wref)};
+            double const k2_eff{details::bsim3v32_lw_scale(m.k2, m.lk2, m.wk2, m.pk2, leff, weff, m.lref, m.wref)};
+            double const k1ox{k1_eff * tox_ratio};
+            double const k2ox{k2_eff * tox_ratio};
 
             double const sqrt_phi{::std::sqrt(phi_s)};
             double const dt_c{m.Temp - m.tnom};
             double const vth0_t{bsim3v32_vth0_temp_mag(vth0_eff_geom, m.Temp, m.tnom, m.kt1, m.kt2)};
-            double const vth0ox{vth0_t - k1 * sqrt_phi};
+            double const vth0ox{vth0_t - k1_eff * sqrt_phi};
 
             Real const sqrt_phi_vbs{bsim3v32_sqrt(bsim3v32_max(phi_s - vbseff, 1e-12))};
 
             // Xdep / lt / lt0 (simplified)
-            double const nch{m.nch > 1.0 ? m.nch : 1e23};  // 1/m^3
+            double const nch{nch_eff > 1.0 ? nch_eff : 1e23};  // 1/m^3
             Real const xdep{bsim3v32_sqrt(2.0 * k_eps_si * bsim3v32_max(phi_s - vbseff, 1e-12) / (k_q * nch))};
             double const xdep0{::std::sqrt(2.0 * k_eps_si * phi_s / (k_q * nch))};
             double const lt0{::std::sqrt((k_eps_si / k_eps_ox) * tox * xdep0)};
             Real lt{bsim3v32_sqrt((k_eps_si / k_eps_ox) * tox * xdep)};
-            lt *= (1.0 + m.dvt2 * vbseff);
+            double const dvt2_eff{details::bsim3v32_lw_scale(m.dvt2, m.ldvt2, m.wdvt2, m.pdvt2, leff, weff, m.lref, m.wref)};
+            lt *= (1.0 + dvt2_eff * vbseff);
             if(bsim3v32_value(lt) <= 1e-18) { lt = 1e-18; }
 
             // Short-channel Vth roll-off
-            Real const theta_th{m.dvt0 * (bsim3v32_exp(-m.dvt1 * leff / (2.0 * lt)) + 2.0 * bsim3v32_exp(-m.dvt1 * leff / lt))};
+            double const dvt0_eff{details::bsim3v32_lw_scale(m.dvt0, m.ldvt0, m.wdvt0, m.pdvt0, leff, weff, m.lref, m.wref)};
+            double const dvt1_eff{details::bsim3v32_lw_scale(m.dvt1, m.ldvt1, m.wdvt1, m.pdvt1, leff, weff, m.lref, m.wref)};
+            Real const theta_th{dvt0_eff * (bsim3v32_exp(-dvt1_eff * leff / (2.0 * lt)) + 2.0 * bsim3v32_exp(-dvt1_eff * leff / lt))};
             double const vbi{m.vbi > 0.0 ? m.vbi : (phi_s + 0.5)};
             Real const dvth_sc{theta_th * (vbi - phi_s)};
 
@@ -682,23 +691,65 @@ namespace phy_engine::model
             Real const dvth_dibl{theta_dibl * (eta0_eff + etab_eff * vbseff) * vds};
 
             // Narrow width / doping non-uniformity (simplified)
-            double const dvth_nlx{k1ox * (m.nlx / leff) * sqrt_phi};
-            Real const dvth_nw{(m.k3 + m.k3b * vbseff) * tox_ratio * phi_s / (::std::max(weff + m.w0, 1e-18))};
+            double const nlx_eff{details::bsim3v32_lw_scale(m.nlx, m.lnlx, m.wnlx, m.pnlx, leff, weff, m.lref, m.wref)};
+            double const k3_eff{details::bsim3v32_lw_scale(m.k3, m.lk3, m.wk3, m.pk3, leff, weff, m.lref, m.wref)};
+            double const k3b_eff{details::bsim3v32_lw_scale(m.k3b, m.lk3b, m.wk3b, m.pk3b, leff, weff, m.lref, m.wref)};
+            double const w0_eff_raw{details::bsim3v32_lw_scale(m.w0, m.lw0, m.ww0, m.pw0, leff, weff, m.lref, m.wref)};
+            double const w0_eff{w0_eff_raw > 0.0 ? w0_eff_raw : 0.0};
+
+            double const dvth_nlx{k1ox * ((nlx_eff > 0.0 ? nlx_eff : 0.0) / leff) * sqrt_phi};
+            Real const dvth_nw{(k3_eff + k3b_eff * vbseff) * tox_ratio * phi_s / (::std::max(weff + w0_eff, 1e-18))};
 
             Real const vth{vth0ox + k1ox * sqrt_phi_vbs - k2ox * vbseff + dvth_nlx + dvth_nw - dvth_sc - dvth_dibl};
             if(cache) { cache->vth = vth; }
 
             // n factor (simplified)
             Real const cd{k_eps_si / bsim3v32_max(xdep, 1e-18)};
-            Real n{1.0 + (m.nfactor > 0.0 ? m.nfactor : 0.0)};
-            n += (cd + m.cit) / cox;
+            double const nfactor_eff_raw{details::bsim3v32_lw_scale(m.nfactor, m.lnfactor, m.wnfactor, m.pnfactor, leff, weff, m.lref, m.wref)};
+            double const cit_eff{details::bsim3v32_lw_scale(m.cit, m.lcit, m.wcit, m.pcit, leff, weff, m.lref, m.wref)};
+            Real n{1.0 + (nfactor_eff_raw > 0.0 ? nfactor_eff_raw : 0.0)};
+            n += (cd + cit_eff) / cox;
             if(bsim3v32_value(n) < 1.0) { n = 1.0; }
 
-            // Effective (Vgs - Vth)
-            Real const vgst{vgs - vth};
+            // Effective (Vgs - Vth - Voff)
+            double const voff_eff{details::bsim3v32_lw_scale(m.voff, m.lvoff, m.wvoff, m.pvoff, leff, weff, m.lref, m.wref)};
+            Real const vgst{vgs - vth - voff_eff};
             Real const vgsteff{bsim3v32_vgsteff(vgst, n, vt)};
             if(cache) { cache->vgsteff = vgsteff; }
-            if(bsim3v32_value(vgsteff) <= 0.0) { return {}; }
+
+            // Subthreshold blending (clean-room, simplified):
+            // - Use an exponential Ids below threshold with slope ~ 1/(n*Vt).
+            // - Blend smoothly with the strong-inversion core using a sign-based smooth step on Vgs-Vth.
+            Real f_sub{};
+            Real ids_sub{};
+            if(vt > 0.0 && u0 > 0.0)
+            {
+                // f_sub ~= 1 for Vgs<Vth, ~=0 for Vgs>Vth.
+                Real const abs_vgst{bsim3v32_abs_smooth(vgst)};
+                f_sub = 0.5 * (1.0 - vgst / bsim3v32_max(abs_vgst, 1e-24));
+
+                // Clamp exponent input to <=0 to avoid overflow when Vgs>Vth (the blend should suppress it anyway).
+                Real const vgst_neg{0.5 * (vgst - abs_vgst)};
+                Real const inv_nvt{1.0 / bsim3v32_max(n * vt, 1e-24)};
+                Real const exp_vgs{bsim3v32_exp(vgst_neg * inv_nvt)};
+
+                Real const vds_over_vt{vds / vt};
+                Real vds_term{};
+                if(bsim3v32_value(vds_over_vt) < 1e-5)
+                {
+                    // 1 - exp(-x) ~ x - x^2/2 for small x
+                    Real const x{vds_over_vt};
+                    vds_term = x - 0.5 * x * x;
+                }
+                else
+                {
+                    vds_term = 1.0 - bsim3v32_exp(-vds_over_vt);
+                }
+                if(bsim3v32_value(vds_term) < 0.0) { vds_term = Real{}; }
+
+                Real const id0{(weff * u0 * cox * vt * vt) / bsim3v32_max(leff, 1e-24)};
+                ids_sub = id0 * exp_vgs * vds_term;
+            }
 
             // Mobility (mobMod=3 default)
             Real ueff{bsim3v32_ueff_mobmod3(u0, ua_eff, ub_eff, uc_eff, vgsteff, vbseff, tox, vt)};
@@ -706,7 +757,8 @@ namespace phy_engine::model
 
             // Abulk (start with 1, keep hooks for keta)
             Real abulk{1.0};
-            abulk *= (1.0 + m.keta * vbseff);
+            double const keta_eff{details::bsim3v32_lw_scale(m.keta, m.lketa, m.wketa, m.pketa, leff, weff, m.lref, m.wref)};
+            abulk *= (1.0 + keta_eff * vbseff);
 
             // Velocity saturation
             double vsat{vsat_eff_geom > 0.0 ? vsat_eff_geom : 8e4};
@@ -790,7 +842,9 @@ namespace phy_engine::model
                 // rdsw is Ohm*m; convert to Ohm by dividing by effective width.
                 double const weff_d{weff > 1e-18 ? weff : 1e-18};
                 double const rdsw_term{rdsw_eff_geom / weff_d};
-                Real mod{1.0 + m.prwg * vgsteff + m.prwb * vbseff};
+                double const prwg_eff{details::bsim3v32_lw_scale(m.prwg, m.lprwg, m.wprwg, m.pprwg, leff, weff, m.lref, m.wref)};
+                double const prwb_eff{details::bsim3v32_lw_scale(m.prwb, m.lprwb, m.wprwb, m.pprwb, leff, weff, m.lref, m.wref)};
+                Real mod{1.0 + prwg_eff * vgsteff + prwb_eff * vbseff};
                 if(bsim3v32_value(mod) < 0.0) { mod = Real{}; }
                 rds_eff += rdsw_term * mod;
             }
@@ -798,7 +852,8 @@ namespace phy_engine::model
             Real const scbe_factor{1.0 + vdsx / vascbe};
             Real const rds_factor{1.0 / (1.0 + rds_eff * bsim3v32_abs_smooth(idso))};
 
-            Real const ids{idso * clm_factor * scbe_factor * rds_factor};
+            Real const ids_inv{idso * clm_factor * scbe_factor * rds_factor};
+            Real const ids{(1.0 - f_sub) * ids_inv + f_sub * ids_sub};
             return ids;
         }
 
@@ -864,13 +919,23 @@ namespace phy_engine::model
             if(bsim3v32_value(coxwl) <= 0.0) { return {}; }
 
             // Vbseff and k1ox for depletion charge approximation.
-            double const phi_s{bsim3v32_phi_temp(m.phi, m.nch, m.Temp, m.tnom)};
+            double const nch_eff_raw{details::bsim3v32_lw_scale(
+                m.nch, m.lnch, m.wnch, m.pnch, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const nch_eff{nch_eff_raw > 1.0 ? nch_eff_raw : (m.nch > 1.0 ? m.nch : 1e23)};
+            double const phi0_eff_geom{details::bsim3v32_lw_scale(
+                m.phi, m.lphi, m.wphi, m.pphi, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const phi_s{bsim3v32_phi_temp(phi0_eff_geom, nch_eff, m.Temp, m.tnom)};
             double const tox{m.tox > 0.0 ? m.tox : 1e-8};
             double const toxm{m.toxm > 0.0 ? m.toxm : tox};
             double const tox_ratio{tox / toxm};
 
-            double const k1{(m.k1 != 0.0) ? m.k1 : m.gamma};
-            double const k1ox{k1 * tox_ratio};
+            double const gamma_eff_raw{details::bsim3v32_lw_scale(
+                m.gamma, m.lgamma, m.wgamma, m.pgamma, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const gamma_eff{gamma_eff_raw > 0.0 ? gamma_eff_raw : 0.0};
+            double const k1_base{(m.k1 != 0.0) ? m.k1 : gamma_eff};
+            double const k1_eff{details::bsim3v32_lw_scale(
+                k1_base, m.lk1, m.wk1, m.pk1, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const k1ox{k1_eff * tox_ratio};
 
             double const vbm{(m.vbm < 0.0) ? m.vbm : -3.0};
             double const delta1{(m.delta1 > 0.0) ? m.delta1 : 1e-3};
@@ -883,7 +948,9 @@ namespace phy_engine::model
             // Inversion charge (clean-room, long-channel baseline).
             // - Linear:  Qinv ≈ -CoxWL*(Vgsteff - Abulk*Vdseff/2)
             // - Saturation: Qinv ≈ -(2/3)*CoxWL*Vgsteff
-            Real const abulk{1.0 + m.keta * vbseff};
+            double const keta_eff{details::bsim3v32_lw_scale(
+                m.keta, m.lketa, m.wketa, m.pketa, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            Real const abulk{1.0 + keta_eff * vbseff};
             bool const is_linear{bsim3v32_value(c.vdseff) < bsim3v32_value(c.vdsat)};
             Real qinv_n{};
             if(is_linear) { qinv_n = -coxwl * (c.vgsteff - abulk * c.vdseff / 2.0); }
@@ -921,17 +988,30 @@ namespace phy_engine::model
             Real const qg_n{-(qinv_n + qb_n)};
             Real qb_adj_n{qb_n};
 
-            // Accumulation charge (gate-bulk) for negative Vgb (improves capMod behavior in accumulation).
+            // Depletion/accumulation gate-bulk charge (clean-room simplified):
+            // - Add an extra G-B term in depletion to avoid near-zero Cgb in cutoff when capMod!=0.
+            // - Keep it smoothly disabled in strong inversion based on Vgs-Vth (signed coordinate).
+            //
             // Approximate flatband as Vfb ≈ Vth0(T) - phi (BSIM3 uses phi as surface potential).
             double const vth0_t{bsim3v32_vth0_temp_mag(m.Vth0, m.Temp, m.tnom, m.kt1, m.kt2)};
             double const vfb{vth0_t - phi_s};
             Real const vgb{vgs_s - vbs_s};
             Real const x{vgb - vfb};
-            // min(x,0) with smooth abs to keep derivatives continuous.
-            Real const minx{0.5 * (x - bsim3v32_abs_smooth(x))};
-            Real const qacc_g{coxwl * minx};  // <= 0 in accumulation (NMOS), opposite for PMOS via pol below.
-            qb_adj_n += -qacc_g;
-            Real const qg_adj{qg_n + qacc_g};
+            Real const abs_x{bsim3v32_abs_smooth(x)};
+            // min(x,0) and max(x,0) with smooth abs to keep derivatives continuous.
+            Real const minx{0.5 * (x - abs_x)};
+            Real const maxx{0.5 * (x + abs_x)};
+
+            // Smooth cutoff factor based on Vgs-Vth (signed coordinate from DC cache).
+            Real const vgst{vgs_s - c.vth};
+            Real const abs_vgst{bsim3v32_abs_smooth(vgst)};
+            Real const f_cut{0.5 * (1.0 - vgst / bsim3v32_max(abs_vgst, 1e-24))};
+
+            Real const qacc_g{coxwl * minx};         // <= 0 in accumulation (NMOS)
+            Real const qdep_g{coxwl * maxx * f_cut}; // >= 0 in depletion/cutoff; fades out in inversion
+
+            qb_adj_n += -(qacc_g + qdep_g);
+            Real const qg_adj{qg_n + qacc_g + qdep_g};
 
             bsim3v32_charge_vec4_t<Real> q{};
             q.q[0] = pol * qd_n;
@@ -1186,6 +1266,60 @@ namespace phy_engine::model
         double lpscbe2{0.0};
         double wpscbe2{0.0};
         double ppscbe2{0.0};
+        double ldvt0{0.0};
+        double wdvt0{0.0};
+        double pdvt0{0.0};
+        double ldvt1{0.0};
+        double wdvt1{0.0};
+        double pdvt1{0.0};
+        double ldvt2{0.0};
+        double wdvt2{0.0};
+        double pdvt2{0.0};
+        double lnfactor{0.0};
+        double wnfactor{0.0};
+        double pnfactor{0.0};
+        double lcit{0.0};
+        double wcit{0.0};
+        double pcit{0.0};
+        double lketa{0.0};
+        double wketa{0.0};
+        double pketa{0.0};
+        double lprwg{0.0};
+        double wprwg{0.0};
+        double pprwg{0.0};
+        double lprwb{0.0};
+        double wprwb{0.0};
+        double pprwb{0.0};
+        double lk1{0.0};
+        double wk1{0.0};
+        double pk1{0.0};
+        double lk2{0.0};
+        double wk2{0.0};
+        double pk2{0.0};
+        double lk3{0.0};
+        double wk3{0.0};
+        double pk3{0.0};
+        double lk3b{0.0};
+        double wk3b{0.0};
+        double pk3b{0.0};
+        double lw0{0.0};
+        double ww0{0.0};
+        double pw0{0.0};
+        double lnlx{0.0};
+        double wnlx{0.0};
+        double pnlx{0.0};
+        double lvoff{0.0};
+        double wvoff{0.0};
+        double pvoff{0.0};
+        double lnch{0.0};
+        double wnch{0.0};
+        double pnch{0.0};
+        double lgamma{0.0};
+        double wgamma{0.0};
+        double pgamma{0.0};
+        double lphi{0.0};
+        double wphi{0.0};
+        double pphi{0.0};
 
         // BSIM3v3.x key parameters (subset; additional params can be added as needed).
         // Units follow the BSIM3 manuals (SI for geometry, V, and A; mobility in m^2/Vs).
@@ -1217,6 +1351,7 @@ namespace phy_engine::model
 
         double nfactor{0.0};
         double cit{0.0};
+        double voff{0.0};
 
         // CLM / DIBL / SCBE
         double pclm{0.0};
@@ -1438,6 +1573,61 @@ namespace phy_engine::model
             case 158: m.lpscbe2 = vi.d; return true;
             case 159: m.wpscbe2 = vi.d; return true;
             case 160: m.ppscbe2 = vi.d; return true;
+            case 161: m.ldvt0 = vi.d; return true;
+            case 162: m.wdvt0 = vi.d; return true;
+            case 163: m.pdvt0 = vi.d; return true;
+            case 164: m.ldvt1 = vi.d; return true;
+            case 165: m.wdvt1 = vi.d; return true;
+            case 166: m.pdvt1 = vi.d; return true;
+            case 167: m.ldvt2 = vi.d; return true;
+            case 168: m.wdvt2 = vi.d; return true;
+            case 169: m.pdvt2 = vi.d; return true;
+            case 170: m.lnfactor = vi.d; return true;
+            case 171: m.wnfactor = vi.d; return true;
+            case 172: m.pnfactor = vi.d; return true;
+            case 173: m.lcit = vi.d; return true;
+            case 174: m.wcit = vi.d; return true;
+            case 175: m.pcit = vi.d; return true;
+            case 176: m.lketa = vi.d; return true;
+            case 177: m.wketa = vi.d; return true;
+            case 178: m.pketa = vi.d; return true;
+            case 185: m.lprwg = vi.d; return true;
+            case 186: m.wprwg = vi.d; return true;
+            case 187: m.pprwg = vi.d; return true;
+            case 188: m.lprwb = vi.d; return true;
+            case 189: m.wprwb = vi.d; return true;
+            case 190: m.pprwb = vi.d; return true;
+            case 191: m.lk1 = vi.d; return true;
+            case 192: m.wk1 = vi.d; return true;
+            case 193: m.pk1 = vi.d; return true;
+            case 194: m.lk2 = vi.d; return true;
+            case 195: m.wk2 = vi.d; return true;
+            case 196: m.pk2 = vi.d; return true;
+            case 197: m.lk3 = vi.d; return true;
+            case 198: m.wk3 = vi.d; return true;
+            case 199: m.pk3 = vi.d; return true;
+            case 200: m.lk3b = vi.d; return true;
+            case 201: m.wk3b = vi.d; return true;
+            case 202: m.pk3b = vi.d; return true;
+            case 203: m.lw0 = vi.d; return true;
+            case 204: m.ww0 = vi.d; return true;
+            case 205: m.pw0 = vi.d; return true;
+            case 206: m.lnlx = vi.d; return true;
+            case 207: m.wnlx = vi.d; return true;
+            case 208: m.pnlx = vi.d; return true;
+            case 209: m.voff = vi.d; return true;
+            case 210: m.lvoff = vi.d; return true;
+            case 211: m.wvoff = vi.d; return true;
+            case 212: m.pvoff = vi.d; return true;
+            case 213: m.lnch = vi.d; return true;
+            case 214: m.wnch = vi.d; return true;
+            case 215: m.pnch = vi.d; return true;
+            case 216: m.lgamma = vi.d; return true;
+            case 217: m.wgamma = vi.d; return true;
+            case 218: m.pgamma = vi.d; return true;
+            case 219: m.lphi = vi.d; return true;
+            case 220: m.wphi = vi.d; return true;
+            case 221: m.pphi = vi.d; return true;
             case 14: m.Rd = vi.d; return true;
             case 15: m.Rs = vi.d; return true;
             case 97: m.rsh = vi.d; return true;
@@ -1613,6 +1803,61 @@ namespace phy_engine::model
             case 158: return {.d{m.lpscbe2}, .type{::phy_engine::model::variant_type::d}};
             case 159: return {.d{m.wpscbe2}, .type{::phy_engine::model::variant_type::d}};
             case 160: return {.d{m.ppscbe2}, .type{::phy_engine::model::variant_type::d}};
+            case 161: return {.d{m.ldvt0}, .type{::phy_engine::model::variant_type::d}};
+            case 162: return {.d{m.wdvt0}, .type{::phy_engine::model::variant_type::d}};
+            case 163: return {.d{m.pdvt0}, .type{::phy_engine::model::variant_type::d}};
+            case 164: return {.d{m.ldvt1}, .type{::phy_engine::model::variant_type::d}};
+            case 165: return {.d{m.wdvt1}, .type{::phy_engine::model::variant_type::d}};
+            case 166: return {.d{m.pdvt1}, .type{::phy_engine::model::variant_type::d}};
+            case 167: return {.d{m.ldvt2}, .type{::phy_engine::model::variant_type::d}};
+            case 168: return {.d{m.wdvt2}, .type{::phy_engine::model::variant_type::d}};
+            case 169: return {.d{m.pdvt2}, .type{::phy_engine::model::variant_type::d}};
+            case 170: return {.d{m.lnfactor}, .type{::phy_engine::model::variant_type::d}};
+            case 171: return {.d{m.wnfactor}, .type{::phy_engine::model::variant_type::d}};
+            case 172: return {.d{m.pnfactor}, .type{::phy_engine::model::variant_type::d}};
+            case 173: return {.d{m.lcit}, .type{::phy_engine::model::variant_type::d}};
+            case 174: return {.d{m.wcit}, .type{::phy_engine::model::variant_type::d}};
+            case 175: return {.d{m.pcit}, .type{::phy_engine::model::variant_type::d}};
+            case 176: return {.d{m.lketa}, .type{::phy_engine::model::variant_type::d}};
+            case 177: return {.d{m.wketa}, .type{::phy_engine::model::variant_type::d}};
+            case 178: return {.d{m.pketa}, .type{::phy_engine::model::variant_type::d}};
+            case 185: return {.d{m.lprwg}, .type{::phy_engine::model::variant_type::d}};
+            case 186: return {.d{m.wprwg}, .type{::phy_engine::model::variant_type::d}};
+            case 187: return {.d{m.pprwg}, .type{::phy_engine::model::variant_type::d}};
+            case 188: return {.d{m.lprwb}, .type{::phy_engine::model::variant_type::d}};
+            case 189: return {.d{m.wprwb}, .type{::phy_engine::model::variant_type::d}};
+            case 190: return {.d{m.pprwb}, .type{::phy_engine::model::variant_type::d}};
+            case 191: return {.d{m.lk1}, .type{::phy_engine::model::variant_type::d}};
+            case 192: return {.d{m.wk1}, .type{::phy_engine::model::variant_type::d}};
+            case 193: return {.d{m.pk1}, .type{::phy_engine::model::variant_type::d}};
+            case 194: return {.d{m.lk2}, .type{::phy_engine::model::variant_type::d}};
+            case 195: return {.d{m.wk2}, .type{::phy_engine::model::variant_type::d}};
+            case 196: return {.d{m.pk2}, .type{::phy_engine::model::variant_type::d}};
+            case 197: return {.d{m.lk3}, .type{::phy_engine::model::variant_type::d}};
+            case 198: return {.d{m.wk3}, .type{::phy_engine::model::variant_type::d}};
+            case 199: return {.d{m.pk3}, .type{::phy_engine::model::variant_type::d}};
+            case 200: return {.d{m.lk3b}, .type{::phy_engine::model::variant_type::d}};
+            case 201: return {.d{m.wk3b}, .type{::phy_engine::model::variant_type::d}};
+            case 202: return {.d{m.pk3b}, .type{::phy_engine::model::variant_type::d}};
+            case 203: return {.d{m.lw0}, .type{::phy_engine::model::variant_type::d}};
+            case 204: return {.d{m.ww0}, .type{::phy_engine::model::variant_type::d}};
+            case 205: return {.d{m.pw0}, .type{::phy_engine::model::variant_type::d}};
+            case 206: return {.d{m.lnlx}, .type{::phy_engine::model::variant_type::d}};
+            case 207: return {.d{m.wnlx}, .type{::phy_engine::model::variant_type::d}};
+            case 208: return {.d{m.pnlx}, .type{::phy_engine::model::variant_type::d}};
+            case 209: return {.d{m.voff}, .type{::phy_engine::model::variant_type::d}};
+            case 210: return {.d{m.lvoff}, .type{::phy_engine::model::variant_type::d}};
+            case 211: return {.d{m.wvoff}, .type{::phy_engine::model::variant_type::d}};
+            case 212: return {.d{m.pvoff}, .type{::phy_engine::model::variant_type::d}};
+            case 213: return {.d{m.lnch}, .type{::phy_engine::model::variant_type::d}};
+            case 214: return {.d{m.wnch}, .type{::phy_engine::model::variant_type::d}};
+            case 215: return {.d{m.pnch}, .type{::phy_engine::model::variant_type::d}};
+            case 216: return {.d{m.lgamma}, .type{::phy_engine::model::variant_type::d}};
+            case 217: return {.d{m.wgamma}, .type{::phy_engine::model::variant_type::d}};
+            case 218: return {.d{m.pgamma}, .type{::phy_engine::model::variant_type::d}};
+            case 219: return {.d{m.lphi}, .type{::phy_engine::model::variant_type::d}};
+            case 220: return {.d{m.wphi}, .type{::phy_engine::model::variant_type::d}};
+            case 221: return {.d{m.pphi}, .type{::phy_engine::model::variant_type::d}};
             case 14: return {.d{m.Rd}, .type{::phy_engine::model::variant_type::d}};
             case 15: return {.d{m.Rs}, .type{::phy_engine::model::variant_type::d}};
             case 97: return {.d{m.rsh}, .type{::phy_engine::model::variant_type::d}};
@@ -1787,6 +2032,61 @@ namespace phy_engine::model
             case 158: return u8"lpscbe2";
             case 159: return u8"wpscbe2";
             case 160: return u8"ppscbe2";
+            case 161: return u8"ldvt0";
+            case 162: return u8"wdvt0";
+            case 163: return u8"pdvt0";
+            case 164: return u8"ldvt1";
+            case 165: return u8"wdvt1";
+            case 166: return u8"pdvt1";
+            case 167: return u8"ldvt2";
+            case 168: return u8"wdvt2";
+            case 169: return u8"pdvt2";
+            case 170: return u8"lnfactor";
+            case 171: return u8"wnfactor";
+            case 172: return u8"pnfactor";
+            case 173: return u8"lcit";
+            case 174: return u8"wcit";
+            case 175: return u8"pcit";
+            case 176: return u8"lketa";
+            case 177: return u8"wketa";
+            case 178: return u8"pketa";
+            case 185: return u8"lprwg";
+            case 186: return u8"wprwg";
+            case 187: return u8"pprwg";
+            case 188: return u8"lprwb";
+            case 189: return u8"wprwb";
+            case 190: return u8"pprwb";
+            case 191: return u8"lk1";
+            case 192: return u8"wk1";
+            case 193: return u8"pk1";
+            case 194: return u8"lk2";
+            case 195: return u8"wk2";
+            case 196: return u8"pk2";
+            case 197: return u8"lk3";
+            case 198: return u8"wk3";
+            case 199: return u8"pk3";
+            case 200: return u8"lk3b";
+            case 201: return u8"wk3b";
+            case 202: return u8"pk3b";
+            case 203: return u8"lw0";
+            case 204: return u8"ww0";
+            case 205: return u8"pw0";
+            case 206: return u8"lnlx";
+            case 207: return u8"wnlx";
+            case 208: return u8"pnlx";
+            case 209: return u8"voff";
+            case 210: return u8"lvoff";
+            case 211: return u8"wvoff";
+            case 212: return u8"pvoff";
+            case 213: return u8"lnch";
+            case 214: return u8"wnch";
+            case 215: return u8"pnch";
+            case 216: return u8"lgamma";
+            case 217: return u8"wgamma";
+            case 218: return u8"pgamma";
+            case 219: return u8"lphi";
+            case 220: return u8"wphi";
+            case 221: return u8"pphi";
             case 14: return u8"Rd";
             case 15: return u8"Rs";
             case 97: return u8"rsh";
