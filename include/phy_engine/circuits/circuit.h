@@ -117,6 +117,7 @@ namespace phy_engine
         ::std::size_t cuda_node_threshold{default_cuda_node_threshold};
 
         constexpr void set_cuda_policy(cuda_solve_policy p) noexcept { cuda_policy = p; }
+
         constexpr void set_cuda_node_threshold(::std::size_t n) noexcept { cuda_node_threshold = n; }
 
 #if (defined(__CUDA__) || defined(__CUDACC__) || defined(__NVCC__)) && !defined(__CUDA_ARCH__)
@@ -192,6 +193,20 @@ namespace phy_engine
                 {
                     prepare();
                     clear_ac_sweep_results();
+                    // SPICE-compatible behavior: small-signal AC requires a DC operating point for non-linear devices.
+                    // If the circuit contains any non-linear devices, run an OP solve first to populate their linearization
+                    // (gm/gds/...) and allow models to capture bias-dependent small-signal parameters via save_op().
+                    if(has_nonlinear_device())
+                    {
+                        auto const saved_at{at};
+                        at = ::phy_engine::analyze_type::OP;
+                        if(!solve()) [[unlikely]]
+                        {
+                            at = saved_at;
+                            return false;
+                        }
+                        at = saved_at;
+                    }
                     if(!run_ac_analysis()) [[unlikely]] { return false; }
                     break;
                 }
@@ -577,7 +592,47 @@ namespace phy_engine
                             {
                                 if(!c->ptr->prepare_op()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
-                            if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            // Propagate global TNOM (nominal temperature) when the model exposes "tnom".
+                            // This matches common SPICE semantics where .options TNOM applies across models.
+                            if(env.norm_temperature != 27.0)
+                            {
+                                auto const ascii_ieq = [](char a, char b) constexpr noexcept
+                                {
+                                    auto const ua = static_cast<unsigned char>(a);
+                                    auto const ub = static_cast<unsigned char>(b);
+                                    auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+                                    auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+                                    return la == lb;
+                                };
+                                auto const name_is_tnom = [&](::fast_io::u8string_view n) constexpr noexcept
+                                {
+                                    if(n.size() != 4) { return false; }
+                                    auto const* p = reinterpret_cast<char const*>(n.data());
+                                    return ascii_ieq(p[0], 't') && ascii_ieq(p[1], 'n') && ascii_ieq(p[2], 'o') && ascii_ieq(p[3], 'm');
+                                };
+                                constexpr ::std::size_t kMaxScan{512};
+                                constexpr ::std::size_t kMaxConsecutiveEmpty{64};
+                                ::std::size_t empty_run{};
+                                bool seen_any{};
+                                for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+                                {
+                                    auto const n = c->ptr->get_attribute_name(idx);
+                                    if(n.empty())
+                                    {
+                                        if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                                        continue;
+                                    }
+                                    seen_any = true;
+                                    empty_run = 0;
+                                    if(!name_is_tnom(n)) { continue; }
+                                    // Do not override a per-model TNOM if the user has explicitly set it away from 27C.
+                                    auto const cur = c->ptr->get_attribute(idx);
+                                    if(cur.type == ::phy_engine::model::variant_type::d && ::std::abs(cur.d - 27.0) > 1e-12) { break; }
+                                    (void)c->ptr->set_attribute(idx, {.d{env.norm_temperature}, .type{::phy_engine::model::variant_type::d}});
+                                    break;
+                                }
+                            }
+                            if(!c->ptr->load_temperature(env.temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -600,7 +655,44 @@ namespace phy_engine
                             {
                                 if(!c->ptr->prepare_dc()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
-                            if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(env.norm_temperature != 27.0)
+                            {
+                                auto const ascii_ieq = [](char a, char b) constexpr noexcept
+                                {
+                                    auto const ua = static_cast<unsigned char>(a);
+                                    auto const ub = static_cast<unsigned char>(b);
+                                    auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+                                    auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+                                    return la == lb;
+                                };
+                                auto const name_is_tnom = [&](::fast_io::u8string_view n) constexpr noexcept
+                                {
+                                    if(n.size() != 4) { return false; }
+                                    auto const* p = reinterpret_cast<char const*>(n.data());
+                                    return ascii_ieq(p[0], 't') && ascii_ieq(p[1], 'n') && ascii_ieq(p[2], 'o') && ascii_ieq(p[3], 'm');
+                                };
+                                constexpr ::std::size_t kMaxScan{512};
+                                constexpr ::std::size_t kMaxConsecutiveEmpty{64};
+                                ::std::size_t empty_run{};
+                                bool seen_any{};
+                                for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+                                {
+                                    auto const n = c->ptr->get_attribute_name(idx);
+                                    if(n.empty())
+                                    {
+                                        if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                                        continue;
+                                    }
+                                    seen_any = true;
+                                    empty_run = 0;
+                                    if(!name_is_tnom(n)) { continue; }
+                                    auto const cur = c->ptr->get_attribute(idx);
+                                    if(cur.type == ::phy_engine::model::variant_type::d && ::std::abs(cur.d - 27.0) > 1e-12) { break; }
+                                    (void)c->ptr->set_attribute(idx, {.d{env.norm_temperature}, .type{::phy_engine::model::variant_type::d}});
+                                    break;
+                                }
+                            }
+                            if(!c->ptr->load_temperature(env.temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -623,7 +715,44 @@ namespace phy_engine
                             {
                                 if(!c->ptr->prepare_ac()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
-                            if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(env.norm_temperature != 27.0)
+                            {
+                                auto const ascii_ieq = [](char a, char b) constexpr noexcept
+                                {
+                                    auto const ua = static_cast<unsigned char>(a);
+                                    auto const ub = static_cast<unsigned char>(b);
+                                    auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+                                    auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+                                    return la == lb;
+                                };
+                                auto const name_is_tnom = [&](::fast_io::u8string_view n) constexpr noexcept
+                                {
+                                    if(n.size() != 4) { return false; }
+                                    auto const* p = reinterpret_cast<char const*>(n.data());
+                                    return ascii_ieq(p[0], 't') && ascii_ieq(p[1], 'n') && ascii_ieq(p[2], 'o') && ascii_ieq(p[3], 'm');
+                                };
+                                constexpr ::std::size_t kMaxScan{512};
+                                constexpr ::std::size_t kMaxConsecutiveEmpty{64};
+                                ::std::size_t empty_run{};
+                                bool seen_any{};
+                                for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+                                {
+                                    auto const n = c->ptr->get_attribute_name(idx);
+                                    if(n.empty())
+                                    {
+                                        if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                                        continue;
+                                    }
+                                    seen_any = true;
+                                    empty_run = 0;
+                                    if(!name_is_tnom(n)) { continue; }
+                                    auto const cur = c->ptr->get_attribute(idx);
+                                    if(cur.type == ::phy_engine::model::variant_type::d && ::std::abs(cur.d - 27.0) > 1e-12) { break; }
+                                    (void)c->ptr->set_attribute(idx, {.d{env.norm_temperature}, .type{::phy_engine::model::variant_type::d}});
+                                    break;
+                                }
+                            }
+                            if(!c->ptr->load_temperature(env.temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -646,7 +775,44 @@ namespace phy_engine
                             {
                                 if(!c->ptr->prepare_tr()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
-                            if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(env.norm_temperature != 27.0)
+                            {
+                                auto const ascii_ieq = [](char a, char b) constexpr noexcept
+                                {
+                                    auto const ua = static_cast<unsigned char>(a);
+                                    auto const ub = static_cast<unsigned char>(b);
+                                    auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+                                    auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+                                    return la == lb;
+                                };
+                                auto const name_is_tnom = [&](::fast_io::u8string_view n) constexpr noexcept
+                                {
+                                    if(n.size() != 4) { return false; }
+                                    auto const* p = reinterpret_cast<char const*>(n.data());
+                                    return ascii_ieq(p[0], 't') && ascii_ieq(p[1], 'n') && ascii_ieq(p[2], 'o') && ascii_ieq(p[3], 'm');
+                                };
+                                constexpr ::std::size_t kMaxScan{512};
+                                constexpr ::std::size_t kMaxConsecutiveEmpty{64};
+                                ::std::size_t empty_run{};
+                                bool seen_any{};
+                                for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+                                {
+                                    auto const n = c->ptr->get_attribute_name(idx);
+                                    if(n.empty())
+                                    {
+                                        if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                                        continue;
+                                    }
+                                    seen_any = true;
+                                    empty_run = 0;
+                                    if(!name_is_tnom(n)) { continue; }
+                                    auto const cur = c->ptr->get_attribute(idx);
+                                    if(cur.type == ::phy_engine::model::variant_type::d && ::std::abs(cur.d - 27.0) > 1e-12) { break; }
+                                    (void)c->ptr->set_attribute(idx, {.d{env.norm_temperature}, .type{::phy_engine::model::variant_type::d}});
+                                    break;
+                                }
+                            }
+                            if(!c->ptr->load_temperature(env.temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 
@@ -669,7 +835,44 @@ namespace phy_engine
                             {
                                 if(!c->ptr->prepare_trop()) [[unlikely]] { ::fast_io::fast_terminate(); }
                             }
-                            if(!c->ptr->load_temperature(env.norm_temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
+                            if(env.norm_temperature != 27.0)
+                            {
+                                auto const ascii_ieq = [](char a, char b) constexpr noexcept
+                                {
+                                    auto const ua = static_cast<unsigned char>(a);
+                                    auto const ub = static_cast<unsigned char>(b);
+                                    auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+                                    auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+                                    return la == lb;
+                                };
+                                auto const name_is_tnom = [&](::fast_io::u8string_view n) constexpr noexcept
+                                {
+                                    if(n.size() != 4) { return false; }
+                                    auto const* p = reinterpret_cast<char const*>(n.data());
+                                    return ascii_ieq(p[0], 't') && ascii_ieq(p[1], 'n') && ascii_ieq(p[2], 'o') && ascii_ieq(p[3], 'm');
+                                };
+                                constexpr ::std::size_t kMaxScan{512};
+                                constexpr ::std::size_t kMaxConsecutiveEmpty{64};
+                                ::std::size_t empty_run{};
+                                bool seen_any{};
+                                for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+                                {
+                                    auto const n = c->ptr->get_attribute_name(idx);
+                                    if(n.empty())
+                                    {
+                                        if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                                        continue;
+                                    }
+                                    seen_any = true;
+                                    empty_run = 0;
+                                    if(!name_is_tnom(n)) { continue; }
+                                    auto const cur = c->ptr->get_attribute(idx);
+                                    if(cur.type == ::phy_engine::model::variant_type::d && ::std::abs(cur.d - 27.0) > 1e-12) { break; }
+                                    (void)c->ptr->set_attribute(idx, {.d{env.norm_temperature}, .type{::phy_engine::model::variant_type::d}});
+                                    break;
+                                }
+                            }
+                            if(!c->ptr->load_temperature(env.temperature)) [[unlikely]] { ::fast_io::fast_terminate(); }
                         }
                     }
 

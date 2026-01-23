@@ -24,6 +24,7 @@
 #include <phy_engine/model/models/non-linear/nmosfet.h>
 #include <phy_engine/model/models/non-linear/pmosfet.h>
 #include <phy_engine/model/models/non-linear/full_bridge_rectifier.h>
+#include <phy_engine/model/models/non-linear/bsim3v32.h>
 
 #include <phy_engine/model/models/digital/logical/yes.h>
 #include <phy_engine/model/models/digital/logical/tri_state.h>
@@ -429,6 +430,44 @@ void build_netlist_from_wires(phy_engine::netlist::netlist& nl,
             // Full bridge rectifier (uses internal default diode params)
             return add_model(nl, ::phy_engine::model::full_bridge_rectifier{});
         }
+        case 55:
+        {
+            // BSIM3v3.2 NMOS (compat skeleton): W,L,Kp,lambda,Vth0,gamma,phi,Cgs,Cgd,Cgb,diode_Is,diode_N,Temp
+            ::phy_engine::model::bsim3v32_nmos m{};
+            m.W = *((*curr_prop_ptr)++);
+            m.L = *((*curr_prop_ptr)++);
+            m.Kp = *((*curr_prop_ptr)++);
+            m.lambda = *((*curr_prop_ptr)++);
+            m.Vth0 = *((*curr_prop_ptr)++);
+            m.gamma = *((*curr_prop_ptr)++);
+            m.phi = *((*curr_prop_ptr)++);
+            m.Cgs = *((*curr_prop_ptr)++);
+            m.Cgd = *((*curr_prop_ptr)++);
+            m.Cgb = *((*curr_prop_ptr)++);
+            m.diode_Is = *((*curr_prop_ptr)++);
+            m.diode_N = *((*curr_prop_ptr)++);
+            m.Temp = *((*curr_prop_ptr)++);
+            return add_model(nl, ::std::move(m));
+        }
+        case 56:
+        {
+            // BSIM3v3.2 PMOS (compat skeleton): W,L,Kp,lambda,Vth0,gamma,phi,Cgs,Cgd,Cgb,diode_Is,diode_N,Temp
+            ::phy_engine::model::bsim3v32_pmos m{};
+            m.W = *((*curr_prop_ptr)++);
+            m.L = *((*curr_prop_ptr)++);
+            m.Kp = *((*curr_prop_ptr)++);
+            m.lambda = *((*curr_prop_ptr)++);
+            m.Vth0 = *((*curr_prop_ptr)++);
+            m.gamma = *((*curr_prop_ptr)++);
+            m.phi = *((*curr_prop_ptr)++);
+            m.Cgs = *((*curr_prop_ptr)++);
+            m.Cgd = *((*curr_prop_ptr)++);
+            m.Cgb = *((*curr_prop_ptr)++);
+            m.diode_Is = *((*curr_prop_ptr)++);
+            m.diode_N = *((*curr_prop_ptr)++);
+            m.Temp = *((*curr_prop_ptr)++);
+            return add_model(nl, ::std::move(m));
+        }
         case 200:
         {
             // Digital INPUT: state (0=L,1=H,2=X,3=Z)
@@ -636,6 +675,93 @@ extern "C" int circuit_set_ac_omega(void* circuit_ptr, double omega)
     auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
     c->get_analyze_setting().ac.sweep = ::phy_engine::analyzer::AC::sweep_type::single;
     c->get_analyze_setting().ac.omega = omega;
+    return 0;
+}
+
+extern "C" int circuit_set_temperature(void* circuit_ptr, double temp_c)
+{
+    if(circuit_ptr == nullptr) { return 1; }
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    c->get_environment().temperature = temp_c;
+    return 0;
+}
+
+extern "C" int circuit_set_tnom(void* circuit_ptr, double tnom_c)
+{
+    if(circuit_ptr == nullptr) { return 1; }
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    c->get_environment().norm_temperature = tnom_c;
+    return 0;
+}
+
+void set_property(phy_engine::model::model_base* model, ::std::size_t index, double property);
+
+namespace
+{
+    inline constexpr bool ascii_ieq(char a, char b) noexcept
+    {
+        auto const ua = static_cast<unsigned char>(a);
+        auto const ub = static_cast<unsigned char>(b);
+        auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+        auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+        return la == lb;
+    }
+
+    inline bool ascii_ieq_span(::fast_io::u8string_view a, char const* b, ::std::size_t bsz) noexcept
+    {
+        if(b == nullptr) { return false; }
+        if(a.size() != bsz) { return false; }
+        auto const* ap = reinterpret_cast<char const*>(a.data());
+        for(::std::size_t i{}; i < bsz; ++i)
+        {
+            if(!ascii_ieq(ap[i], b[i])) { return false; }
+        }
+        return true;
+    }
+
+    inline bool
+        find_attribute_index_by_name(::phy_engine::model::model_base* model, char const* name, ::std::size_t name_size, ::std::size_t& out_index) noexcept
+    {
+        if(model == nullptr || model->ptr == nullptr || name == nullptr || name_size == 0) { return false; }
+
+        // Scan attribute indices with a conservative budget. Most models have small sparse index sets.
+        constexpr ::std::size_t kMaxScan{2048};
+        constexpr ::std::size_t kMaxConsecutiveEmpty{128};
+        ::std::size_t empty_run{};
+        bool seen_any{};
+        for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+        {
+            ::fast_io::u8string_view const n = model->ptr->get_attribute_name(idx);
+            if(n.empty())
+            {
+                if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                continue;
+            }
+            seen_any = true;
+            empty_run = 0;
+            if(ascii_ieq_span(n, name, name_size))
+            {
+                out_index = idx;
+                return true;
+            }
+        }
+        return false;
+    }
+}  // namespace
+
+extern "C" int
+    circuit_set_model_double_by_name(void* circuit_ptr, ::std::size_t vec_pos, ::std::size_t chunk_pos, char const* name, ::std::size_t name_size, double value)
+{
+    if(circuit_ptr == nullptr || name == nullptr || name_size == 0) { return 1; }
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    auto& nl{c->get_netlist()};
+
+    ::phy_engine::model::model_base* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos, chunk_pos});
+    if(model == nullptr || model->ptr == nullptr) { return 2; }
+
+    ::std::size_t idx{};
+    if(!find_attribute_index_by_name(model, name, name_size, idx)) { return 3; }
+    set_property(model, idx, value);
     return 0;
 }
 
@@ -849,7 +975,8 @@ extern "C" void* create_circuit(int* elements,
     }
 
     double* curr_prop = properties;  // current 'properties', for we don't know the length of properties
-    ::std::size_t curr_i{};          // curr_i distinguishes from i, indicating which non-ground element // TODO If ground elements are to be prohibited in elements, curr_i needs to be removed
+    ::std::size_t curr_i{};  // curr_i distinguishes from i, indicating which non-ground element // TODO If ground elements are to be prohibited in elements,
+                             // curr_i needs to be removed
     for(::std::size_t i{}; i < ele_size; ++i)
     {
         // vec_pos and chunk_pos maintain order, this is important
@@ -1006,7 +1133,8 @@ extern "C" void* create_circuit_ex(int* elements,
                     return nullptr;
                 }
 
-                auto design = ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
+                auto design =
+                    ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
                 if(design->modules.empty())
                 {
                     ::std::free(model_pos_arr);

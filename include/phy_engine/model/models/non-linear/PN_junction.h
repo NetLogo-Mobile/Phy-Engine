@@ -1,4 +1,5 @@
 #pragma once
+#include <complex>
 #include <fast_io/fast_io_dsal/string_view.h>
 #include "../../model_refs/base.h"
 
@@ -20,6 +21,8 @@ namespace phy_engine::model
         double Bv{40.0};
         bool Bv_set{true};
         double Area{1.0};
+        // Transit time (seconds). When >0, enables diffusion capacitance approximation Cd ~= tt * dId/dV = tt * geq.
+        double tt{0.0};
 
         ::phy_engine::model::pin pins[2]{{{u8"A"}}, {{u8"B"}}};
 
@@ -33,6 +36,10 @@ namespace phy_engine::model
         double Ud_last{};
         double geq{};
         double Ieq{};
+
+        // Trapezoidal companion state for diffusion capacitance (Norton equivalent).
+        double tr_hist_current{};  // history current
+        double tr_prev_g{};        // 2*C/dt from previous step
     };
 
     static_assert(::phy_engine::model::model<PN_junction>);
@@ -149,6 +156,12 @@ namespace phy_engine::model
                 pn.Area = vi.d;
                 return true;
             }
+            case 9:
+            {
+                if(vi.type != ::phy_engine::model::variant_type::d) [[unlikely]] { return false; }
+                pn.tt = vi.d;
+                return true;
+            }
             default:
             {
                 return false;
@@ -200,6 +213,10 @@ namespace phy_engine::model
             {
                 return {.d{pn.Area}, .type{::phy_engine::model::variant_type::d}};
             }
+            case 9:
+            {
+                return {.d{pn.tt}, .type{::phy_engine::model::variant_type::d}};
+            }
             default:
             {
                 return {};
@@ -249,6 +266,10 @@ namespace phy_engine::model
             case 8:
             {
                 return u8"Area";
+            }
+            case 9:
+            {
+                return u8"tt";
             }
 
             default:
@@ -371,22 +392,33 @@ namespace phy_engine::model
 
     static_assert(::phy_engine::model::defines::can_iterate_dc<PN_junction>);
 
-    inline constexpr bool iterate_ac_define(::phy_engine::model::model_reserve_type_t<PN_junction>,
-                                            PN_junction& pn,
-                                            ::phy_engine::MNA::MNA& mna,
-                                            [[maybe_unused]] double omega) noexcept
+    inline constexpr bool
+        iterate_ac_define(::phy_engine::model::model_reserve_type_t<PN_junction>, PN_junction& pn, ::phy_engine::MNA::MNA& mna, double omega) noexcept
     {
         auto const node_0{pn.pins[0].nodes};
         auto const node_1{pn.pins[1].nodes};
         if(node_0 && node_1) [[likely]]
         {
-
             mna.G_ref(node_0->node_index, node_0->node_index) += pn.geq;
             mna.G_ref(node_0->node_index, node_1->node_index) -= pn.geq;
             mna.G_ref(node_1->node_index, node_0->node_index) -= pn.geq;
             mna.G_ref(node_1->node_index, node_1->node_index) += pn.geq;
             // In small-signal AC analysis, only the incremental conductance is stamped.
             // The equivalent current source from DC linearization (Ieq) must NOT be injected.
+
+            // Diffusion capacitance approximation (optional): Cd ~= tt * dId/dV = tt * geq.
+            if(omega != 0.0 && pn.tt > 0.0 && pn.geq > 0.0)
+            {
+                double const cd{pn.tt * pn.geq};
+                if(cd > 0.0)
+                {
+                    ::std::complex<double> const y{0.0, cd * omega};
+                    mna.G_ref(node_0->node_index, node_0->node_index) += y;
+                    mna.G_ref(node_0->node_index, node_1->node_index) -= y;
+                    mna.G_ref(node_1->node_index, node_0->node_index) -= y;
+                    mna.G_ref(node_1->node_index, node_1->node_index) += y;
+                }
+            }
         }
 
         return true;
@@ -397,21 +429,79 @@ namespace phy_engine::model
     inline constexpr bool step_changed_tr_define(::phy_engine::model::model_reserve_type_t<PN_junction>,
                                                  PN_junction& pn,
                                                  [[maybe_unused]] double nlaststep,
-                                                 [[maybe_unused]] double nstep) noexcept
+                                                 double nstep) noexcept
     {
         auto const node_0{pn.pins[0].nodes};
         auto const node_1{pn.pins[1].nodes};
 
-        if(node_0 && node_1) [[likely]] { pn.Ud_last = node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real(); }
+        if(node_0 && node_1) [[likely]]
+        {
+            pn.Ud_last = node_0->node_information.an.voltage.real() - node_1->node_information.an.voltage.real();
+
+            // Update diffusion-capacitance trapezoidal companion for the coming time step.
+            // Use the previous converged operating point's geq to form Cd = tt * geq.
+            if(!(nstep > 0.0) || !(pn.tt > 0.0) || !(pn.geq > 0.0))
+            {
+                pn.tr_hist_current = 0.0;
+                pn.tr_prev_g = 0.0;
+                return true;
+            }
+
+            double const cd{pn.tt * pn.geq};
+            if(!(cd > 0.0))
+            {
+                pn.tr_hist_current = 0.0;
+                pn.tr_prev_g = 0.0;
+                return true;
+            }
+
+            double const v_prev{pn.Ud_last};
+            double const g_new{2.0 * cd / nstep};
+            pn.tr_hist_current = -(g_new + pn.tr_prev_g) * v_prev - pn.tr_hist_current;
+            pn.tr_prev_g = g_new;
+        }
 
         return true;
     }
 
-    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<PN_junction>, PN_junction& pn) noexcept
+    inline constexpr bool iterate_tr_define(::phy_engine::model::model_reserve_type_t<PN_junction>,
+                                            PN_junction& pn,
+                                            ::phy_engine::MNA::MNA& mna,
+                                            [[maybe_unused]] double /*t_time*/) noexcept
     {
-        return {pn.pins, 2};
+        // Non-linear diode conduction (same as DC stamping) in parallel with an optional diffusion-capacitance companion.
+        (void)iterate_dc_define(::phy_engine::model::model_reserve_type<PN_junction>, pn, mna);
+
+        auto const node_0{pn.pins[0].nodes};
+        auto const node_1{pn.pins[1].nodes};
+        if(node_0 && node_1 && pn.tr_prev_g != 0.0)
+        {
+            double const geq{pn.tr_prev_g};
+            double const Ieq{pn.tr_hist_current};
+
+            mna.G_ref(node_0->node_index, node_0->node_index) += geq;
+            mna.G_ref(node_0->node_index, node_1->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_0->node_index) -= geq;
+            mna.G_ref(node_1->node_index, node_1->node_index) += geq;
+
+            mna.I_ref(node_0->node_index) -= Ieq;
+            mna.I_ref(node_1->node_index) += Ieq;
+        }
+
+        return true;
     }
 
+    inline constexpr bool iterate_trop_define(::phy_engine::model::model_reserve_type_t<PN_junction>, PN_junction& pn, ::phy_engine::MNA::MNA& mna) noexcept
+    {
+        // Transient operating point: capacitive parts open-circuit -> use DC stamping only.
+        return iterate_dc_define(::phy_engine::model::model_reserve_type<PN_junction>, pn, mna);
+    }
+
+    inline constexpr ::phy_engine::model::pin_view generate_pin_view_define(::phy_engine::model::model_reserve_type_t<PN_junction>, PN_junction& pn) noexcept
+    { return {pn.pins, 2}; }
+
     static_assert(::phy_engine::model::defines::can_generate_pin_view<PN_junction>);
+    static_assert(::phy_engine::model::defines::can_iterate_tr<PN_junction>);
+    static_assert(::phy_engine::model::defines::can_iterate_trop<PN_junction>);
 
 }  // namespace phy_engine::model

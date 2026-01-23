@@ -331,6 +331,51 @@ namespace phy_engine::model
                 }
                 else
                 {
+                    // Generic fallback: if a model exposes a numeric attribute named "Temp",
+                    // propagate the environment temperature via set_attribute() and recompute
+                    // its foundation quantities (Ut, cached limits, etc.) when possible.
+                    if constexpr(::phy_engine::model::defines::has_set_attribute<mod> && ::phy_engine::model::defines::has_get_attribute_name<mod>)
+                    {
+                        auto const ascii_ieq = [](char a, char b) constexpr noexcept
+                        {
+                            auto const ua = static_cast<unsigned char>(a);
+                            auto const ub = static_cast<unsigned char>(b);
+                            auto const la = (ua >= 'A' && ua <= 'Z') ? static_cast<unsigned char>(ua + ('a' - 'A')) : ua;
+                            auto const lb = (ub >= 'A' && ub <= 'Z') ? static_cast<unsigned char>(ub + ('a' - 'A')) : ub;
+                            return la == lb;
+                        };
+
+                        auto const name_is_temp = [&](::fast_io::u8string_view n) constexpr noexcept
+                        {
+                            if(n.size() != 4) { return false; }
+                            auto const* p = reinterpret_cast<char const*>(n.data());
+                            return ascii_ieq(p[0], 't') && ascii_ieq(p[1], 'e') && ascii_ieq(p[2], 'm') && ascii_ieq(p[3], 'p');
+                        };
+
+                        constexpr ::std::size_t kMaxScan{512};
+                        constexpr ::std::size_t kMaxConsecutiveEmpty{64};
+                        ::std::size_t empty_run{};
+                        bool seen_any{};
+                        for(::std::size_t idx{}; idx < kMaxScan; ++idx)
+                        {
+                            auto const n = this->get_attribute_name(idx);
+                            if(n.empty())
+                            {
+                                if(seen_any && ++empty_run >= kMaxConsecutiveEmpty) { break; }
+                                continue;
+                            }
+                            seen_any = true;
+                            empty_run = 0;
+                            if(!name_is_temp(n)) { continue; }
+
+                            (void)this->set_attribute(idx, {.d{temp}, .type{::phy_engine::model::variant_type::d}});
+                            if constexpr(::phy_engine::model::defines::can_prepare_foundation<mod>)
+                            {
+                                (void)prepare_foundation_define(::phy_engine::model::model_reserve_type<rcvmod_type>, m);
+                            }
+                            return true;
+                        }
+                    }
                     return true;
                 }
             }
@@ -791,4 +836,3 @@ namespace phy_engine::model
     };
 
 }  // namespace phy_engine::model
-
