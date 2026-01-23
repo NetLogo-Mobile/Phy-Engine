@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <limits>
 
 #include <fast_io/fast_io_dsal/string_view.h>
 
@@ -101,7 +102,8 @@ namespace phy_engine::model
         template <bool is_pmos>
         inline constexpr void attach_body_diodes([[maybe_unused]] ::phy_engine::model::node_t* nd,
                                                  [[maybe_unused]] ::phy_engine::model::node_t* ns,
-                                                 [[maybe_unused]] ::phy_engine::model::node_t* nb,
+                                                 [[maybe_unused]] ::phy_engine::model::node_t* nb_db,
+                                                 [[maybe_unused]] ::phy_engine::model::node_t* nb_sb,
                                                  [[maybe_unused]] PN_junction& db,
                                                  [[maybe_unused]] PN_junction& sb) noexcept
         {
@@ -109,18 +111,28 @@ namespace phy_engine::model
             {
                 // p+ diffusion to n-well: anode at D/S, cathode at B
                 db.pins[0].nodes = nd;
-                db.pins[1].nodes = nb;
+                db.pins[1].nodes = nb_db;
                 sb.pins[0].nodes = ns;
-                sb.pins[1].nodes = nb;
+                sb.pins[1].nodes = nb_sb;
             }
             else
             {
                 // p-sub to n+ diffusion: anode at B, cathode at D/S
-                db.pins[0].nodes = nb;
+                db.pins[0].nodes = nb_db;
                 db.pins[1].nodes = nd;
-                sb.pins[0].nodes = nb;
+                sb.pins[0].nodes = nb_sb;
                 sb.pins[1].nodes = ns;
             }
+        }
+
+        template <bool is_pmos>
+        inline constexpr void attach_body_diodes([[maybe_unused]] ::phy_engine::model::node_t* nd,
+                                                 [[maybe_unused]] ::phy_engine::model::node_t* ns,
+                                                 [[maybe_unused]] ::phy_engine::model::node_t* nb,
+                                                 [[maybe_unused]] PN_junction& db,
+                                                 [[maybe_unused]] PN_junction& sb) noexcept
+        {
+            attach_body_diodes<is_pmos>(nd, ns, nb, nb, db, sb);
         }
 
         inline constexpr void stamp_gm_gds_gmb(::phy_engine::MNA::MNA& mna,
@@ -158,6 +170,45 @@ namespace phy_engine::model
             mna.I_ref(ns->node_index) += Ieq;
         }
 
+        // Stamp a general nonlinear current source I(Vd,Vg,Vs,Vb) flowing from terminal a -> terminal b.
+        // Linearization uses: I ≈ dI/dVd*Vd + dI/dVg*Vg + dI/dVs*Vs + dI/dVb*Vb + Ieq.
+        inline constexpr void stamp_current_4node(::phy_engine::MNA::MNA& mna,
+                                                  ::phy_engine::model::node_t* a,
+                                                  ::phy_engine::model::node_t* b,
+                                                  ::phy_engine::model::node_t* nd,
+                                                  ::phy_engine::model::node_t* ng,
+                                                  ::phy_engine::model::node_t* ns,
+                                                  ::phy_engine::model::node_t* nb,
+                                                  double dId_dVd,
+                                                  double dId_dVg,
+                                                  double dId_dVs,
+                                                  double dId_dVb,
+                                                  double Ieq) noexcept
+        {
+            if(a == nullptr || b == nullptr || nd == nullptr || ng == nullptr || ns == nullptr || nb == nullptr) [[unlikely]] { return; }
+
+            auto const ai{a->node_index};
+            auto const bi{b->node_index};
+            auto const di{nd->node_index};
+            auto const gi{ng->node_index};
+            auto const si{ns->node_index};
+            auto const bi_ctrl{nb->node_index};
+
+            // Row a (current leaving a)
+            mna.G_ref(ai, di) += dId_dVd;
+            mna.G_ref(ai, gi) += dId_dVg;
+            mna.G_ref(ai, si) += dId_dVs;
+            mna.G_ref(ai, bi_ctrl) += dId_dVb;
+            mna.I_ref(ai) -= Ieq;
+
+            // Row b (current entering b)
+            mna.G_ref(bi, di) -= dId_dVd;
+            mna.G_ref(bi, gi) -= dId_dVg;
+            mna.G_ref(bi, si) -= dId_dVs;
+            mna.G_ref(bi, bi_ctrl) -= dId_dVb;
+            mna.I_ref(bi) += Ieq;
+        }
+
         inline constexpr void stamp_resistor(::phy_engine::MNA::MNA& mna, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b, double r) noexcept
         {
             if(a == nullptr || b == nullptr) [[unlikely]] { return; }
@@ -168,6 +219,29 @@ namespace phy_engine::model
             mna.G_ref(a->node_index, b->node_index) -= g;
             mna.G_ref(b->node_index, a->node_index) -= g;
             mna.G_ref(b->node_index, b->node_index) += g;
+        }
+
+        inline constexpr void stamp_current_2node(::phy_engine::MNA::MNA& mna,
+                                                  ::phy_engine::model::node_t* a,
+                                                  ::phy_engine::model::node_t* b,
+                                                  double dId_dVa,
+                                                  double dId_dVb,
+                                                  double Ieq) noexcept
+        {
+            if(a == nullptr || b == nullptr) [[unlikely]] { return; }
+
+            auto const ai{a->node_index};
+            auto const bi{b->node_index};
+
+            // Row a (current leaving a)
+            mna.G_ref(ai, ai) += dId_dVa;
+            mna.G_ref(ai, bi) += dId_dVb;
+            mna.I_ref(ai) -= Ieq;
+
+            // Row b (current entering b)
+            mna.G_ref(bi, ai) -= dId_dVa;
+            mna.G_ref(bi, bi) -= dId_dVb;
+            mna.I_ref(bi) += Ieq;
         }
 
         inline double bsim3v32_junction_cap(double cj0, double vj, double pb, double m, double fc) noexcept
@@ -670,7 +744,8 @@ namespace phy_engine::model
             double const nch{nch_eff > 1.0 ? nch_eff : 1e23};  // 1/m^3
             Real const xdep{bsim3v32_sqrt(2.0 * k_eps_si * bsim3v32_max(phi_s - vbseff, 1e-12) / (k_q * nch))};
             double const xdep0{::std::sqrt(2.0 * k_eps_si * phi_s / (k_q * nch))};
-            double const lt0{::std::sqrt((k_eps_si / k_eps_ox) * tox * xdep0)};
+            double const xj_eff{::std::max(m.xj, 0.0)};
+            double const lt0{::std::sqrt((k_eps_si / k_eps_ox) * tox * (xj_eff > 0.0 ? xj_eff : xdep0))};
             Real lt{bsim3v32_sqrt((k_eps_si / k_eps_ox) * tox * xdep)};
             double const dvt2_eff{details::bsim3v32_lw_scale(m.dvt2, m.ldvt2, m.wdvt2, m.pdvt2, leff, weff, m.lref, m.wref)};
             lt *= (1.0 + dvt2_eff * vbseff);
@@ -708,6 +783,7 @@ namespace phy_engine::model
             double const nfactor_eff_raw{details::bsim3v32_lw_scale(m.nfactor, m.lnfactor, m.wnfactor, m.pnfactor, leff, weff, m.lref, m.wref)};
             double const cit_eff{details::bsim3v32_lw_scale(m.cit, m.lcit, m.wcit, m.pcit, leff, weff, m.lref, m.wref)};
             Real n{1.0 + (nfactor_eff_raw > 0.0 ? nfactor_eff_raw : 0.0)};
+            n *= (1.0 + (m.noff > 0.0 ? m.noff : 0.0));
             n += (cd + cit_eff) / cox;
             if(bsim3v32_value(n) < 1.0) { n = 1.0; }
 
@@ -752,8 +828,18 @@ namespace phy_engine::model
             }
 
             // Mobility (mobMod=3 default)
-            Real ueff{bsim3v32_ueff_mobmod3(u0, ua_eff, ub_eff, uc_eff, vgsteff, vbseff, tox, vt)};
-            if(bsim3v32_value(ueff) <= 0.0) { ueff = u0; }
+            Real ueff{};
+            if(m.mobMod < 0.5)
+            {
+                // mobMod==0: constant mobility
+                ueff = u0;
+            }
+            else
+            {
+                // mobMod!=0: default to the mobMod=3 style model (clean-room subset).
+                ueff = bsim3v32_ueff_mobmod3(u0, ua_eff, ub_eff, uc_eff, vgsteff, vbseff, tox, vt);
+                if(bsim3v32_value(ueff) <= 0.0) { ueff = u0; }
+            }
 
             // Abulk (start with 1, keep hooks for keta)
             Real abulk{1.0};
@@ -857,6 +943,103 @@ namespace phy_engine::model
             return ids;
         }
 
+        template <typename Real>
+        inline Real bsim3v32_pos_smooth(Real x) noexcept
+        {
+            Real const ax{bsim3v32_abs_smooth(x)};
+            return 0.5 * (x + ax);
+        }
+
+        template <typename Mos, typename Real>
+        inline Real bsim3v32_gidl_drain_s(Mos const& m, Real vgs_s, Real vds_s, Real vbs_s) noexcept
+        {
+            // Clean-room GIDL model (subset).
+            // Current flows from drain diffusion -> bulk in the signed (n-type) coordinate.
+            //
+            // Effective fields:
+            //   Vdg = max(Vd - Vg - egidl, 0), Vdb = max(Vd - Vb, 0)
+            //
+            // I_gidl ≈ agidl * Weff * Vdb * exp(-bgidl / (Vdg + cgidl))
+            double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
+            if(!(weff > 0.0)) { return Real{}; }
+            if(!(m.agidl > 0.0) || !(m.bgidl > 0.0)) { return Real{}; }
+
+            Real const vgd_s{vgs_s - vds_s};  // Vg - Vd (signed)
+            Real const vbd_s{vbs_s - vds_s};  // Vb - Vd (signed)
+            Real const vdg_eff{bsim3v32_pos_smooth(-vgd_s - m.egidl)};
+            Real const vdb_eff{bsim3v32_pos_smooth(-vbd_s)};
+
+            Real denom{vdg_eff + m.cgidl};
+            if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
+            Real const expo{bsim3v32_exp(Real{-m.bgidl} / denom)};
+            return Real{m.agidl * weff} * vdb_eff * expo;
+        }
+
+        template <typename Mos, typename Real>
+        inline Real bsim3v32_gidl_source_s(Mos const& m, Real vgs_s, Real /*vds_s*/, Real vbs_s) noexcept
+        {
+            // Clean-room GISL model (subset).
+            // Current flows from source diffusion -> bulk in the signed (n-type) coordinate.
+            double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
+            if(!(weff > 0.0)) { return Real{}; }
+
+            // If explicit GISL params are unset, fall back to GIDL params.
+            double const ag{(m.agisl > 0.0) ? m.agisl : m.agidl};
+            double const bg{(m.bgisl > 0.0) ? m.bgisl : m.bgidl};
+            double const cg{(m.cgisl >= 0.0) ? m.cgisl : m.cgidl};
+            double const eg{(m.egisl >= 0.0) ? m.egisl : m.egidl};
+            if(!(ag > 0.0) || !(bg > 0.0)) { return Real{}; }
+
+            Real const vsg_eff{bsim3v32_pos_smooth(-vgs_s - eg)};  // Vs - Vg - egisl
+            Real const vsb_eff{bsim3v32_pos_smooth(-vbs_s)};       // Vs - Vb
+
+            Real denom{vsg_eff + cg};
+            if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
+            Real const expo{bsim3v32_exp(Real{-bg} / denom)};
+            return Real{ag * weff} * vsb_eff * expo;
+        }
+
+        template <typename Mos, typename Real>
+        inline Real bsim3v32_igb_s(Mos const& m, Real vgb_s) noexcept
+        {
+            // Clean-room simplified gate-to-bulk leakage (subset):
+            // Ig (G -> B) ≈ aigb * Weff * Leff * Vgb^2 * exp(-bigb / (Vgb + cigb)),
+            // where Vgb = max(vgb_s - eigb, 0).
+            if(!(m.aigb > 0.0) || !(m.bigb > 0.0)) { return Real{}; }
+            double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
+            double const leff{::std::max(m.L - 2.0 * ::std::max(m.dlc, 0.0), 1e-18)};
+            if(!(weff > 0.0) || !(leff > 0.0)) { return Real{}; }
+
+            Real const vgb_eff{bsim3v32_pos_smooth(vgb_s - m.eigb)};
+            Real denom{vgb_eff + m.cigb};
+            if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
+            Real const expo{bsim3v32_exp(Real{-m.bigb} / denom)};
+            return Real{m.aigb * weff * leff} * vgb_eff * vgb_eff * expo;
+        }
+
+        template <typename Mos, typename Real>
+        inline Real bsim3v32_impact_ionization_s(Mos const& m, Real ids_s, Real vds_s) noexcept
+        {
+            // Clean-room impact ionization / substrate current model (subset).
+            //
+            // Iii is modeled as a drain-to-bulk current source proportional to channel current magnitude.
+            // A simple smooth form:
+            //   vds_eff = max(Vds - vdsatii, 0)
+            //   Iii ≈ |Ids| * alpha0 * vds_eff * exp(-beta0 / vds_eff)
+            //
+            // alpha0 [1/V], beta0 [V], vdsatii [V]
+            if(!(m.alpha0 > 0.0) || !(m.beta0 > 0.0)) { return Real{}; }
+
+            Real const vds_eff{bsim3v32_pos_smooth(vds_s - m.vdsatii)};
+            if(!(bsim3v32_value(vds_eff) > 0.0)) { return Real{}; }
+
+            Real denom{vds_eff};
+            if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
+            Real const expo{bsim3v32_exp(Real{-m.beta0} / denom)};
+            Real const ids_mag{bsim3v32_abs_smooth(ids_s)};
+            return Real{m.alpha0} * ids_mag * vds_eff * expo;
+        }
+
         template <typename Mos>
         inline void
             bsim3v32_meyer_intrinsic_caps(Mos const& m, double vgs_s, double vds_s, double vbs_s, double vt, double& cgs, double& cgd, double& cgb) noexcept
@@ -945,56 +1128,49 @@ namespace phy_engine::model
 
             Real const qb_n{coxwl * k1ox * (sqrt_phi_vbs - sqrt_phi)};  // bulk (depletion) charge (approx)
 
-            // Inversion charge (clean-room, long-channel baseline).
+            // Inversion charge (clean-room, long-channel baseline), with a smooth linear/saturation blend.
             // - Linear:  Qinv ≈ -CoxWL*(Vgsteff - Abulk*Vdseff/2)
             // - Saturation: Qinv ≈ -(2/3)*CoxWL*Vgsteff
             double const keta_eff{details::bsim3v32_lw_scale(
                 m.keta, m.lketa, m.wketa, m.pketa, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
             Real const abulk{1.0 + keta_eff * vbseff};
-            bool const is_linear{bsim3v32_value(c.vdseff) < bsim3v32_value(c.vdsat)};
-            Real qinv_n{};
-            if(is_linear) { qinv_n = -coxwl * (c.vgsteff - abulk * c.vdseff / 2.0); }
-            else
-            {
-                qinv_n = -(2.0 / 3.0) * coxwl * c.vgsteff;
-            }
 
-            // Channel inversion charge partition (clean-room, charge-conserving):
+            // Smooth linear/saturation blending around Vdsat to keep C(V) continuous.
+            Real const s_reg{c.vdseff - c.vdsat};
+            Real const abs_s_reg{bsim3v32_abs_smooth(s_reg)};
+            Real const f_sat{0.5 * (1.0 + s_reg / bsim3v32_max(abs_s_reg, 1e-24))};  // 0->linear, 1->sat
+
+            Real const qinv_lin{-coxwl * (c.vgsteff - abulk * c.vdseff / 2.0)};
+            Real const qinv_sat{-(2.0 / 3.0) * coxwl * c.vgsteff};
+            Real const qinv_n{(1.0 - f_sat) * qinv_lin + f_sat * qinv_sat};
+
+            // Channel inversion charge partition (charge-conserving), smoothly blended across Vdsat.
             // - Linear region: Ward–Dutton partition (bias-dependent).
             // - Saturation: xpart selects 0/100, 50/50, or 40/60 partition.
-            Real qd_n{};
-            Real qs_n{};
-            if(is_linear)
-            {
-                // Ward–Dutton with a linear channel potential approximation.
-                qd_n = -coxwl * (0.5 * c.vgsteff - (abulk * c.vdseff) / 3.0);
-                qs_n = qinv_n - qd_n;
-            }
-            else
-            {
-                // xpart selection: 0.0 -> 0/100; 0.5 -> 50/50; 1.0 -> 40/60.
-                double frac_d{};
-                if(m.xpart < 0.25) { frac_d = 0.0; }
-                else if(m.xpart < 0.75) { frac_d = 0.5; }
-                else
-                {
-                    frac_d = 0.4;
-                }
+            Real const qd_lin{-coxwl * (0.5 * c.vgsteff - (abulk * c.vdseff) / 3.0)};
 
-                qd_n = frac_d * qinv_n;
-                qs_n = (1.0 - frac_d) * qinv_n;
-            }
+            double frac_d{};
+            if(m.xpart < 0.25) { frac_d = 0.0; }
+            else if(m.xpart < 0.75) { frac_d = 0.5; }
+            else { frac_d = 0.4; }
+            Real const qd_sat{frac_d * qinv_sat};
+
+            Real const qd_n{(1.0 - f_sat) * qd_lin + f_sat * qd_sat};
+            Real const qs_n{qinv_n - qd_n};
 
             Real const qg_n{-(qinv_n + qb_n)};
             Real qb_adj_n{qb_n};
 
             // Depletion/accumulation gate-bulk charge (clean-room simplified):
-            // - Add an extra G-B term in depletion to avoid near-zero Cgb in cutoff when capMod!=0.
+            // - Add an extra G-B term in depletion to avoid near-zero Cgb in cutoff when using the charge-based path.
             // - Keep it smoothly disabled in strong inversion based on Vgs-Vth (signed coordinate).
             //
-            // Approximate flatband as Vfb ≈ Vth0(T) - phi (BSIM3 uses phi as surface potential).
-            double const vth0_t{bsim3v32_vth0_temp_mag(m.Vth0, m.Temp, m.tnom, m.kt1, m.kt2)};
-            double const vfb{vth0_t - phi_s};
+            // Approximate flatband as Vfb ≈ Vth0(T) - phi_s.
+            // Keep geometry scaling consistent with the DC core.
+            double const vth0_eff_geom{details::bsim3v32_lw_scale(
+                m.Vth0, m.lvth0, m.wvth0, m.pvth0, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const vth0_t{bsim3v32_vth0_temp_mag(vth0_eff_geom, m.Temp, m.tnom, m.kt1, m.kt2)};
+            double const vfb{::std::isfinite(m.vfbcv) ? m.vfbcv : (vth0_t - phi_s)};
             Real const vgb{vgs_s - vbs_s};
             Real const x{vgb - vfb};
             Real const abs_x{bsim3v32_abs_smooth(x)};
@@ -1003,12 +1179,30 @@ namespace phy_engine::model
             Real const maxx{0.5 * (x + abs_x)};
 
             // Smooth cutoff factor based on Vgs-Vth (signed coordinate from DC cache).
-            Real const vgst{vgs_s - c.vth};
+            double const voff_eff{details::bsim3v32_lw_scale(
+                m.voff, m.lvoff, m.wvoff, m.pvoff, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const voffcv_eff{::std::isfinite(m.voffcv)
+                                        ? details::bsim3v32_lw_scale(m.voffcv,
+                                                                    m.lvoffcv,
+                                                                    m.wvoffcv,
+                                                                    m.pvoffcv,
+                                                                    bsim3v32_value(c.leff),
+                                                                    bsim3v32_value(c.weff),
+                                                                    m.lref,
+                                                                    m.wref)
+                                        : voff_eff};
+            Real const vgst{vgs_s - c.vth - voffcv_eff};
             Real const abs_vgst{bsim3v32_abs_smooth(vgst)};
             Real const f_cut{0.5 * (1.0 - vgst / bsim3v32_max(abs_vgst, 1e-24))};
 
-            Real const qacc_g{coxwl * minx};         // <= 0 in accumulation (NMOS)
-            Real const qdep_g{coxwl * maxx * f_cut}; // >= 0 in depletion/cutoff; fades out in inversion
+            // Use Cox in accumulation, and an effective (Cox||Cdep) in depletion to mimic MOS C-V behavior.
+            // This makes CV parameters like vfbcv observable in small-signal analyses.
+            Real const xdep{bsim3v32_sqrt(2.0 * k_eps_si * bsim3v32_max(phi_s - vbseff, 1e-12) / (k_q * nch_eff))};
+            Real const cdep_per_area{k_eps_si / bsim3v32_max(xdep, 1e-18)};
+            Real const cdep_wl{coxwl * (cdep_per_area / bsim3v32_max(c.cox + cdep_per_area, 1e-24))};
+
+            Real const qacc_g{coxwl * minx};              // <= 0 in accumulation (NMOS)
+            Real const qdep_g{cdep_wl * maxx * f_cut};    // >= 0 in depletion/cutoff; fades out in inversion
 
             qb_adj_n += -(qacc_g + qdep_g);
             Real const qg_adj{qg_n + qacc_g + qdep_g};
@@ -1083,6 +1277,17 @@ namespace phy_engine::model
                     mna.G_ref(ri, cj) += ::std::complex<double>{0.0, omega * c};
                 }
             }
+        }
+
+        inline constexpr void add_linear_cap_to_cmat(double cmat[4][4], int a, int b, double c) noexcept
+        {
+            // Add a two-terminal capacitor between nodes a and b into the charge Jacobian matrix:
+            // Q_a += C*(Va - Vb), Q_b -= C*(Va - Vb)
+            if(!(c > 0.0)) { return; }
+            cmat[a][a] += c;
+            cmat[a][b] -= c;
+            cmat[b][a] -= c;
+            cmat[b][b] += c;
         }
 
         inline constexpr void
@@ -1179,6 +1384,14 @@ namespace phy_engine::model
         // Optional terminal series resistances (Ohm). When >0, use internal D'/S' nodes.
         double Rd{0.0};
         double Rs{0.0};
+        // Optional bulk series resistance (Ohm). When >0 and bulk pin is connected, use internal B' node.
+        double Rb{0.0};
+        // Optional distributed body resistances (Ohm, clean-room simplified BSIM3-style subset):
+        // When >0 and bulk pin is connected, use additional internal nodes near each junction:
+        // - rbdb: between B' and the drain-body diode's local body node (B'd)
+        // - rbsb: between B' and the source-body diode's local body node (B's)
+        double rbdb{0.0};
+        double rbsb{0.0};
         // BSIM3 sheet resistance model (clean-room subset):
         // - rsh: sheet resistance (Ohm/square)
         // - nrd/nrs: drain/source diffusion squares
@@ -1193,10 +1406,13 @@ namespace phy_engine::model
 
         // Charge/capacitance model controls (BSIM3 names).
         // Note: BSIM3/NGSPICE default capMod is typically 3. For now:
-        // - capMod == 0: use a Meyer-style intrinsic C model
-        // - capMod != 0: use a charge-based intrinsic C-matrix (clean-room simplified, WIP)
+        // - capMod < 2.5: use a Meyer-style intrinsic C model (capMod=0/1/2)
+        // - capMod >= 2.5: use a charge-based intrinsic C-matrix (capMod=3), clean-room simplified, WIP
         double capMod{3.0};
         double xpart{0.0};  // 0.0=0/100, 0.5=50/50, 1.0=40/60
+        double mobMod{3.0};
+        double vfbcv{::std::numeric_limits<double>::quiet_NaN()};
+        double acm{0.0};  // overlap charge mode (clean-room subset): 0=fixed caps, !=0=charge-based (capMod>=2.5 only)
 
         // Core parameters (temporary approximation; will be replaced with full BSIM3v3.2 set)
         double Kp{50e-6};    // A/V^2 (interpreted as μ*Cox)
@@ -1311,6 +1527,9 @@ namespace phy_engine::model
         double lvoff{0.0};
         double wvoff{0.0};
         double pvoff{0.0};
+        double lvoffcv{0.0};
+        double wvoffcv{0.0};
+        double pvoffcv{0.0};
         double lnch{0.0};
         double wnch{0.0};
         double pnch{0.0};
@@ -1325,6 +1544,7 @@ namespace phy_engine::model
         // Units follow the BSIM3 manuals (SI for geometry, V, and A; mobility in m^2/Vs).
         double tox{1e-8};    // m
         double toxm{1e-8};   // m (extraction oxide thickness)
+        double xj{0.0};      // m (junction depth, used for short-channel/DIBL scaling; 0 -> derived fallback)
         double nch{1.7e23};  // 1/m^3 (channel doping)
         double u0{0.0};      // m^2/Vs (if 0, derived from Kp/Cox)
         double ua{0.0};
@@ -1350,8 +1570,10 @@ namespace phy_engine::model
         double etab{0.0};
 
         double nfactor{0.0};
+        double noff{0.0};  // clean-room subset: additional subthreshold slope factor
         double cit{0.0};
         double voff{0.0};
+        double voffcv{::std::numeric_limits<double>::quiet_NaN()};
 
         // CLM / DIBL / SCBE
         double pclm{0.0};
@@ -1372,6 +1594,38 @@ namespace phy_engine::model
         double prwb{0.0};  // 1/V
 
         double keta{0.0};
+
+        // Gate-induced drain/source leakage (GIDL/GISL) (clean-room subset).
+        // Units:
+        // - agidl/agisl: A/(m*V) (scaled by Weff and multiplied by Vdb/Vsb)
+        // - bgidl/bgisl: V
+        // - cgidl/cgisl: V
+        // - egidl/egisl: V
+        double agidl{0.0};
+        double bgidl{0.0};
+        double cgidl{0.0};
+        double egidl{0.0};
+        double agisl{0.0};
+        double bgisl{0.0};
+        double cgisl{-1.0};  // <0 => fall back to cgidl
+        double egisl{-1.0};  // <0 => fall back to egidl
+
+        // Gate-to-bulk leakage (clean-room simplified subset).
+        // Units:
+        // - aigb: A/V^2 scaled by Weff*Leff
+        // - bigb: V
+        // - cigb: V
+        // - eigb: V (threshold shift)
+        double aigb{0.0};
+        double bigb{0.0};
+        double cigb{0.0};
+        double eigb{0.0};
+
+        // Impact ionization / substrate current (clean-room subset).
+        // alpha0: 1/V, beta0: V, vdsatii: V
+        double alpha0{0.0};
+        double beta0{0.0};
+        double vdsatii{0.0};
 
         // Optional fixed capacitances (F) - placeholder for full charge-based C/V model
         double Cgs{0.0};
@@ -1489,10 +1743,13 @@ namespace phy_engine::model
         double cmat_tr_hist[4]{};
 
         // Internal nodes (only used when Rd/Rs > 0).
-        ::phy_engine::model::node_t internal_nodes[3]{};  // packed prefix of used nodes
+        ::phy_engine::model::node_t internal_nodes[6]{};  // packed prefix of used nodes
         ::phy_engine::model::node_t* nd_int{};            // D'
         ::phy_engine::model::node_t* ns_int{};            // S'
         ::phy_engine::model::node_t* ng_int{};            // G'
+        ::phy_engine::model::node_t* nb_int{};            // B'
+        ::phy_engine::model::node_t* nbd_int{};           // B'd (local body near drain junction)
+        ::phy_engine::model::node_t* nbs_int{};           // B's (local body near source junction)
     };
 
     using bsim3v32_nmos = bsim3v32_mos<false>;
@@ -1628,12 +1885,39 @@ namespace phy_engine::model
             case 219: m.lphi = vi.d; return true;
             case 220: m.wphi = vi.d; return true;
             case 221: m.pphi = vi.d; return true;
+            case 222: m.xj = vi.d; return true;
+            case 223: m.mobMod = vi.d; return true;
+            case 224: m.vfbcv = vi.d; return true;
+            case 225: m.acm = vi.d; return true;
+            case 226: m.voffcv = vi.d; return true;
+            case 227: m.lvoffcv = vi.d; return true;
+            case 228: m.wvoffcv = vi.d; return true;
+            case 229: m.pvoffcv = vi.d; return true;
+            case 230: m.agidl = vi.d; return true;
+            case 231: m.bgidl = vi.d; return true;
+            case 232: m.cgidl = vi.d; return true;
+            case 233: m.egidl = vi.d; return true;
+            case 234: m.agisl = vi.d; return true;
+            case 235: m.bgisl = vi.d; return true;
+            case 236: m.cgisl = vi.d; return true;
+            case 237: m.egisl = vi.d; return true;
+            case 238: m.alpha0 = vi.d; return true;
+            case 239: m.beta0 = vi.d; return true;
+            case 240: m.vdsatii = vi.d; return true;
             case 14: m.Rd = vi.d; return true;
             case 15: m.Rs = vi.d; return true;
+            case 241: m.Rb = vi.d; return true;
+            case 242: m.noff = vi.d; return true;
             case 97: m.rsh = vi.d; return true;
             case 98: m.nrd = vi.d; return true;
             case 99: m.nrs = vi.d; return true;
             case 78: m.rg = vi.d; return true;
+            case 243: m.rbdb = vi.d; return true;
+            case 244: m.rbsb = vi.d; return true;
+            case 245: m.aigb = vi.d; return true;
+            case 246: m.bigb = vi.d; return true;
+            case 247: m.cigb = vi.d; return true;
+            case 248: m.eigb = vi.d; return true;
             case 2: m.Kp = vi.d; return true;
             case 3: m.lambda = vi.d; return true;
             case 4: m.Vth0 = vi.d; return true;
@@ -1858,12 +2142,39 @@ namespace phy_engine::model
             case 219: return {.d{m.lphi}, .type{::phy_engine::model::variant_type::d}};
             case 220: return {.d{m.wphi}, .type{::phy_engine::model::variant_type::d}};
             case 221: return {.d{m.pphi}, .type{::phy_engine::model::variant_type::d}};
+            case 222: return {.d{m.xj}, .type{::phy_engine::model::variant_type::d}};
+            case 223: return {.d{m.mobMod}, .type{::phy_engine::model::variant_type::d}};
+            case 224: return {.d{m.vfbcv}, .type{::phy_engine::model::variant_type::d}};
+            case 225: return {.d{m.acm}, .type{::phy_engine::model::variant_type::d}};
+            case 226: return {.d{m.voffcv}, .type{::phy_engine::model::variant_type::d}};
+            case 227: return {.d{m.lvoffcv}, .type{::phy_engine::model::variant_type::d}};
+            case 228: return {.d{m.wvoffcv}, .type{::phy_engine::model::variant_type::d}};
+            case 229: return {.d{m.pvoffcv}, .type{::phy_engine::model::variant_type::d}};
+            case 230: return {.d{m.agidl}, .type{::phy_engine::model::variant_type::d}};
+            case 231: return {.d{m.bgidl}, .type{::phy_engine::model::variant_type::d}};
+            case 232: return {.d{m.cgidl}, .type{::phy_engine::model::variant_type::d}};
+            case 233: return {.d{m.egidl}, .type{::phy_engine::model::variant_type::d}};
+            case 234: return {.d{m.agisl}, .type{::phy_engine::model::variant_type::d}};
+            case 235: return {.d{m.bgisl}, .type{::phy_engine::model::variant_type::d}};
+            case 236: return {.d{m.cgisl}, .type{::phy_engine::model::variant_type::d}};
+            case 237: return {.d{m.egisl}, .type{::phy_engine::model::variant_type::d}};
+            case 238: return {.d{m.alpha0}, .type{::phy_engine::model::variant_type::d}};
+            case 239: return {.d{m.beta0}, .type{::phy_engine::model::variant_type::d}};
+            case 240: return {.d{m.vdsatii}, .type{::phy_engine::model::variant_type::d}};
             case 14: return {.d{m.Rd}, .type{::phy_engine::model::variant_type::d}};
             case 15: return {.d{m.Rs}, .type{::phy_engine::model::variant_type::d}};
+            case 241: return {.d{m.Rb}, .type{::phy_engine::model::variant_type::d}};
+            case 242: return {.d{m.noff}, .type{::phy_engine::model::variant_type::d}};
             case 97: return {.d{m.rsh}, .type{::phy_engine::model::variant_type::d}};
             case 98: return {.d{m.nrd}, .type{::phy_engine::model::variant_type::d}};
             case 99: return {.d{m.nrs}, .type{::phy_engine::model::variant_type::d}};
             case 78: return {.d{m.rg}, .type{::phy_engine::model::variant_type::d}};
+            case 243: return {.d{m.rbdb}, .type{::phy_engine::model::variant_type::d}};
+            case 244: return {.d{m.rbsb}, .type{::phy_engine::model::variant_type::d}};
+            case 245: return {.d{m.aigb}, .type{::phy_engine::model::variant_type::d}};
+            case 246: return {.d{m.bigb}, .type{::phy_engine::model::variant_type::d}};
+            case 247: return {.d{m.cigb}, .type{::phy_engine::model::variant_type::d}};
+            case 248: return {.d{m.eigb}, .type{::phy_engine::model::variant_type::d}};
             case 2: return {.d{m.Kp}, .type{::phy_engine::model::variant_type::d}};
             case 3: return {.d{m.lambda}, .type{::phy_engine::model::variant_type::d}};
             case 4: return {.d{m.Vth0}, .type{::phy_engine::model::variant_type::d}};
@@ -2087,12 +2398,39 @@ namespace phy_engine::model
             case 219: return u8"lphi";
             case 220: return u8"wphi";
             case 221: return u8"pphi";
+            case 222: return u8"xj";
+            case 223: return u8"mobMod";
+            case 224: return u8"vfbcv";
+            case 225: return u8"acm";
+            case 226: return u8"voffcv";
+            case 227: return u8"lvoffcv";
+            case 228: return u8"wvoffcv";
+            case 229: return u8"pvoffcv";
+            case 230: return u8"agidl";
+            case 231: return u8"bgidl";
+            case 232: return u8"cgidl";
+            case 233: return u8"egidl";
+            case 234: return u8"agisl";
+            case 235: return u8"bgisl";
+            case 236: return u8"cgisl";
+            case 237: return u8"egisl";
+            case 238: return u8"alpha0";
+            case 239: return u8"beta0";
+            case 240: return u8"vdsatii";
             case 14: return u8"Rd";
             case 15: return u8"Rs";
+            case 241: return u8"Rb";
+            case 242: return u8"noff";
             case 97: return u8"rsh";
             case 98: return u8"nrd";
             case 99: return u8"nrs";
             case 78: return u8"rg";
+            case 243: return u8"rbdb";
+            case 244: return u8"rbsb";
+            case 245: return u8"aigb";
+            case 246: return u8"bigb";
+            case 247: return u8"cigb";
+            case 248: return u8"eigb";
             case 2: return u8"Kp";
             case 3: return u8"lambda";
             case 4: return u8"Vth0";
@@ -2185,6 +2523,14 @@ namespace phy_engine::model
             case 63: return u8"xpart";
             case 64: return u8"dwc";
             case 65: return u8"dlc";
+            case 241: return u8"Rb";
+            case 242: return u8"noff";
+            case 243: return u8"rbdb";
+            case 244: return u8"rbsb";
+            case 245: return u8"aigb";
+            case 246: return u8"bigb";
+            case 247: return u8"cigb";
+            case 248: return u8"eigb";
             default: return {};
         }
     }
@@ -2199,7 +2545,7 @@ namespace phy_engine::model
         auto const ns{m.pins[2].nodes};
         auto const nb_raw{m.pins[3].nodes};
         // allow 3-terminal usage (bulk tied to source diffusion)
-        auto const nb{nb_raw ? nb_raw : (m.ns_int ? m.ns_int : ns)};
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : (m.ns_int ? m.ns_int : ns)};
         if(nd_ext == nullptr || ns == nullptr || nb == nullptr) { return true; }
 
         bool const use_d_int{m.nd_int != nullptr};
@@ -2243,7 +2589,12 @@ namespace phy_engine::model
             m.diode_sb.Area = scale_diode;
         }
 
-        details::attach_body_diodes<is_pmos>(nd, ns_int, nb, m.diode_db, m.diode_sb);
+        details::attach_body_diodes<is_pmos>(nd,
+                                             ns_int,
+                                             m.nbd_int ? m.nbd_int : nb,
+                                             m.nbs_int ? m.nbs_int : nb,
+                                             m.diode_db,
+                                             m.diode_sb);
         (void)prepare_foundation_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_db);
         (void)prepare_foundation_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb);
         return true;
@@ -2276,7 +2627,7 @@ namespace phy_engine::model
         auto const nd{m.nd_int ? m.nd_int : nd_ext};  // diffusion D'
         auto const ns{m.ns_int ? m.ns_int : ns_ext};  // diffusion S'
         auto const ng{m.ng_int ? m.ng_int : ng_ext};  // intrinsic gate
-        auto const nb{nb_raw ? nb_raw : ns};          // allow 3-terminal usage (bulk tied to source diffusion)
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
         if(!(nd_ext && ng_ext && ns_ext && nb)) [[unlikely]] { return; }
 
         double const scale{(m.m_mult > 0.0 ? m.m_mult : 0.0) * (m.nf > 0.0 ? m.nf : 0.0)};
@@ -2292,6 +2643,104 @@ namespace phy_engine::model
         // Gate resistance (linear stamp).
         double const rg_eff{scale > 0.0 ? (m.rg / scale) : m.rg};
         if(m.ng_int) { details::stamp_resistor(mna, ng_ext, ng, rg_eff); }
+
+        // Bulk resistance (linear stamp): between external B and internal B'.
+        double const rb_eff{scale > 0.0 ? (m.Rb / scale) : m.Rb};
+        if(m.nb_int && nb_raw) { details::stamp_resistor(mna, nb_raw, nb, rb_eff); }
+        double const rbdb_eff{scale > 0.0 ? (m.rbdb / scale) : m.rbdb};
+        double const rbsb_eff{scale > 0.0 ? (m.rbsb / scale) : m.rbsb};
+        if(m.nbd_int && nb_raw) { details::stamp_resistor(mna, nb, m.nbd_int, ::std::max(rbdb_eff, 0.0)); }
+        if(m.nbs_int && nb_raw) { details::stamp_resistor(mna, nb, m.nbs_int, ::std::max(rbsb_eff, 0.0)); }
+
+        // Off-state leakage currents (GIDL/GISL) between diffusion nodes and bulk.
+        if((m.agidl > 0.0 && m.bgidl > 0.0) || (m.agisl > 0.0 && m.bgisl > 0.0))
+        {
+            double const sgn{is_pmos ? -1.0 : 1.0};
+            double const Vd_p{nd->node_information.an.voltage.real()};
+            double const Vs_p{ns->node_information.an.voltage.real()};
+            double const Vg_p{ng->node_information.an.voltage.real()};
+            double const Vb_p{nb->node_information.an.voltage.real()};
+
+            double const vgs_s_p{sgn * (Vg_p - Vs_p)};
+            double const vds_s_p{sgn * (Vd_p - Vs_p)};
+            double const vbs_s_p{sgn * (Vb_p - Vs_p)};
+
+            // Drain-to-bulk GIDL current source (D -> B).
+            auto const idb_dual = details::bsim3v32_gidl_drain_s(m,
+                                                                details::bsim3v32_dual3_vgs(vgs_s_p),
+                                                                details::bsim3v32_dual3_vds(vds_s_p),
+                                                                details::bsim3v32_dual3_vbs(vbs_s_p));
+            double const Idb{sgn * idb_dual.val};
+            double const gVgs_db{idb_dual.dvgs};
+            double const gVds_db{idb_dual.dvds};
+            double const gVbs_db{idb_dual.dvbs};
+
+            double const gVd_db{gVds_db};
+            double const gVg_db{gVgs_db};
+            double const gVb_db{gVbs_db};
+            double const gVs_db{-(gVgs_db + gVds_db + gVbs_db)};
+
+            double const Ieq_db{Idb - (gVd_db * Vd_p + gVg_db * Vg_p + gVs_db * Vs_p + gVb_db * Vb_p)};
+            details::stamp_current_4node(mna,
+                                         nd,
+                                         nb,
+                                         nd,
+                                         ng,
+                                         ns,
+                                         nb,
+                                         gVd_db * scale,
+                                         gVg_db * scale,
+                                         gVs_db * scale,
+                                         gVb_db * scale,
+                                         Ieq_db * scale);
+
+            // Source-to-bulk GISL current source (S -> B).
+            auto const isb_dual = details::bsim3v32_gidl_source_s(m,
+                                                                 details::bsim3v32_dual3_vgs(vgs_s_p),
+                                                                 details::bsim3v32_dual3_vds(vds_s_p),
+                                                                 details::bsim3v32_dual3_vbs(vbs_s_p));
+            double const Isb{sgn * isb_dual.val};
+            double const gVgs_sb{isb_dual.dvgs};
+            double const gVds_sb{isb_dual.dvds};
+            double const gVbs_sb{isb_dual.dvbs};
+
+            double const gVd_sb{gVds_sb};
+            double const gVg_sb{gVgs_sb};
+            double const gVb_sb{gVbs_sb};
+            double const gVs_sb{-(gVgs_sb + gVds_sb + gVbs_sb)};
+
+            double const Ieq_sb{Isb - (gVd_sb * Vd_p + gVg_sb * Vg_p + gVs_sb * Vs_p + gVb_sb * Vb_p)};
+            details::stamp_current_4node(mna,
+                                         ns,
+                                         nb,
+                                         nd,
+                                         ng,
+                                         ns,
+                                         nb,
+                                         gVd_sb * scale,
+                                         gVg_sb * scale,
+                                         gVs_sb * scale,
+                                         gVb_sb * scale,
+                                         Ieq_sb * scale);
+        }
+
+        // Gate-to-bulk leakage current source (G -> B). Independent of channel mode.
+        if(m.aigb > 0.0 && m.bigb > 0.0)
+        {
+            double const sgn_gb{is_pmos ? -1.0 : 1.0};
+            double const Vg_p{ng->node_information.an.voltage.real()};
+            double const Vb_p{nb->node_information.an.voltage.real()};
+            double const vgb_s_p{sgn_gb * (Vg_p - Vb_p)};
+
+            auto const igb_dual = details::bsim3v32_igb_s(m, details::bsim3v32_dual3_vgs(vgb_s_p));
+            double const Ig{sgn_gb * igb_dual.val};  // current from G to B (positive means leaving gate)
+            double const dId_dVgb{igb_dual.dvgs};
+
+            double const dId_dVg{dId_dVgb};
+            double const dId_dVb{-dId_dVgb};
+            double const Ieq_gb{Ig - (dId_dVg * Vg_p + dId_dVb * Vb_p)};
+            details::stamp_current_2node(mna, ng, nb, dId_dVg * scale, dId_dVb * scale, Ieq_gb * scale);
+        }
 
         // Channel mode selection (SPICE-style): swap D/S for the intrinsic channel if needed.
         double const sgn{is_pmos ? -1.0 : 1.0};
@@ -2364,6 +2813,37 @@ namespace phy_engine::model
         // Linearization: Id ≈ gm*Vgs + gds*Vds + gmb*Vbs + Ieq (Id is D->S between nd_ch and ns_ch)
         m.Ieq = Id - m.gm * Vgs_eval - m.gds * Vds_eval - m.gmb * Vbs_eval;
         details::stamp_gm_gds_gmb(mna, nd_ch, ng, ns_ch, nb, m.gm * scale, m.gds * scale, m.gmb * scale, m.Ieq * scale);
+
+        // Impact ionization / substrate current (modeled as drain->bulk current).
+        if(m.alpha0 > 0.0 && m.beta0 > 0.0)
+        {
+            auto const ii_dual = details::bsim3v32_impact_ionization_s(m,
+                                                                      ids_dual,
+                                                                      details::bsim3v32_dual3_vds(vds_s_eval));
+            double const Iii{sgn * ii_dual.val};
+            double const gVgs{ii_dual.dvgs};
+            double const gVds{ii_dual.dvds};
+            double const gVbs{ii_dual.dvbs};
+
+            double const gVd{gVds};
+            double const gVg{gVgs};
+            double const gVb{gVbs};
+            double const gVs{-(gVgs + gVds + gVbs)};
+
+            double const Ieq{Iii - (gVd * Vd_ch + gVg * Vg + gVs * Vs_ch + gVb * Vb)};
+            details::stamp_current_4node(mna,
+                                         nd_ch,
+                                         nb,
+                                         nd_ch,
+                                         ng,
+                                         ns_ch,
+                                         nb,
+                                         gVd * scale,
+                                         gVg * scale,
+                                         gVs * scale,
+                                         gVb * scale,
+                                         Ieq * scale);
+        }
     }
 
     template <bool is_pmos>
@@ -2377,10 +2857,15 @@ namespace phy_engine::model
         auto const nb_raw{m.pins[3].nodes};
         auto const nd{m.nd_int ? m.nd_int : nd_ext};
         auto const ns{m.ns_int ? m.ns_int : ns_ext};
-        auto const nb{nb_raw ? nb_raw : ns};
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : ns};
         if(nd_ext && ns_ext && nb) [[likely]]
         {
-            details::attach_body_diodes<is_pmos>(nd, ns, nb, m.diode_db, m.diode_sb);
+            details::attach_body_diodes<is_pmos>(nd,
+                                                 ns,
+                                                 m.nbd_int ? m.nbd_int : nb,
+                                                 m.nbs_int ? m.nbs_int : nb,
+                                                 m.diode_db,
+                                                 m.diode_sb);
             (void)iterate_dc_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_db, mna);
             (void)iterate_dc_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb, mna);
         }
@@ -2403,7 +2888,7 @@ namespace phy_engine::model
         auto const nd{m.nd_int ? m.nd_int : nd_ext};
         auto const ns{m.ns_int ? m.ns_int : ns_ext};
         auto const ng{m.ng_int ? m.ng_int : ng_ext};
-        auto const nb{nb_raw ? nb_raw : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
         if(nd_ext && ng_ext && ns_ext && nb) [[likely]]
         {
             double const scale{(m.m_mult > 0.0 ? m.m_mult : 0.0) * (m.nf > 0.0 ? m.nf : 0.0)};
@@ -2418,24 +2903,146 @@ namespace phy_engine::model
             double const rg_eff{scale > 0.0 ? (m.rg / scale) : m.rg};
             if(m.ng_int) { details::stamp_resistor(mna, ng_ext, ng, rg_eff); }
 
+            double const rb_eff{scale > 0.0 ? (m.Rb / scale) : m.Rb};
+            if(m.nb_int && nb_raw) { details::stamp_resistor(mna, nb_raw, nb, rb_eff); }
+            double const rbdb_eff{scale > 0.0 ? (m.rbdb / scale) : m.rbdb};
+            double const rbsb_eff{scale > 0.0 ? (m.rbsb / scale) : m.rbsb};
+            if(m.nbd_int && nb_raw) { details::stamp_resistor(mna, nb, m.nbd_int, ::std::max(rbdb_eff, 0.0)); }
+            if(m.nbs_int && nb_raw) { details::stamp_resistor(mna, nb, m.nbs_int, ::std::max(rbsb_eff, 0.0)); }
+
             // small-signal conductances
             auto* const nd_lin = m.mode_swapped ? ns : nd;
             auto* const ns_lin = m.mode_swapped ? nd : ns;
             details::stamp_gm_gds_gmb(mna, nd_lin, ng, ns_lin, nb, m.gm * scale, m.gds * scale, m.gmb * scale, 0.0);
 
+            // GIDL/GISL incremental conductances around the real operating point.
+            if((m.agidl > 0.0 && m.bgidl > 0.0) || (m.agisl > 0.0 && m.bgisl > 0.0))
+            {
+                double const sgn{is_pmos ? -1.0 : 1.0};
+                double const Vd_p{nd->node_information.an.voltage.real()};
+                double const Vs_p{ns->node_information.an.voltage.real()};
+                double const Vg_p{ng->node_information.an.voltage.real()};
+                double const Vb_p{nb->node_information.an.voltage.real()};
+
+                double const vgs_s_p{sgn * (Vg_p - Vs_p)};
+                double const vds_s_p{sgn * (Vd_p - Vs_p)};
+                double const vbs_s_p{sgn * (Vb_p - Vs_p)};
+
+                auto const idb_dual = details::bsim3v32_gidl_drain_s(m,
+                                                                    details::bsim3v32_dual3_vgs(vgs_s_p),
+                                                                    details::bsim3v32_dual3_vds(vds_s_p),
+                                                                    details::bsim3v32_dual3_vbs(vbs_s_p));
+                double const gVgs_db{idb_dual.dvgs};
+                double const gVds_db{idb_dual.dvds};
+                double const gVbs_db{idb_dual.dvbs};
+
+                double const gVd_db{gVds_db};
+                double const gVg_db{gVgs_db};
+                double const gVb_db{gVbs_db};
+                double const gVs_db{-(gVgs_db + gVds_db + gVbs_db)};
+
+                details::stamp_current_4node(mna,
+                                             nd,
+                                             nb,
+                                             nd,
+                                             ng,
+                                             ns,
+                                             nb,
+                                             gVd_db * scale,
+                                             gVg_db * scale,
+                                             gVs_db * scale,
+                                             gVb_db * scale,
+                                             0.0);
+
+                auto const isb_dual = details::bsim3v32_gidl_source_s(m,
+                                                                     details::bsim3v32_dual3_vgs(vgs_s_p),
+                                                                     details::bsim3v32_dual3_vds(vds_s_p),
+                                                                     details::bsim3v32_dual3_vbs(vbs_s_p));
+                double const gVgs_sb{isb_dual.dvgs};
+                double const gVds_sb{isb_dual.dvds};
+                double const gVbs_sb{isb_dual.dvbs};
+
+                double const gVd_sb{gVds_sb};
+                double const gVg_sb{gVgs_sb};
+                double const gVb_sb{gVbs_sb};
+                double const gVs_sb{-(gVgs_sb + gVds_sb + gVbs_sb)};
+
+                details::stamp_current_4node(mna,
+                                             ns,
+                                             nb,
+                                             nd,
+                                             ng,
+                                             ns,
+                                             nb,
+                                             gVd_sb * scale,
+                                             gVg_sb * scale,
+                                             gVs_sb * scale,
+                                             gVb_sb * scale,
+                                             0.0);
+            }
+
+            // Impact ionization / substrate current incremental conductances around OP.
+            if(m.alpha0 > 0.0 && m.beta0 > 0.0)
+            {
+                double const sgn{is_pmos ? -1.0 : 1.0};
+                double const Vd_p{nd_lin->node_information.an.voltage.real()};
+                double const Vs_p{ns_lin->node_information.an.voltage.real()};
+                double const Vg_p{ng->node_information.an.voltage.real()};
+                double const Vb_p{nb->node_information.an.voltage.real()};
+
+                double const vgs_s_p{sgn * (Vg_p - Vs_p)};
+                double const vds_s_p{sgn * (Vd_p - Vs_p)};
+                double const vbs_s_p{sgn * (Vb_p - Vs_p)};
+
+                double const vt{details::thermal_voltage(m.Temp)};
+                auto const vgs_dual = details::bsim3v32_dual3_vgs(vgs_s_p);
+                auto const vds_dual = details::bsim3v32_dual3_vds(vds_s_p);
+                auto const vbs_dual = details::bsim3v32_dual3_vbs(vbs_s_p);
+                auto const ids_dual = details::bsim3v32_ids_core(
+                    m, vgs_dual, vds_dual, vbs_dual, vt, static_cast<details::bsim3v32_core_cache_t<details::bsim3v32_dual3>*>(nullptr));
+                auto const ii_dual = details::bsim3v32_impact_ionization_s(m, ids_dual, vds_dual);
+
+                double const gVgs{ii_dual.dvgs};
+                double const gVds{ii_dual.dvds};
+                double const gVbs{ii_dual.dvbs};
+
+                double const gVd{gVds};
+                double const gVg{gVgs};
+                double const gVb{gVbs};
+                double const gVs{-(gVgs + gVds + gVbs)};
+
+                // Small-signal only: Ieq = 0
+                details::stamp_current_4node(mna,
+                                             nd_lin,
+                                             nb,
+                                             nd_lin,
+                                             ng,
+                                             ns_lin,
+                                             nb,
+                                             gVd * scale,
+                                             gVg * scale,
+                                             gVs * scale,
+                                             gVb * scale,
+                                             0.0);
+            }
+
             // fixed caps (including overlap)
             double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
             double const leff{::std::max(m.L - 2.0 * ::std::max(m.dlc, 0.0), 1e-18)};
-            double const cgs_fix{m.Cgs + m.cgso * weff};
-            double const cgd_fix{m.Cgd + m.cgdo * weff};
-            double const cgb_fix{m.Cgb + m.cgbo * leff};
+		            bool const ovl_charge_based{m.capMod >= 2.5 && m.acm != 0.0};
+	            double const cgs_ovl{ovl_charge_based ? 0.0 : (m.cgso * weff)};
+	            double const cgd_ovl{ovl_charge_based ? 0.0 : (m.cgdo * weff)};
+	            double const cgb_ovl{ovl_charge_based ? 0.0 : (m.cgbo * leff)};
+	            double const cgs_fix{m.Cgs + cgs_ovl};
+	            double const cgd_fix{m.Cgd + cgd_ovl};
+	            double const cgb_fix{m.Cgb + cgb_ovl};
             details::stamp_cap_ac(mna, ng, ns, cgs_fix * scale, omega);
             details::stamp_cap_ac(mna, ng, nd, cgd_fix * scale, omega);
             details::stamp_cap_ac(mna, ng, nb, cgb_fix * scale, omega);
 
             // Intrinsic (bias-dependent) caps captured at the real operating point (save_op).
-            if(m.capMod != 0.0)
-            {
+	            if(m.capMod >= 2.5)
+	            {
                 ::phy_engine::model::node_t* const nodes[4]{nd_lin, ng, ns_lin, nb};
                 double cmat_scaled[4][4]{};
                 for(int i{}; i < 4; ++i)
@@ -2452,7 +3059,12 @@ namespace phy_engine::model
             }
 
             // diode incremental conductances
-            details::attach_body_diodes<is_pmos>(nd, ns, nb, m.diode_db, m.diode_sb);
+            details::attach_body_diodes<is_pmos>(nd,
+                                                 ns,
+                                                 m.nbd_int ? m.nbd_int : nb,
+                                                 m.nbs_int ? m.nbs_int : nb,
+                                                 m.diode_db,
+                                                 m.diode_sb);
             (void)iterate_ac_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_db, mna, omega);
             (void)iterate_ac_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb, mna, omega);
 
@@ -2486,21 +3098,25 @@ namespace phy_engine::model
         auto const nd{m.nd_int ? m.nd_int : nd_ext};
         auto const ns{m.ns_int ? m.ns_int : ns_ext};
         auto const ng{m.ng_int ? m.ng_int : ng_ext};
-        auto const nb{nb_raw ? nb_raw : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
 
         double const scale{(m.m_mult > 0.0 ? m.m_mult : 0.0) * (m.nf > 0.0 ? m.nf : 0.0)};
         double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
         double const leff{::std::max(m.L - 2.0 * ::std::max(m.dlc, 0.0), 1e-18)};
-        double const cgs_fix{m.Cgs + m.cgso * weff};
-        double const cgd_fix{m.Cgd + m.cgdo * weff};
-        double const cgb_fix{m.Cgb + m.cgbo * leff};
+		        bool const ovl_charge_based{m.capMod >= 2.5 && m.acm != 0.0};
+	        double const cgs_ovl{ovl_charge_based ? 0.0 : (m.cgso * weff)};
+	        double const cgd_ovl{ovl_charge_based ? 0.0 : (m.cgdo * weff)};
+	        double const cgb_ovl{ovl_charge_based ? 0.0 : (m.cgbo * leff)};
+	        double const cgs_fix{m.Cgs + cgs_ovl};
+	        double const cgd_fix{m.Cgd + cgd_ovl};
+	        double const cgb_fix{m.Cgb + cgb_ovl};
         details::step_cap_tr(m.cgs_state, ng, ns, cgs_fix * scale, nstep);
         details::step_cap_tr(m.cgd_state, ng, nd, cgd_fix * scale, nstep);
         details::step_cap_tr(m.cgb_state, ng, nb, cgb_fix * scale, nstep);
 
         // Intrinsic charge/capacitance model (linearized at the previous step's bias).
         m.cap_mode_swapped = m.mode_swapped;
-        if(m.capMod != 0.0)
+        if(m.capMod >= 2.5)
         {
             // capMod!=0: charge-based 4×4 C-matrix companion (D,G,S,B).
             // Note: C-matrix already includes W/L geometry; apply m-mult scaling here.
@@ -2523,8 +3139,20 @@ namespace phy_engine::model
                 double const Vg{ng->node_information.an.voltage.real()};
                 double const Vb{nb->node_information.an.voltage.real()};
 
-                double cmat[4][4]{};
-                details::bsim3v32_cmatrix_capmod0_simple<is_pmos>(m, Vd, Vg, Vs, Vb, cmat);
+	            double cmat[4][4]{};
+	            details::bsim3v32_cmatrix_capmod0_simple<is_pmos>(m, Vd, Vg, Vs, Vb, cmat);
+                    if(m.acm != 0.0)
+                    {
+                        // Add overlap caps to the intrinsic C-matrix (charge-based overlap).
+                        double const cgs_ovl{m.cgso * weff};
+                        double const cgd_ovl{m.cgdo * weff};
+                        double const cgb_ovl{m.cgbo * leff};
+	                int const idx_d_phys{m.cap_mode_swapped ? 2 : 0};
+	                int const idx_s_phys{m.cap_mode_swapped ? 0 : 2};
+	                details::add_linear_cap_to_cmat(cmat, 1, idx_s_phys, cgs_ovl);
+	                details::add_linear_cap_to_cmat(cmat, 1, idx_d_phys, cgd_ovl);
+	                details::add_linear_cap_to_cmat(cmat, 1, 3, cgb_ovl);
+	            }
                 for(int i{}; i < 4; ++i)
                 {
                     for(int j{}; j < 4; ++j) { cmat[i][j] *= scale; }
@@ -2577,7 +3205,12 @@ namespace phy_engine::model
         // Keep diode vlimit history aligned with node voltages.
         if(nd && ns && nb)
         {
-            details::attach_body_diodes<is_pmos>(nd, ns, nb, m.diode_db, m.diode_sb);
+            details::attach_body_diodes<is_pmos>(nd,
+                                                 ns,
+                                                 m.nbd_int ? m.nbd_int : nb,
+                                                 m.nbs_int ? m.nbs_int : nb,
+                                                 m.diode_db,
+                                                 m.diode_sb);
             (void)step_changed_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_db, nlaststep, nstep);
             (void)step_changed_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb, nlaststep, nstep);
 
@@ -2646,10 +3279,15 @@ namespace phy_engine::model
         auto const nd{m.nd_int ? m.nd_int : nd_ext};
         auto const ns{m.ns_int ? m.ns_int : ns_ext};
         auto const ng{m.ng_int ? m.ng_int : ng_ext};
-        auto const nb{nb_raw ? nb_raw : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : ns};  // allow 3-terminal usage (bulk tied to source diffusion)
         if(nd_ext && ng_ext && ns_ext && nb) [[likely]]
         {
-            details::attach_body_diodes<is_pmos>(nd, ns, nb, m.diode_db, m.diode_sb);
+            details::attach_body_diodes<is_pmos>(nd,
+                                                 ns,
+                                                 m.nbd_int ? m.nbd_int : nb,
+                                                 m.nbs_int ? m.nbs_int : nb,
+                                                 m.diode_db,
+                                                 m.diode_sb);
             (void)iterate_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_db, mna, 0.0);
             (void)iterate_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb, mna, 0.0);
 
@@ -2659,7 +3297,7 @@ namespace phy_engine::model
 
             auto* const nd_lin = m.cap_mode_swapped ? ns : nd;
             auto* const ns_lin = m.cap_mode_swapped ? nd : ns;
-            if(m.capMod != 0.0)
+            if(m.capMod >= 2.5)
             {
                 ::phy_engine::model::node_t* const nodes[4]{nd_lin, ng, ns_lin, nb};
                 details::stamp_cap_matrix_tr(mna, nodes, m.cmat_tr_prev_g, m.cmat_tr_hist);
@@ -2678,10 +3316,15 @@ namespace phy_engine::model
         auto const nb2_raw{m.pins[3].nodes};
         auto const nd_dio{m.nd_int ? m.nd_int : nd2};
         auto const ns_dio{m.ns_int ? m.ns_int : ns2};
-        auto const nb2{nb2_raw ? nb2_raw : ns_dio};
+        auto const nb2{nb2_raw ? (m.nb_int ? m.nb_int : nb2_raw) : ns_dio};
         if(nd2 && ns2 && nb2)
         {
-            details::attach_body_diodes<is_pmos>(nd_dio, ns_dio, nb2, m.diode_db, m.diode_sb);
+            details::attach_body_diodes<is_pmos>(nd_dio,
+                                                 ns_dio,
+                                                 m.nbd_int ? m.nbd_int : nb2,
+                                                 m.nbs_int ? m.nbs_int : nb2,
+                                                 m.diode_db,
+                                                 m.diode_sb);
             auto* db_a = m.diode_db.pins[0].nodes;
             auto* db_b = m.diode_db.pins[1].nodes;
             auto* sb_a = m.diode_sb.pins[0].nodes;
@@ -2717,7 +3360,7 @@ namespace phy_engine::model
         auto const nd{m.nd_int ? m.nd_int : nd_ext};
         auto const ns{m.ns_int ? m.ns_int : ns_ext};
         auto const ng{m.ng_int ? m.ng_int : ng_ext};
-        auto const nb{nb_raw ? nb_raw : ns};
+        auto const nb{nb_raw ? (m.nb_int ? m.nb_int : nb_raw) : ns};
         if(nd_ext == nullptr || ng_ext == nullptr || ns_ext == nullptr || nb == nullptr) { return true; }
 
         auto* const nd_lin = m.mode_swapped ? ns : nd;
@@ -2741,14 +3384,35 @@ namespace phy_engine::model
         {
             for(int j{}; j < 4; ++j) { m.cmat_ac[i][j] = 0.0; }
         }
-        if(m.capMod != 0.0) { details::bsim3v32_cmatrix_capmod0_simple<is_pmos>(m, Vd, Vg, Vs, Vb, m.cmat_ac); }
+	        if(m.capMod >= 2.5) { details::bsim3v32_cmatrix_capmod0_simple<is_pmos>(m, Vd, Vg, Vs, Vb, m.cmat_ac); }
+	        if(m.capMod >= 2.5 && m.acm != 0.0)
+	        {
+	            // Add overlap caps to the intrinsic C-matrix (charge-based overlap).
+	            double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
+	            double const leff{::std::max(m.L - 2.0 * ::std::max(m.dlc, 0.0), 1e-18)};
+	            double const cgs_ovl{m.cgso * weff};
+	            double const cgd_ovl{m.cgdo * weff};
+	            double const cgb_ovl{m.cgbo * leff};
+
+	            int const idx_d_phys{m.mode_swapped ? 2 : 0};
+	            int const idx_s_phys{m.mode_swapped ? 0 : 2};
+
+	            details::add_linear_cap_to_cmat(m.cmat_ac, 1, idx_s_phys, cgs_ovl);
+	            details::add_linear_cap_to_cmat(m.cmat_ac, 1, idx_d_phys, cgd_ovl);
+	            details::add_linear_cap_to_cmat(m.cmat_ac, 1, 3, cgb_ovl);
+	        }
 
         // Depletion caps at the diode biases (real OP). Uses the same diode node attachments.
         m.cbd_ac = 0.0;
         m.cbs_ac = 0.0;
         if(m.cj != 0.0 || m.cjsw != 0.0 || m.cjswg != 0.0)
         {
-            details::attach_body_diodes<is_pmos>(nd, ns, nb, m.diode_db, m.diode_sb);
+            details::attach_body_diodes<is_pmos>(nd,
+                                                 ns,
+                                                 m.nbd_int ? m.nbd_int : nb,
+                                                 m.nbs_int ? m.nbs_int : nb,
+                                                 m.diode_db,
+                                                 m.diode_sb);
             auto* db_a = m.diode_db.pins[0].nodes;
             auto* db_b = m.diode_db.pins[1].nodes;
             auto* sb_a = m.diode_sb.pins[0].nodes;
@@ -2808,6 +3472,9 @@ namespace phy_engine::model
         m.nd_int = nullptr;
         m.ns_int = nullptr;
         m.ng_int = nullptr;
+        m.nb_int = nullptr;
+        m.nbd_int = nullptr;
+        m.nbs_int = nullptr;
 
         double const rd_total{m.Rd + ::std::max(m.rsh, 0.0) * ::std::max(m.nrd, 0.0)};
         double const rs_total{m.Rs + ::std::max(m.rsh, 0.0) * ::std::max(m.nrs, 0.0)};
@@ -2816,6 +3483,10 @@ namespace phy_engine::model
         if(rd_total > 0.0) { m.nd_int = __builtin_addressof(m.internal_nodes[cnt++]); }
         if(rs_total > 0.0) { m.ns_int = __builtin_addressof(m.internal_nodes[cnt++]); }
         if(m.rg > 0.0) { m.ng_int = __builtin_addressof(m.internal_nodes[cnt++]); }
+        bool const bulk_connected{m.pins[3].nodes != nullptr};
+        if(bulk_connected && m.Rb > 0.0) { m.nb_int = __builtin_addressof(m.internal_nodes[cnt++]); }
+        if(bulk_connected && m.rbdb > 0.0) { m.nbd_int = __builtin_addressof(m.internal_nodes[cnt++]); }
+        if(bulk_connected && m.rbsb > 0.0) { m.nbs_int = __builtin_addressof(m.internal_nodes[cnt++]); }
         if(cnt != 0) { return {m.internal_nodes, cnt}; }
         return {};
     }
