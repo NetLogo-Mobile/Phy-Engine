@@ -82,6 +82,12 @@ Set the following environment variables to enable extra debug features.
     - `rom_data[15:0]`, `ir[15:0]`
     - `opcode[3:0]`, `imm8[7:0]`
 
+- `PHY_ENGINE_TRACE_0026_EXPORT_PROBE_PC_NEXT`
+  - When set (to any value), inserts **identity buffers (YES)** around the `PC -> control16 -> pc_next -> pc8` boundary so you can probe both sides in PhysicsLab.
+  - Extra pins added (when debug pins are enabled):
+    - `pc_ctl[7:0]` (buffered copy of `pc` used as `control16.pc`)
+    - `pc_next_ctl[7:0]` (`control16.pc_next` before buffering into `pc8.d`)
+
 - `PHY_ENGINE_TRACE_0026_EXPORT_OUTPUT_COLS`
   - Integer (default `1`). Controls how many columns the *output pin groups* are split into in the PhysicsLab IO region.
   - Useful when `PHY_ENGINE_TRACE_0026_EXPORT_DEBUG_PINS` is enabled and you need more “columns/rows” visible for debugging.
@@ -105,6 +111,13 @@ Set the following environment variables to enable extra debug features.
     - inputs are in the top band and outputs in the bottom band,
     - non-pin elements have non-trivial Z layering (not collapsed at the origin).
 
+### Per-module Exporter (`x86_16_multi_module_export_plsav_modules.cc`)
+
+- `PHY_ENGINE_TRACE_0026_EXPORT_MODULE_SAVS`
+  - When set (to any value), generates one `.sav` per Verilog module in `0026.8086` using the same IO placement + auto-layout strategy as `src/verilog2plsav.cpp`.
+  - Output directory: `0026.8086.modules/` (e.g. `pc8.sav`, `control16.sav`, `alu16.sav`, etc.)
+  - Note: when unset, the executable exits immediately (so ctest won’t spam files).
+
 ### PE Trace (`x86_16_multi_module_plsav_trace.cc`)
 
 - `PHY_ENGINE_TRACE_0026_PLSAV`
@@ -114,6 +127,17 @@ Set the following environment variables to enable extra debug features.
   - When set (and `PHY_ENGINE_TRACE_0026_PLSAV` is set), prints one extra “layer summary” line per step.
   - The summary is intentionally compact (≤10 groups) and includes key inter-module nets and control signals:
     - `pc_next/pc_we`, `rom_data`, decoded fields, control signals, regfile ports, mux/ALU ports, and latched flags.
+
+- `PHY_ENGINE_TRACE_0026_PLSAV_PROBE_PC_NEXT`
+  - When set (to any value), inserts the same **PC/control boundary probe buffers** as the exporter (YES identity buffers).
+  - This makes the PE trace print `pc_ctl[*]` and `pc_next_ctl[*]` (the two sides of the pc→pc_next link) in the layer summary.
+
+- `PHY_ENGINE_TRACE_0026_PLSAV_EXPECT`
+  - When set (to any value), enables per-step expectation checks:
+    - on `exec` (posedge), `pc` must capture the pre-edge `pc_next`,
+    - on `fetch` (negedge), `ir` must capture the pre-edge `rom_data`,
+    - and when probe is enabled, `pc==pc_ctl` and `pc_next==pc_next_ctl`.
+  - Aborts immediately with a short message if a check fails.
 
 ## Implemented ISA (toy, 16-bit)
 

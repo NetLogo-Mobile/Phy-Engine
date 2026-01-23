@@ -1,5 +1,7 @@
 #include <phy_engine/phy_engine.h>
 
+#include <phy_engine/model/models/digital/logical/yes.h>
+
 #include <fast_io/fast_io.h>
 
 #include <cassert>
@@ -86,6 +88,57 @@ bool read_bool_strict(::phy_engine::model::node_t const& n, char const* name)
     return st == ::phy_engine::model::digital_node_statement_t::true_state;
 }
 
+std::optional<bool> try_read_bool_binary(::phy_engine::model::node_t const& n) noexcept
+{
+    auto const st = n.node_information.dn.state;
+    if(st == ::phy_engine::model::digital_node_statement_t::true_state) { return true; }
+    if(st == ::phy_engine::model::digital_node_statement_t::false_state) { return false; }
+    return std::nullopt;
+}
+
+std::optional<std::uint16_t> try_read_u16_binary(std::vector<::phy_engine::model::node_t*> const& bus_msb_to_lsb) noexcept
+{
+    std::uint16_t v{};
+    auto const n = bus_msb_to_lsb.size();
+    for(std::size_t i{}; i < n; ++i)
+    {
+        auto const bit = static_cast<unsigned>((n - 1) - i);
+        auto const st = bus_msb_to_lsb[i]->node_information.dn.state;
+        if(st == ::phy_engine::model::digital_node_statement_t::true_state) { v |= static_cast<std::uint16_t>(1u << bit); }
+        else if(st == ::phy_engine::model::digital_node_statement_t::false_state) { /* ok */ }
+        else { return std::nullopt; }
+    }
+    return v;
+}
+
+std::optional<std::uint8_t> try_read_u8_binary(std::vector<::phy_engine::model::node_t*> const& bus_msb_to_lsb) noexcept
+{
+    auto v = try_read_u16_binary(bus_msb_to_lsb);
+    if(!v) { return std::nullopt; }
+    return static_cast<std::uint8_t>(*v & 0xffu);
+}
+
+static void add_yes_buffer(::phy_engine::netlist::netlist& nl, ::phy_engine::model::node_t& in, ::phy_engine::model::node_t& out)
+{
+    auto [m, pos] = add_model(nl, ::phy_engine::model::YES{});
+    (void)pos;
+    if(m == nullptr || m->ptr == nullptr) { throw std::runtime_error("failed to add YES"); }
+    add_to_node(nl, *m, 0, in);
+    add_to_node(nl, *m, 1, out);
+}
+
+static void add_yes_buffer_bus(::phy_engine::netlist::netlist& nl,
+                               std::vector<::phy_engine::model::node_t*> const& in_msb_to_lsb,
+                               std::vector<::phy_engine::model::node_t*> const& out_msb_to_lsb)
+{
+    if(in_msb_to_lsb.size() != out_msb_to_lsb.size()) { throw std::runtime_error("bus width mismatch"); }
+    for(std::size_t i{}; i < in_msb_to_lsb.size(); ++i)
+    {
+        if(in_msb_to_lsb[i] == nullptr || out_msb_to_lsb[i] == nullptr) { throw std::runtime_error("null bus node"); }
+        add_yes_buffer(nl, *in_msb_to_lsb[i], *out_msb_to_lsb[i]);
+    }
+}
+
 std::string bin16(std::uint16_t v)
 {
     std::string s;
@@ -115,6 +168,9 @@ int main()
     //   PHY_ENGINE_TRACE_0026_PLSAV=1
     bool const trace = (std::getenv("PHY_ENGINE_TRACE_0026_PLSAV") != nullptr);
     bool const trace_layers = (std::getenv("PHY_ENGINE_TRACE_0026_PLSAV_LAYERS") != nullptr);
+    bool const expect = (std::getenv("PHY_ENGINE_TRACE_0026_PLSAV_EXPECT") != nullptr);
+    bool const probe_pc_path = (std::getenv("PHY_ENGINE_TRACE_0026_PLSAV_PROBE_PC_NEXT") != nullptr) ||
+                               (std::getenv("PHY_ENGINE_TRACE_0026_EXPORT_PROBE_PC_NEXT") != nullptr);
 
     auto const dir = std::filesystem::path(__FILE__).parent_path();
 
@@ -226,7 +282,14 @@ int main()
     auto& nrstn = create_node(nl);
 
     auto pc = make_bus(nl, 8);
-    auto pc_next = make_bus(nl, 8);
+    auto pc_next = make_bus(nl, 8);  // pc8.d side (post-probe if enabled)
+    auto pc_ctl = pc;                // control16.pc side (post-probe if enabled)
+    auto pc_next_ctl = pc_next;      // control16.pc_next side (pre-probe if enabled)
+    if(probe_pc_path)
+    {
+        pc_ctl = make_bus(nl, 8);
+        pc_next_ctl = make_bus(nl, 8);
+    }
     auto rom_data = make_bus(nl, 16);
     auto ir = make_bus(nl, 16);
     auto opcode = make_bus(nl, 4);
@@ -272,6 +335,14 @@ int main()
     connect_bus(nl, *m_pc, 3, pc_next);
     connect_bus(nl, *m_pc, 11, pc);
 
+    if(probe_pc_path)
+    {
+        // Non-intrusive (identity) probe buffers at the PC/control boundary:
+        //   pc -> pc_ctl -> control16 -> pc_next_ctl -> pc_next -> pc8.d
+        add_yes_buffer_bus(nl, pc, pc_ctl);
+        add_yes_buffer_bus(nl, pc_next_ctl, pc_next);
+    }
+
     // rom256x16(addr[7:0], data[15:0])
     connect_bus(nl, *m_rom, 0, pc);
     connect_bus(nl, *m_rom, 8, rom_data);
@@ -294,11 +365,11 @@ int main()
     connect_bus(nl, *m_ctl, 4, reg_dst);
     connect_bus(nl, *m_ctl, 6, reg_src);
     connect_bus(nl, *m_ctl, 8, imm8);
-    connect_bus(nl, *m_ctl, 16, pc);
+    connect_bus(nl, *m_ctl, 16, pc_ctl);
     add_to_node(nl, *m_ctl, 24, n_flag_z);
     add_to_node(nl, *m_ctl, 25, n_flag_c);
     add_to_node(nl, *m_ctl, 26, n_flag_s);
-    connect_bus(nl, *m_ctl, 27, pc_next);
+    connect_bus(nl, *m_ctl, 27, pc_next_ctl);
     add_to_node(nl, *m_ctl, 35, n_pc_we);
     add_to_node(nl, *m_ctl, 36, n_reg_we);
     connect_bus(nl, *m_ctl, 37, rf_waddr);
@@ -382,6 +453,36 @@ int main()
     int step{};
     auto const t0 = ::fast_io::posix_clock_gettime(::fast_io::posix_clock_id::monotonic_raw);
     std::uint64_t sim_step_ns{};
+
+    struct snap
+    {
+        std::optional<bool> clk{};
+        std::optional<bool> rst_n{};
+        std::optional<bool> halt{};
+        std::optional<bool> pc_we{};
+        std::optional<std::uint8_t> pc{};
+        std::optional<std::uint8_t> pc_ctl{};
+        std::optional<std::uint8_t> pc_next_ctl{};
+        std::optional<std::uint8_t> pc_next{};
+        std::optional<std::uint16_t> rom_data{};
+        std::optional<std::uint16_t> ir{};
+    };
+
+    auto snapshot = [&]() -> snap {
+        snap s{};
+        s.clk = try_read_bool_binary(nclk);
+        s.rst_n = try_read_bool_binary(nrstn);
+        s.halt = try_read_bool_binary(n_halt);
+        s.pc_we = try_read_bool_binary(n_pc_we);
+        s.pc = try_read_u8_binary(pc);
+        s.pc_ctl = try_read_u8_binary(pc_ctl);
+        s.pc_next_ctl = try_read_u8_binary(pc_next_ctl);
+        s.pc_next = try_read_u8_binary(pc_next);
+        s.rom_data = try_read_u16_binary(rom_data);
+        s.ir = try_read_u16_binary(ir);
+        return s;
+    };
+
     auto dump = [&](char const* tag) {
         if(!trace) { return; }
         auto const t_now = ::fast_io::posix_clock_gettime(::fast_io::posix_clock_id::monotonic_raw);
@@ -413,6 +514,8 @@ int main()
         if(trace_layers)
         {
             // Keep this to <=10 "layer groups" for readability.
+            auto const pc_ctl_v = static_cast<unsigned>(read_u16_n(pc_ctl, 0xffu));
+            auto const pc_next_ctl_v = static_cast<unsigned>(read_u16_n(pc_next_ctl, 0xffu));
             auto const pc_next_v = static_cast<unsigned>(read_u16_n(pc_next, 0xffu));
             auto const pc_we = read_bool(n_pc_we);
             auto const rom_v = static_cast<unsigned>(read_u16(rom_data));
@@ -444,37 +547,76 @@ int main()
             auto const fc = read_bool(n_flag_c);
             auto const fs = read_bool(n_flag_s);
 
-            std::fprintf(stdout,
-                         "  [pc8] next=%02x we=%d | [rom] data=%04x | [dec] op=%x dst=%u src=%u imm8=%02x |"
-                         " [ctl] reg_we=%d wa=%u ra=%u rb=%u bsel=%d alu_op=%u fwe(zcs)=%d%d%d |"
-                         " [imm] imm16=%04x | [rf] rA=%04x rB=%04x | [mux] b=%04x | [alu] y=%04x zcs=%d%d%d | [flg] zcs=%d%d%d\n",
-                         pc_next_v,
-                         pc_we ? 1 : 0,
-                         rom_v,
-                         op_v,
-                         dst_v,
-                         src_v,
-                         imm8_v,
-                         reg_we ? 1 : 0,
-                         waddr_v,
-                         ra_v,
-                         rb_v,
-                         bsel ? 1 : 0,
-                         alu_op_v,
-                         fwez ? 1 : 0,
-                         fwec ? 1 : 0,
-                         fwes ? 1 : 0,
-                         imm16_v,
-                         rda_v,
-                         rdb_v,
-                         alu_b_v,
-                         alu_y_v,
-                         zf ? 1 : 0,
-                         cf ? 1 : 0,
-                         sf ? 1 : 0,
-                         fz ? 1 : 0,
-                         fc ? 1 : 0,
-                         fs ? 1 : 0);
+            if(probe_pc_path)
+            {
+                std::fprintf(stdout,
+                             "  [pc/probe] pc_ctl=%02x | [ctl->pc] next_ctl=%02x next=%02x we=%d | [rom] data=%04x | [dec] op=%x dst=%u src=%u imm8=%02x |"
+                             " [ctl] reg_we=%d wa=%u ra=%u rb=%u bsel=%d alu_op=%u fwe(zcs)=%d%d%d |"
+                             " [imm] imm16=%04x | [rf] rA=%04x rB=%04x | [mux] b=%04x | [alu] y=%04x zcs=%d%d%d | [flg] zcs=%d%d%d\n",
+                             pc_ctl_v,
+                             pc_next_ctl_v,
+                             pc_next_v,
+                             pc_we ? 1 : 0,
+                             rom_v,
+                             op_v,
+                             dst_v,
+                             src_v,
+                             imm8_v,
+                             reg_we ? 1 : 0,
+                             waddr_v,
+                             ra_v,
+                             rb_v,
+                             bsel ? 1 : 0,
+                             alu_op_v,
+                             fwez ? 1 : 0,
+                             fwec ? 1 : 0,
+                             fwes ? 1 : 0,
+                             imm16_v,
+                             rda_v,
+                             rdb_v,
+                             alu_b_v,
+                             alu_y_v,
+                             zf ? 1 : 0,
+                             cf ? 1 : 0,
+                             sf ? 1 : 0,
+                             fz ? 1 : 0,
+                             fc ? 1 : 0,
+                             fs ? 1 : 0);
+            }
+            else
+            {
+                std::fprintf(stdout,
+                             "  [pc8] next=%02x we=%d | [rom] data=%04x | [dec] op=%x dst=%u src=%u imm8=%02x |"
+                             " [ctl] reg_we=%d wa=%u ra=%u rb=%u bsel=%d alu_op=%u fwe(zcs)=%d%d%d |"
+                             " [imm] imm16=%04x | [rf] rA=%04x rB=%04x | [mux] b=%04x | [alu] y=%04x zcs=%d%d%d | [flg] zcs=%d%d%d\n",
+                             pc_next_v,
+                             pc_we ? 1 : 0,
+                             rom_v,
+                             op_v,
+                             dst_v,
+                             src_v,
+                             imm8_v,
+                             reg_we ? 1 : 0,
+                             waddr_v,
+                             ra_v,
+                             rb_v,
+                             bsel ? 1 : 0,
+                             alu_op_v,
+                             fwez ? 1 : 0,
+                             fwec ? 1 : 0,
+                             fwes ? 1 : 0,
+                             imm16_v,
+                             rda_v,
+                             rdb_v,
+                             alu_b_v,
+                             alu_y_v,
+                             zf ? 1 : 0,
+                             cf ? 1 : 0,
+                             sf ? 1 : 0,
+                             fz ? 1 : 0,
+                             fc ? 1 : 0,
+                             fs ? 1 : 0);
+            }
         }
     };
 
@@ -492,26 +634,183 @@ int main()
         dump(tag);
     };
 
+    auto check_probe_equal = [&](snap const& s, char const* where) {
+        if(!probe_pc_path) { return; }
+        if(s.pc && s.pc_ctl && *s.pc != *s.pc_ctl)
+        {
+            std::fprintf(stderr, "[expect] %s: pc_ctl mismatch: pc=%02x pc_ctl=%02x\n", where, *s.pc, *s.pc_ctl);
+            std::abort();
+        }
+        if(s.pc_next && s.pc_next_ctl && *s.pc_next != *s.pc_next_ctl)
+        {
+            std::fprintf(stderr, "[expect] %s: pc_next_ctl mismatch: pc_next=%02x pc_next_ctl=%02x\n", where, *s.pc_next, *s.pc_next_ctl);
+            std::abort();
+        }
+    };
+
+    auto require_u8 = [&](std::optional<std::uint8_t> v, char const* name) -> std::uint8_t {
+        if(!v)
+        {
+            std::fprintf(stderr, "[expect] %s is X/Z\n", name);
+            std::abort();
+        }
+        return *v;
+    };
+    auto require_u16 = [&](std::optional<std::uint16_t> v, char const* name) -> std::uint16_t {
+        if(!v)
+        {
+            std::fprintf(stderr, "[expect] %s is X/Z\n", name);
+            std::abort();
+        }
+        return *v;
+    };
+    auto require_b = [&](std::optional<bool> v, char const* name) -> bool {
+        if(!v)
+        {
+            std::fprintf(stderr, "[expect] %s is X/Z\n", name);
+            std::abort();
+        }
+        return *v;
+    };
+
     // Reset and initial fetch (same sequence as x86_16_multi_module.cc):
     do_step("reset", false, [&] {
         set_rstn(false);
         set_clk(false);
     });
+    if(expect)
+    {
+        auto s = snapshot();
+        check_probe_equal(s, "reset");
+        // Note: initial states may be X/Z until a triggering edge occurs (rst_n starts low in INPUT).
+    }
 
     do_step("clk=1", true, [&] { set_clk(true); });
+    if(expect)
+    {
+        auto s = snapshot();
+        check_probe_equal(s, "clk=1");
+        if(s.rst_n && *s.rst_n == false)
+        {
+            if(require_u8(s.pc, "pc") != 0) { std::abort(); }
+        }
+    }
     do_step("rst=1", true, [&] { set_rstn(true); });
+    if(expect)
+    {
+        auto s = snapshot();
+        check_probe_equal(s, "rst=1");
+        // No clock edge here; just ensure we didn't introduce X/Z on the probe nets.
+    }
+
+    // Fetch on negedge: IR should latch ROM data for the *current PC*.
+    auto pre_fetch0 = snapshot();
     do_step("fetch", false, [&] { set_clk(false); });
+    if(expect)
+    {
+        auto post = snapshot();
+        check_probe_equal(post, "fetch0");
+        if(pre_fetch0.rst_n && post.rst_n && *pre_fetch0.rst_n && *post.rst_n)
+        {
+            // PC does not change on negedge.
+            auto const pre_pc = require_u8(pre_fetch0.pc, "pre_pc");
+            auto const post_pc = require_u8(post.pc, "post_pc");
+            if(pre_pc != post_pc)
+            {
+                std::fprintf(stderr, "[expect] fetch0: pc changed on negedge: pre=%02x post=%02x\n", pre_pc, post_pc);
+                std::abort();
+            }
+            // IR captures ROM data seen just before the negedge.
+            auto const pre_rom = require_u16(pre_fetch0.rom_data, "pre_rom_data");
+            auto const post_ir = require_u16(post.ir, "post_ir");
+            if(pre_rom != post_ir)
+            {
+                std::fprintf(stderr, "[expect] fetch0: ir != pre_rom_data: ir=%04x pre_rom=%04x\n",
+                             static_cast<unsigned>(post_ir),
+                             static_cast<unsigned>(pre_rom));
+                std::abort();
+            }
+        }
+    }
 
     bool halted{};
     for(int cycle = 0; cycle < 64; ++cycle)
     {
-        // Execute on posedge.
+        // Execute on posedge: PC should capture pc_next (as seen on pc8.d) from the prior fetch phase.
+        auto pre_exec = snapshot();
         do_step("exec", true, [&] { set_clk(true); });
+        if(expect)
+        {
+            auto post = snapshot();
+            check_probe_equal(post, "exec");
+        if(pre_exec.rst_n && post.rst_n && *pre_exec.rst_n && *post.rst_n)
+        {
+            auto const pc_we = require_b(pre_exec.pc_we, "pc_we");
+            auto const pre_pc = require_u8(pre_exec.pc, "pre_pc");
+            auto const pre_next = require_u8(pre_exec.pc_next, "pre_pc_next");
+            auto const post_pc = require_u8(post.pc, "post_pc");
+
+            if(pc_we)
+            {
+                if(post_pc != pre_next)
+                {
+                    std::fprintf(stderr,
+                                 "[expect] exec: pc != pre_pc_next: pre_pc=%02x pre_next=%02x post_pc=%02x\n",
+                                 pre_pc,
+                                 pre_next,
+                                 post_pc);
+                    std::abort();
+                }
+            }
+            else
+            {
+                if(post_pc != pre_pc)
+                {
+                    std::fprintf(stderr,
+                                 "[expect] exec: pc changed while pc_we=0: pre_pc=%02x post_pc=%02x\n",
+                                 pre_pc,
+                                 post_pc);
+                    std::abort();
+                }
+            }
+        }
+    }
         halted = read_bool(n_halt);
         if(halted) { break; }
 
-        // Fetch next instruction on negedge.
+        // Fetch next instruction on negedge: IR should capture current ROM data (for current PC).
+        auto pre_fetch = snapshot();
         do_step("fetch", false, [&] { set_clk(false); });
+        if(expect)
+        {
+            auto post = snapshot();
+            check_probe_equal(post, "fetch");
+        if(pre_fetch.rst_n && post.rst_n && *pre_fetch.rst_n && *post.rst_n)
+        {
+            auto const pre_pc = require_u8(pre_fetch.pc, "pre_pc");
+            auto const post_pc = require_u8(post.pc, "post_pc");
+            if(pre_pc != post_pc)
+            {
+                std::fprintf(stderr,
+                             "[expect] fetch: pc changed on negedge: pre=%02x post=%02x\n",
+                             pre_pc,
+                             post_pc);
+                std::abort();
+            }
+
+            auto const pre_rom = require_u16(pre_fetch.rom_data, "pre_rom_data");
+            auto const post_ir = require_u16(post.ir, "post_ir");
+            if(pre_rom != post_ir)
+            {
+                std::fprintf(stderr,
+                             "[expect] fetch: ir != pre_rom_data: pc=%02x ir=%04x pre_rom=%04x\n",
+                             static_cast<unsigned>(pre_pc),
+                             static_cast<unsigned>(post_ir),
+                             static_cast<unsigned>(pre_rom));
+                std::abort();
+            }
+        }
+    }
     }
 
     assert(halted && "CPU did not reach HLT within cycle budget");
