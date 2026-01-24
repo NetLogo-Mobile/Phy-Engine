@@ -52,3 +52,9 @@ endif()
 
 # verilog -> PE netlist -> PhysicsLab .sav (with IO auto-placement)
 add_executable(verilog2plsav verilog2plsav.cpp)
+
+# verilog -> PENL (LevelDB-backed) export
+if(PHY_ENGINE_USE_LEVELDB)
+    add_executable(verilog2penl verilog2penl.cpp)
+    target_link_libraries(verilog2penl PRIVATE leveldb)
+endif()
