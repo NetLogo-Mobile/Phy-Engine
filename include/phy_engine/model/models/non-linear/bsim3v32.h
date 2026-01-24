@@ -19,7 +19,6 @@
 // per BSIM3v3.2.
 // - Charge/C-V (capMod=3): replace the current clean-room stepping-stone with full BSIM3v3.2 charge equations (Qinv/Qb/Qacc/Qdep), including correct
 // derivatives for C-matrix.
-// - Vdseff/Vdsat consistency in C/V: derive CV-region Vdsat/Vdseff directly from the C/V formulation (do not rely on scaled DC caches).
 // - Gate leakage: implement full BSIM3v3.2 gate current models (Ig*, Igb/igs/igd variants, bias/temperature dependence, partitioning, and derivatives) beyond
 // the current simplified hooks.
 // - GIDL/GISL: extend to full BSIM3v3.2 behavior (bias dependence, temperature, derivatives, and corner cases) beyond the current simplified subset.
@@ -572,10 +571,24 @@ namespace phy_engine::model
             return a;
         }
 
-        inline double bsim3v32_exp(double x) noexcept { return ::std::exp(x); }
+        inline double bsim3v32_exp(double x) noexcept { return limexp(x); }
 
         inline bsim3v32_dual3 bsim3v32_exp(bsim3v32_dual3 x) noexcept
         {
+            // limexp-like behavior to avoid overflow while keeping a reasonable slope.
+            // - x > 50: exp(50) * (1 + (x-50)), slope = exp(50)
+            // - x < -50: exp(-50), slope = 0
+            if(x.val > 50.0)
+            {
+                double const e50{::std::exp(50.0)};
+                double const e{e50 * (1.0 + (x.val - 50.0))};
+                return {e, e50 * x.dvgs, e50 * x.dvds, e50 * x.dvbs};
+            }
+            if(x.val < -50.0)
+            {
+                double const e{::std::exp(-50.0)};
+                return {e, 0.0, 0.0, 0.0};
+            }
             double const e{::std::exp(x.val)};
             return {e, e * x.dvgs, e * x.dvds, e * x.dvbs};
         }
@@ -1187,7 +1200,9 @@ namespace phy_engine::model
             double const gamma_eff{gamma_eff_raw > 0.0 ? gamma_eff_raw : 0.0};
             double const k1_base{(m.k1 != 0.0) ? m.k1 : gamma_eff};
             double const k1_eff{details::bsim3v32_lw_scale(k1_base, m.lk1, m.wk1, m.pk1, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const k2_eff{details::bsim3v32_lw_scale(m.k2, m.lk2, m.wk2, m.pk2, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
             double const k1ox{k1_eff * tox_ratio};
+            double const k2ox{k2_eff * tox_ratio};
 
             double const vbm{(m.vbm < 0.0) ? m.vbm : -3.0};
             double const delta1{(m.delta1 > 0.0) ? m.delta1 : 1e-3};
@@ -1195,7 +1210,9 @@ namespace phy_engine::model
             double const sqrt_phi{::std::sqrt(phi_s)};
             Real const sqrt_phi_vbs{bsim3v32_sqrt(bsim3v32_max(phi_s - vbseff, 1e-12))};
 
-            Real const qb_n{coxwl * k1ox * (sqrt_phi_vbs - sqrt_phi)};  // bulk (depletion) charge (approx)
+            // Bulk depletion charge (clean-room approximation).
+            // Include both k1 and k2 body-effect terms to better align Qb with the Vth(Vbs) formulation.
+            Real const qb_n{coxwl * (Real{k1ox} * (sqrt_phi_vbs - sqrt_phi) - Real{k2ox} * vbseff)};
 
             // Inversion charge (clean-room, long-channel baseline), with a smooth linear/saturation blend.
             // - Linear:  Qinv ≈ -CoxWL*(Vgsteff - Abulk*Vdseff/2)
@@ -1227,16 +1244,69 @@ namespace phy_engine::model
             Real const vgst_cv{vgs_s - c.vth - voffcv_eff};
             Real const vgsteff_cv{bsim3v32_vgsteff(vgst_cv, n, vt)};
 
-            // For C/V, the saturation boundary depends on the CV-effective inversion charge.
-            // We approximate this by scaling the DC core's Vdsat/Vdseff with vgsteff_cv/vgsteff_dc.
-            Real const vgsteff_dc{c.vgsteff};
-            Real const ratio_cv{vgsteff_cv / bsim3v32_max(vgsteff_dc, 1e-18)};
+            // For C/V, derive the saturation boundary from the same (clean-room) velocity-sat + mobility model
+            // used by the DC core, but evaluated at the CV-effective inversion charge (vgsteff_cv).
+            // This avoids relying on scaled DC caches and makes the charge Jacobian more self-consistent.
             Real const vds_pos{bsim3v32_pos_smooth(vds_s)};
-            Real const vdsat_cv{bsim3v32_pos_smooth(c.vdsat * ratio_cv)};
-            Real const vdseff_cv_raw{bsim3v32_pos_smooth(c.vdseff * ratio_cv)};
-            // Smooth min(vdseff_cv_raw, vds_pos)
-            Real const dv{vdseff_cv_raw - vds_pos};
-            Real const vdseff_cv{0.5 * (vdseff_cv_raw + vds_pos - bsim3v32_abs_smooth(dv))};
+
+            // Mobility for the C/V charge model (re-evaluated with vgsteff_cv and vbseff).
+            double u0{details::bsim3v32_lw_scale(m.u0, m.lu0, m.wu0, m.pu0, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const kp_eff_geom{details::bsim3v32_lw_scale(
+                m.Kp, m.lkp, m.wkp, m.pkp, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            if(u0 <= 0.0 && kp_eff_geom > 0.0) { u0 = kp_eff_geom / bsim3v32_value(c.cox); }
+
+            // Temperature scaling of mobility (subset, consistent with DC core).
+            double const t_k{m.Temp + k_t0};
+            double const tnom_k{m.tnom + k_t0};
+            if(u0 > 0.0 && m.ute != 0.0 && t_k > 1.0 && tnom_k > 1.0)
+            {
+                double const ratio{t_k / tnom_k};
+                u0 *= ::std::pow(ratio, -m.ute);
+            }
+
+            double const ua_eff{details::bsim3v32_lw_scale(m.ua, m.lua, m.wua, m.pua, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const ub_eff{details::bsim3v32_lw_scale(m.ub, m.lub, m.wub, m.pub, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const uc_eff{details::bsim3v32_lw_scale(m.uc, m.luc, m.wuc, m.puc, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            Real ueff_cv{};
+            if(m.mobMod < 1.5)
+            {
+                ueff_cv = bsim3v32_ueff_mobmod1(u0, ua_eff, ub_eff, uc_eff, vgsteff_cv, vbseff);
+                if(bsim3v32_value(ueff_cv) <= 0.0) { ueff_cv = Real{u0}; }
+            }
+            else if(m.mobMod < 2.5)
+            {
+                double const tox{m.tox > 0.0 ? m.tox : 1e-8};
+                ueff_cv = bsim3v32_ueff_mobmod2(u0, ua_eff, ub_eff, uc_eff, vgsteff_cv, vbseff, tox);
+                if(bsim3v32_value(ueff_cv) <= 0.0) { ueff_cv = Real{u0}; }
+            }
+            else
+            {
+                double const tox{m.tox > 0.0 ? m.tox : 1e-8};
+                ueff_cv = bsim3v32_ueff_mobmod3(u0, ua_eff, ub_eff, uc_eff, vgsteff_cv, vbseff, tox, vt);
+                if(bsim3v32_value(ueff_cv) <= 0.0) { ueff_cv = Real{u0}; }
+            }
+
+            // Velocity saturation and Vdsat/Vdseff (same functional form as DC core).
+            double const dt_c{m.Temp - m.tnom};
+            double const vsat_eff_geom{details::bsim3v32_lw_scale(
+                m.vsat, m.lvsat, m.wvsat, m.pvsat, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double vsat{vsat_eff_geom > 0.0 ? vsat_eff_geom : 8e4};
+            if(m.at != 0.0)
+            {
+                vsat *= (1.0 + m.at * dt_c);
+                if(vsat <= 1.0) { vsat = 1.0; }
+            }
+            Real const esat{2.0 * Real{vsat} / bsim3v32_max(ueff_cv, 1e-18)};
+
+            Real const vdsat_cv_raw{vgsteff_cv / (abulk + vgsteff_cv / bsim3v32_max(esat * c.leff, 1e-18))};
+            Real const vdsat_cv{bsim3v32_pos_smooth(vdsat_cv_raw)};
+
+            double const delta{(m.delta > 0.0) ? m.delta : 1e-2};
+            Real const t1{vdsat_cv - vds_pos - Real{delta}};
+            Real const vdseff_cv_raw{vdsat_cv - 0.5 * (t1 + bsim3v32_sqrt(t1 * t1 + 4.0 * Real{delta} * vdsat_cv))};
+            Real const vdseff_cv_pos{bsim3v32_pos_smooth(vdseff_cv_raw)};
+            Real const dv{vdseff_cv_pos - vds_pos};
+            Real const vdseff_cv{0.5 * (vdseff_cv_pos + vds_pos - bsim3v32_abs_smooth(dv))};
 
             // Smooth linear/saturation blending around Vdsat to keep C(V) continuous.
             Real const s_reg{vds_pos - vdsat_cv};
@@ -1541,7 +1611,7 @@ namespace phy_engine::model
         double xpart{0.0};  // 0.0=0/100, 0.5=50/50, 1.0=40/60
         double mobMod{3.0};
         double vfbcv{::std::numeric_limits<double>::quiet_NaN()};
-        double acm{0.0};  // overlap charge mode (clean-room subset): 0=fixed caps, !=0=charge-based (capMod>=2.5 only)
+        double acm{0.0};  // overlap charge mode (clean-room subset): 0=fixed caps, !=0=charge-based (double-counting avoided)
 
         // Core parameters (temporary approximation; will be replaced with full BSIM3v3.2 set)
         double Kp{50e-6};    // A/V^2 (interpreted as μ*Cox)

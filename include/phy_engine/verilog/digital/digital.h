@@ -2950,8 +2950,13 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_add(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                // Verilog sizing: '+' result width is max operand width (no carry-out bit).
-                ::std::size_t const w{::std::max(width(a), width(b))};
+                // Verilog sizing: '+' result width is max operand width + 1 (carry-out bit).
+                ::std::size_t w{::std::max(width(a), width(b)) + 1};
+                if(w > max_concat_bits)
+                {
+                    if(p) { p->err(p->peek(), u8"addition result too wide (limit exceeded)"); }
+                    w = max_concat_bits;
+                }
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
@@ -2992,8 +2997,13 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_sub(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                // Verilog sizing: '-' result width is max operand width (no borrow-out bit).
-                ::std::size_t const w{::std::max(width(a), width(b))};
+                // Verilog sizing: '-' result width is max operand width + 1.
+                ::std::size_t w{::std::max(width(a), width(b)) + 1};
+                if(w > max_concat_bits)
+                {
+                    if(p) { p->err(p->peek(), u8"subtraction result too wide (limit exceeded)"); }
+                    w = max_concat_bits;
+                }
                 auto const unknown_sel{make_or(any_unknown_root(a), any_unknown_root(b))};
                 if(w <= 1)
                 {
