@@ -1605,244 +1605,244 @@ namespace phy_engine::model
         inline static constexpr ::fast_io::u8string_view identification_name{is_pmos ? u8"BSIM3P" : u8"BSIM3N"};
 
         // Pins: D, G, S, B
-        ::phy_engine::model::pin pins[4]{{{u8"D"}}, {{u8"G"}}, {{u8"S"}}, {{u8"B"}}};
+        ::phy_engine::model::pin pins[4]{{{u8"D"}}, {{u8"G"}}, {{u8"S"}}, {{u8"B"}}};  ///< @brief Device pins in order: D, G, S, B.
 
         // Geometry (instance parameters)
-        double W{1e-6};  // m
-        double L{1e-6};  // m
+        double W{1e-6};  ///< @brief Instance width (m).
+        double L{1e-6};  ///< @brief Instance length (m).
         // Effective geometry corrections (BSIM3-style). Leff/Weff will clamp at >= 0.
-        double dwc{0.0};     // m
-        double dlc{0.0};     // m
-        double m_mult{1.0};  // parallel multiplier (BSIM "m")
-        double nf{1.0};      // number of fingers (clean-room: treated as an additional parallel multiplier)
+        double dwc{0.0};     ///< @brief Width correction (m) used to compute effective width.
+        double dlc{0.0};     ///< @brief Length correction (m) used to compute effective length.
+        double m_mult{1.0};  ///< @brief Parallel multiplier (BSIM instance parameter "m").
+        double nf{1.0};      ///< @brief Number of fingers (treated here as an additional parallel multiplier).
 
         // Optional terminal series resistances (Ohm). When >0, use internal D'/S' nodes.
-        double Rd{0.0};
-        double Rs{0.0};
+        double Rd{0.0};  ///< @brief External drain series resistance (Ohm).
+        double Rs{0.0};  ///< @brief External source series resistance (Ohm).
         // Optional bulk series resistance (Ohm). When >0 and bulk pin is connected, use internal B' node.
-        double Rb{0.0};
+        double Rb{0.0};  ///< @brief External bulk series resistance (Ohm).
         // Optional distributed body resistances (Ohm, clean-room simplified BSIM3-style subset):
         // When >0 and bulk pin is connected, use additional internal nodes near each junction:
         // - rbdb: between B' and the drain-body diode's local body node (B'd)
         // - rbsb: between B' and the source-body diode's local body node (B's)
-        double rbdb{0.0};
-        double rbsb{0.0};
+        double rbdb{0.0};  ///< @brief Distributed body resistance from B' to local drain-body node (Ohm).
+        double rbsb{0.0};  ///< @brief Distributed body resistance from B' to local source-body node (Ohm).
         // BSIM3 sheet resistance model (clean-room subset):
         // - rsh: sheet resistance (Ohm/square)
         // - nrd/nrs: drain/source diffusion squares
         // Effective series resistances are:
         //   Rd_total = Rd + rsh*nrd
         //   Rs_total = Rs + rsh*nrs
-        double rsh{0.0};  // Ohm/square
-        double nrd{0.0};  // squares
-        double nrs{0.0};  // squares
+        double rsh{0.0};  ///< @brief Sheet resistance (Ohm/square) used to derive Rd/Rs.
+        double nrd{0.0};  ///< @brief Drain diffusion squares used with rsh (unitless).
+        double nrs{0.0};  ///< @brief Source diffusion squares used with rsh (unitless).
         // Optional gate resistance (Ohm). When >0, use internal G' node for intrinsic gm/caps.
-        double rg{0.0};
+        double rg{0.0};  ///< @brief Gate resistance (Ohm).
         // Resistance model selectors (clean-room subset, BSIM-like naming):
         // - rgateMod: when 0, disable rg even if rg>0; otherwise enable.
         // - rbodyMod: when 0, disable rbdb/rbsb distributed body resistances; otherwise enable.
-        double rgateMod{1.0};
-        double rbodyMod{1.0};
+        double rgateMod{1.0};  ///< @brief Gate resistance model selector (0 disables rg).
+        double rbodyMod{1.0};  ///< @brief Body resistance model selector (0 disables rbdb/rbsb).
 
         // Charge/capacitance model controls (BSIM3 names).
         // Note: BSIM3/NGSPICE default capMod is typically 3. For now:
         // - capMod < 2.5: use a Meyer-style intrinsic C model (capMod=0/1/2)
         // - capMod >= 2.5: use a charge-based intrinsic C-matrix (capMod=3), clean-room simplified, WIP
-        double capMod{3.0};
-        double xpart{0.0};  // 0.0=0/100, 0.5=50/50, 1.0=40/60
-        double mobMod{3.0};
-        double vfbcv{::std::numeric_limits<double>::quiet_NaN()};
-        double acm{0.0};  // overlap charge mode (clean-room subset): 0=fixed caps, !=0=charge-based (double-counting avoided)
+        double capMod{3.0};                                        ///< @brief Intrinsic capacitance model selector (BSIM3 capMod).
+        double xpart{0.0};                                         ///< @brief Charge partitioning selector (0.0=0/100, 0.5=50/50, 1.0=40/60).
+        double mobMod{3.0};                                        ///< @brief Mobility model selector (BSIM3 mobMod).
+        double vfbcv{::std::numeric_limits<double>::quiet_NaN()};  ///< @brief Flat-band voltage for CV (V); NaN => derived/default.
+        double acm{0.0};                                           ///< @brief Overlap charge mode selector (0=fixed overlap caps; nonzero=charge-based subset).
 
         // Core parameters (temporary approximation; will be replaced with full BSIM3v3.2 set)
-        double Kp{50e-6};    // A/V^2 (interpreted as μ*Cox)
-        double lambda{0.0};  // 1/V
-        double Vth0{0.7};    // V (|Vth| for PMOS)
-        double gamma{0.0};   // V^0.5 (body effect)
-        double phi{0.7};     // V (surface potential, must be >0)
+        double Kp{50e-6};    ///< @brief Effective transconductance parameter (A/V^2), interpreted as μ*Cox.
+        double lambda{0.0};  ///< @brief Channel-length modulation coefficient (1/V).
+        double Vth0{0.7};    ///< @brief Zero-bias threshold voltage magnitude (V).
+        double gamma{0.0};   ///< @brief Body effect coefficient (V^0.5).
+        double phi{0.7};     ///< @brief Surface potential φ (V), must be > 0.
 
         // Reference geometry for L/W scaling (meters).
-        double lref{1e-6};
-        double wref{1e-6};
+        double lref{1e-6};  ///< @brief Reference channel length for binning/scaling (m).
+        double wref{1e-6};  ///< @brief Reference channel width for binning/scaling (m).
         // L/W scaling coefficients (clean-room subset).
-        double lvth0{0.0};
-        double wvth0{0.0};
-        double pvth0{0.0};
-        double lkp{0.0};
-        double wkp{0.0};
-        double pkp{0.0};
-        double lu0{0.0};
-        double wu0{0.0};
-        double pu0{0.0};
-        double lrdsw{0.0};
-        double wrdsw{0.0};
-        double prdsw{0.0};
-        double lua{0.0};
-        double wua{0.0};
-        double pua{0.0};
-        double lub{0.0};
-        double wub{0.0};
-        double pub{0.0};
-        double luc{0.0};
-        double wuc{0.0};
-        double puc{0.0};
-        double lvsat{0.0};
-        double wvsat{0.0};
-        double pvsat{0.0};
-        double ldsub{0.0};
-        double wdsub{0.0};
-        double pdsub{0.0};
-        double leta0{0.0};
-        double weta0{0.0};
-        double peta0{0.0};
-        double letab{0.0};
-        double wetab{0.0};
-        double petab{0.0};
-        double lpclm{0.0};
-        double wpclm{0.0};
-        double ppclm{0.0};
-        double lpdiblc1{0.0};
-        double wpdiblc1{0.0};
-        double ppdiblc1{0.0};
-        double lpdiblc2{0.0};
-        double wpdiblc2{0.0};
-        double ppdiblc2{0.0};
-        double lpdiblcb{0.0};
-        double wpdiblcb{0.0};
-        double ppdiblcb{0.0};
-        double ldrout{0.0};
-        double wdrout{0.0};
-        double pdrout{0.0};
-        double lpvag{0.0};
-        double wpvag{0.0};
-        double ppvag{0.0};
-        double lpscbe1{0.0};
-        double wpscbe1{0.0};
-        double ppscbe1{0.0};
-        double lpscbe2{0.0};
-        double wpscbe2{0.0};
-        double ppscbe2{0.0};
-        double ldvt0{0.0};
-        double wdvt0{0.0};
-        double pdvt0{0.0};
-        double ldvt1{0.0};
-        double wdvt1{0.0};
-        double pdvt1{0.0};
-        double ldvt2{0.0};
-        double wdvt2{0.0};
-        double pdvt2{0.0};
-        double lnfactor{0.0};
-        double wnfactor{0.0};
-        double pnfactor{0.0};
-        double lcit{0.0};
-        double wcit{0.0};
-        double pcit{0.0};
-        double lketa{0.0};
-        double wketa{0.0};
-        double pketa{0.0};
-        double lprwg{0.0};
-        double wprwg{0.0};
-        double pprwg{0.0};
-        double lprwb{0.0};
-        double wprwb{0.0};
-        double pprwb{0.0};
-        double lk1{0.0};
-        double wk1{0.0};
-        double pk1{0.0};
-        double lk2{0.0};
-        double wk2{0.0};
-        double pk2{0.0};
-        double lk3{0.0};
-        double wk3{0.0};
-        double pk3{0.0};
-        double lk3b{0.0};
-        double wk3b{0.0};
-        double pk3b{0.0};
-        double lw0{0.0};
-        double ww0{0.0};
-        double pw0{0.0};
-        double lnlx{0.0};
-        double wnlx{0.0};
-        double pnlx{0.0};
-        double lvoff{0.0};
-        double wvoff{0.0};
-        double pvoff{0.0};
-        double lvoffcv{0.0};
-        double wvoffcv{0.0};
-        double pvoffcv{0.0};
-        double lnch{0.0};
-        double wnch{0.0};
-        double pnch{0.0};
-        double lgamma{0.0};
-        double wgamma{0.0};
-        double pgamma{0.0};
-        double lphi{0.0};
-        double wphi{0.0};
-        double pphi{0.0};
+        double lvth0{0.0};     ///< @brief Length-scaling coefficient for Vth0.
+        double wvth0{0.0};     ///< @brief Width-scaling coefficient for Vth0.
+        double pvth0{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for Vth0.
+        double lkp{0.0};       ///< @brief Length-scaling coefficient for Kp.
+        double wkp{0.0};       ///< @brief Width-scaling coefficient for Kp.
+        double pkp{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for Kp.
+        double lu0{0.0};       ///< @brief Length-scaling coefficient for u0.
+        double wu0{0.0};       ///< @brief Width-scaling coefficient for u0.
+        double pu0{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for u0.
+        double lrdsw{0.0};     ///< @brief Length-scaling coefficient for rdsw.
+        double wrdsw{0.0};     ///< @brief Width-scaling coefficient for rdsw.
+        double prdsw{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for rdsw.
+        double lua{0.0};       ///< @brief Length-scaling coefficient for ua.
+        double wua{0.0};       ///< @brief Width-scaling coefficient for ua.
+        double pua{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for ua.
+        double lub{0.0};       ///< @brief Length-scaling coefficient for ub.
+        double wub{0.0};       ///< @brief Width-scaling coefficient for ub.
+        double pub{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for ub.
+        double luc{0.0};       ///< @brief Length-scaling coefficient for uc.
+        double wuc{0.0};       ///< @brief Width-scaling coefficient for uc.
+        double puc{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for uc.
+        double lvsat{0.0};     ///< @brief Length-scaling coefficient for vsat.
+        double wvsat{0.0};     ///< @brief Width-scaling coefficient for vsat.
+        double pvsat{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for vsat.
+        double ldsub{0.0};     ///< @brief Length-scaling coefficient for dsub.
+        double wdsub{0.0};     ///< @brief Width-scaling coefficient for dsub.
+        double pdsub{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for dsub.
+        double leta0{0.0};     ///< @brief Length-scaling coefficient for eta0.
+        double weta0{0.0};     ///< @brief Width-scaling coefficient for eta0.
+        double peta0{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for eta0.
+        double letab{0.0};     ///< @brief Length-scaling coefficient for etab.
+        double wetab{0.0};     ///< @brief Width-scaling coefficient for etab.
+        double petab{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for etab.
+        double lpclm{0.0};     ///< @brief Length-scaling coefficient for pclm.
+        double wpclm{0.0};     ///< @brief Width-scaling coefficient for pclm.
+        double ppclm{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for pclm.
+        double lpdiblc1{0.0};  ///< @brief Length-scaling coefficient for pdiblc1.
+        double wpdiblc1{0.0};  ///< @brief Width-scaling coefficient for pdiblc1.
+        double ppdiblc1{0.0};  ///< @brief Cross-term (L*W) scaling coefficient for pdiblc1.
+        double lpdiblc2{0.0};  ///< @brief Length-scaling coefficient for pdiblc2.
+        double wpdiblc2{0.0};  ///< @brief Width-scaling coefficient for pdiblc2.
+        double ppdiblc2{0.0};  ///< @brief Cross-term (L*W) scaling coefficient for pdiblc2.
+        double lpdiblcb{0.0};  ///< @brief Length-scaling coefficient for pdiblcb.
+        double wpdiblcb{0.0};  ///< @brief Width-scaling coefficient for pdiblcb.
+        double ppdiblcb{0.0};  ///< @brief Cross-term (L*W) scaling coefficient for pdiblcb.
+        double ldrout{0.0};    ///< @brief Length-scaling coefficient for drout.
+        double wdrout{0.0};    ///< @brief Width-scaling coefficient for drout.
+        double pdrout{0.0};    ///< @brief Cross-term (L*W) scaling coefficient for drout.
+        double lpvag{0.0};     ///< @brief Length-scaling coefficient for pvag.
+        double wpvag{0.0};     ///< @brief Width-scaling coefficient for pvag.
+        double ppvag{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for pvag.
+        double lpscbe1{0.0};   ///< @brief Length-scaling coefficient for pscbe1.
+        double wpscbe1{0.0};   ///< @brief Width-scaling coefficient for pscbe1.
+        double ppscbe1{0.0};   ///< @brief Cross-term (L*W) scaling coefficient for pscbe1.
+        double lpscbe2{0.0};   ///< @brief Length-scaling coefficient for pscbe2.
+        double wpscbe2{0.0};   ///< @brief Width-scaling coefficient for pscbe2.
+        double ppscbe2{0.0};   ///< @brief Cross-term (L*W) scaling coefficient for pscbe2.
+        double ldvt0{0.0};     ///< @brief Length-scaling coefficient for dvt0.
+        double wdvt0{0.0};     ///< @brief Width-scaling coefficient for dvt0.
+        double pdvt0{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for dvt0.
+        double ldvt1{0.0};     ///< @brief Length-scaling coefficient for dvt1.
+        double wdvt1{0.0};     ///< @brief Width-scaling coefficient for dvt1.
+        double pdvt1{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for dvt1.
+        double ldvt2{0.0};     ///< @brief Length-scaling coefficient for dvt2.
+        double wdvt2{0.0};     ///< @brief Width-scaling coefficient for dvt2.
+        double pdvt2{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for dvt2.
+        double lnfactor{0.0};  ///< @brief Length-scaling coefficient for nfactor.
+        double wnfactor{0.0};  ///< @brief Width-scaling coefficient for nfactor.
+        double pnfactor{0.0};  ///< @brief Cross-term (L*W) scaling coefficient for nfactor.
+        double lcit{0.0};      ///< @brief Length-scaling coefficient for cit.
+        double wcit{0.0};      ///< @brief Width-scaling coefficient for cit.
+        double pcit{0.0};      ///< @brief Cross-term (L*W) scaling coefficient for cit.
+        double lketa{0.0};     ///< @brief Length-scaling coefficient for keta.
+        double wketa{0.0};     ///< @brief Width-scaling coefficient for keta.
+        double pketa{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for keta.
+        double lprwg{0.0};     ///< @brief Length-scaling coefficient for prwg.
+        double wprwg{0.0};     ///< @brief Width-scaling coefficient for prwg.
+        double pprwg{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for prwg.
+        double lprwb{0.0};     ///< @brief Length-scaling coefficient for prwb.
+        double wprwb{0.0};     ///< @brief Width-scaling coefficient for prwb.
+        double pprwb{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for prwb.
+        double lk1{0.0};       ///< @brief Length-scaling coefficient for k1.
+        double wk1{0.0};       ///< @brief Width-scaling coefficient for k1.
+        double pk1{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for k1.
+        double lk2{0.0};       ///< @brief Length-scaling coefficient for k2.
+        double wk2{0.0};       ///< @brief Width-scaling coefficient for k2.
+        double pk2{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for k2.
+        double lk3{0.0};       ///< @brief Length-scaling coefficient for k3.
+        double wk3{0.0};       ///< @brief Width-scaling coefficient for k3.
+        double pk3{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for k3.
+        double lk3b{0.0};      ///< @brief Length-scaling coefficient for k3b.
+        double wk3b{0.0};      ///< @brief Width-scaling coefficient for k3b.
+        double pk3b{0.0};      ///< @brief Cross-term (L*W) scaling coefficient for k3b.
+        double lw0{0.0};       ///< @brief Length-scaling coefficient for w0.
+        double ww0{0.0};       ///< @brief Width-scaling coefficient for w0.
+        double pw0{0.0};       ///< @brief Cross-term (L*W) scaling coefficient for w0.
+        double lnlx{0.0};      ///< @brief Length-scaling coefficient for nlx.
+        double wnlx{0.0};      ///< @brief Width-scaling coefficient for nlx.
+        double pnlx{0.0};      ///< @brief Cross-term (L*W) scaling coefficient for nlx.
+        double lvoff{0.0};     ///< @brief Length-scaling coefficient for voff.
+        double wvoff{0.0};     ///< @brief Width-scaling coefficient for voff.
+        double pvoff{0.0};     ///< @brief Cross-term (L*W) scaling coefficient for voff.
+        double lvoffcv{0.0};   ///< @brief Length-scaling coefficient for voffcv.
+        double wvoffcv{0.0};   ///< @brief Width-scaling coefficient for voffcv.
+        double pvoffcv{0.0};   ///< @brief Cross-term (L*W) scaling coefficient for voffcv.
+        double lnch{0.0};      ///< @brief Length-scaling coefficient for nch.
+        double wnch{0.0};      ///< @brief Width-scaling coefficient for nch.
+        double pnch{0.0};      ///< @brief Cross-term (L*W) scaling coefficient for nch.
+        double lgamma{0.0};    ///< @brief Length-scaling coefficient for gamma.
+        double wgamma{0.0};    ///< @brief Width-scaling coefficient for gamma.
+        double pgamma{0.0};    ///< @brief Cross-term (L*W) scaling coefficient for gamma.
+        double lphi{0.0};      ///< @brief Length-scaling coefficient for phi.
+        double wphi{0.0};      ///< @brief Width-scaling coefficient for phi.
+        double pphi{0.0};      ///< @brief Cross-term (L*W) scaling coefficient for phi.
 
         // BSIM3v3.x key parameters (subset; additional params can be added as needed).
         // Units follow the BSIM3 manuals (SI for geometry, V, and A; mobility in m^2/Vs).
-        double tox{1e-8};    // m
-        double toxm{1e-8};   // m (extraction oxide thickness)
-        double xj{0.0};      // m (junction depth, used for short-channel/DIBL scaling; 0 -> derived fallback)
-        double nch{1.7e23};  // 1/m^3 (channel doping)
-        double u0{0.0};      // m^2/Vs (if 0, derived from Kp/Cox)
-        double ua{0.0};
-        double ub{0.0};
-        double uc{0.0};
+        double tox{1e-8};    ///< @brief Gate oxide thickness tox (m).
+        double toxm{1e-8};   ///< @brief Extraction oxide thickness toxm (m).
+        double xj{0.0};      ///< @brief Junction depth xj (m); 0 => derived fallback.
+        double nch{1.7e23};  ///< @brief Channel doping nch (1/m^3).
+        double u0{0.0};      ///< @brief Low-field mobility u0 (m^2/Vs); 0 => derived from Kp/Cox.
+        double ua{0.0};      ///< @brief Mobility degradation coefficient ua.
+        double ub{0.0};      ///< @brief Mobility degradation coefficient ub.
+        double uc{0.0};      ///< @brief Mobility degradation coefficient uc.
         // Temperature dependence (clean-room subset, BSIM-like naming):
         // ua/ub/uc are mobility-degradation coefficients; ua1/ub1/uc1 are their linear temperature slopes around TNOM.
-        double ua1{0.0};   // 1/(V*°C)
-        double ub1{0.0};   // 1/(V*°C^2) in some references; treated here as linear slope in °C
-        double uc1{0.0};   // 1/(V*°C)
-        double vsat{8e4};  // m/s
+        double ua1{0.0};   ///< @brief Temperature slope for ua around tnom (clean-room subset).
+        double ub1{0.0};   ///< @brief Temperature slope for ub around tnom (clean-room subset).
+        double uc1{0.0};   ///< @brief Temperature slope for uc around tnom (clean-room subset).
+        double vsat{8e4};  ///< @brief Saturation velocity vsat (m/s).
 
-        double k1{0.0};
-        double k2{0.0};
-        double k3{0.0};
-        double k3b{0.0};
-        double w0{0.0};
-        double nlx{0.0};
-        double vbm{-3.0};
-        double delta1{1e-3};  // smoothing for Vbseff
-        double vbi{0.0};      // V (if 0, derived from phi)
+        double k1{0.0};       ///< @brief Body-effect coefficient k1.
+        double k2{0.0};       ///< @brief Body-effect coefficient k2.
+        double k3{0.0};       ///< @brief Short-channel/body-effect coefficient k3.
+        double k3b{0.0};      ///< @brief Back-bias coefficient for k3 (k3b).
+        double w0{0.0};       ///< @brief Narrow-width effect parameter w0.
+        double nlx{0.0};      ///< @brief Lateral non-uniform doping parameter nlx.
+        double vbm{-3.0};     ///< @brief Maximum body bias Vbm (V) used for Vbseff limiting.
+        double delta1{1e-3};  ///< @brief Smoothing parameter for Vbseff.
+        double vbi{0.0};      ///< @brief Built-in potential vbi (V); 0 => derived from phi.
 
-        double dvt0{0.0};
-        double dvt1{0.0};
-        double dvt2{0.0};
-        double dsub{0.0};
-        double eta0{0.0};
-        double etab{0.0};
+        double dvt0{0.0};  ///< @brief Short-channel effect coefficient dvt0.
+        double dvt1{0.0};  ///< @brief Short-channel effect coefficient dvt1.
+        double dvt2{0.0};  ///< @brief Short-channel effect coefficient dvt2.
+        double dsub{0.0};  ///< @brief DIBL/subthreshold coefficient dsub.
+        double eta0{0.0};  ///< @brief DIBL coefficient eta0.
+        double etab{0.0};  ///< @brief Body-bias dependence of DIBL coefficient etab.
 
-        double nfactor{0.0};
-        double noff{0.0};  // clean-room subset: additional subthreshold slope factor
-        double cit{0.0};
-        double voff{0.0};
-        double voffcv{::std::numeric_limits<double>::quiet_NaN()};
+        double nfactor{0.0};                                        ///< @brief Subthreshold slope factor nfactor.
+        double noff{0.0};                                           ///< @brief Additional subthreshold slope factor noff (clean-room subset).
+        double cit{0.0};                                            ///< @brief Interface trap capacitance parameter cit.
+        double voff{0.0};                                           ///< @brief Subthreshold offset voltage voff (V).
+        double voffcv{::std::numeric_limits<double>::quiet_NaN()};  ///< @brief CV offset voltage voffcv (V); NaN => derived/default.
 
         // CLM / DIBL / SCBE
-        double pclm{0.0};
-        double pdiblc1{0.0};
-        double pdiblc2{0.0};
-        double pdiblcb{0.0};
-        double drout{0.0};
-        double pvag{0.0};
-        double pscbe1{0.0};
-        double pscbe2{0.0};
-        double delta{1e-2};  // smoothing for Vdseff
+        double pclm{0.0};     ///< @brief Channel-length modulation parameter pclm.
+        double pdiblc1{0.0};  ///< @brief DIBL parameter pdiblc1.
+        double pdiblc2{0.0};  ///< @brief DIBL parameter pdiblc2.
+        double pdiblcb{0.0};  ///< @brief Body-bias dependence of DIBL (pdiblcb).
+        double drout{0.0};    ///< @brief Output resistance parameter drout.
+        double pvag{0.0};     ///< @brief Gate dependence parameter pvag.
+        double pscbe1{0.0};   ///< @brief Substrate current / SCBE parameter pscbe1.
+        double pscbe2{0.0};   ///< @brief Substrate current / SCBE parameter pscbe2.
+        double delta{1e-2};   ///< @brief Smoothing parameter for Vdseff.
         // rdsMod: when 0, disable the internal Rds model (rds/rdsw/prwg/prwb).
-        double rdsMod{1.0};
-        double rds{0.0};  // internal Rds (Ohm), used in Ids expression
-                          // BSIM3 Rds model (clean-room subset):
+        double rdsMod{1.0};  ///< @brief Rds model selector (0 disables internal Rds model).
+        double rds{0.0};     ///< @brief Internal Rds (Ohm) used in Ids expression.
+        // BSIM3 Rds model (clean-room subset):
         // - rdsw: source/drain resistance per effective width (Ohm*m). Effective Rds adds rdsw/Weff.
         // - prwg/prwb: bias dependence vs Vgsteff and Vbseff.
         // - prt: linear temperature coefficient for rdsw around TNOM (rdsw(T) ~= rdsw(Tnom)*(1+prt*(T-Tnom))).
-        double rdsw{0.0};  // Ohm*m
-        double prwg{0.0};  // 1/V
-        double prwb{0.0};  // 1/V
-        double prt{0.0};   // 1/°C
+        double rdsw{0.0};  ///< @brief Rds per effective width rdsw (Ohm*m).
+        double prwg{0.0};  ///< @brief Rds bias dependence coefficient vs Vgsteff (1/V).
+        double prwb{0.0};  ///< @brief Rds bias dependence coefficient vs Vbseff (1/V).
+        double prt{0.0};   ///< @brief Temperature coefficient for rdsw around tnom (1/°C).
 
-        double keta{0.0};
+        double keta{0.0};  ///< @brief Body-bias coefficient keta.
 
         // Gate-induced drain/source leakage (GIDL/GISL) (clean-room subset).
         // Units:
@@ -1850,14 +1850,14 @@ namespace phy_engine::model
         // - bgidl/bgisl: V
         // - cgidl/cgisl: V
         // - egidl/egisl: V
-        double agidl{0.0};
-        double bgidl{0.0};
-        double cgidl{0.0};
-        double egidl{0.0};
-        double agisl{0.0};
-        double bgisl{0.0};
-        double cgisl{-1.0};  // <0 => fall back to cgidl
-        double egisl{-1.0};  // <0 => fall back to egidl
+        double agidl{0.0};   ///< @brief GIDL amplitude coefficient agidl.
+        double bgidl{0.0};   ///< @brief GIDL coefficient bgidl (V).
+        double cgidl{0.0};   ///< @brief GIDL coefficient cgidl (V).
+        double egidl{0.0};   ///< @brief GIDL coefficient egidl (V).
+        double agisl{0.0};   ///< @brief GISL amplitude coefficient agisl.
+        double bgisl{0.0};   ///< @brief GISL coefficient bgisl (V).
+        double cgisl{-1.0};  ///< @brief GISL coefficient cgisl (V); <0 => fall back to cgidl.
+        double egisl{-1.0};  ///< @brief GISL coefficient egisl (V); <0 => fall back to egidl.
 
         // Gate-to-bulk leakage (clean-room simplified subset).
         // Units:
@@ -1865,239 +1865,239 @@ namespace phy_engine::model
         // - bigb: V
         // - cigb: V
         // - eigb: V (threshold shift)
-        double aigb{0.0};
-        double bigb{0.0};
-        double cigb{0.0};
-        double eigb{0.0};
+        double aigb{0.0};  ///< @brief Gate-to-bulk leakage amplitude coefficient aigb.
+        double bigb{0.0};  ///< @brief Gate-to-bulk leakage coefficient bigb (V).
+        double cigb{0.0};  ///< @brief Gate-to-bulk leakage coefficient cigb (V).
+        double eigb{0.0};  ///< @brief Gate-to-bulk leakage threshold shift eigb (V).
 
         // Gate-to-source leakage (clean-room simplified subset).
-        double aigs{0.0};
-        double bigs{0.0};
-        double cigs{0.0};
-        double eigs{0.0};
+        double aigs{0.0};  ///< @brief Gate-to-source leakage amplitude coefficient aigs.
+        double bigs{0.0};  ///< @brief Gate-to-source leakage coefficient bigs (V).
+        double cigs{0.0};  ///< @brief Gate-to-source leakage coefficient cigs (V).
+        double eigs{0.0};  ///< @brief Gate-to-source leakage threshold shift eigs (V).
 
         // Gate-to-drain leakage (clean-room simplified subset).
-        double aigd{0.0};
-        double bigd{0.0};
-        double cigd{0.0};
-        double eigd{0.0};
+        double aigd{0.0};  ///< @brief Gate-to-drain leakage amplitude coefficient aigd.
+        double bigd{0.0};  ///< @brief Gate-to-drain leakage coefficient bigd (V).
+        double cigd{0.0};  ///< @brief Gate-to-drain leakage coefficient cigd (V).
+        double eigd{0.0};  ///< @brief Gate-to-drain leakage threshold shift eigd (V).
 
         // Impact ionization / substrate current (clean-room subset).
         // alpha0: 1/V, beta0: V, vdsatii: V
-        double alpha0{0.0};
-        double beta0{0.0};
-        double vdsatii{0.0};
+        double alpha0{0.0};   ///< @brief Impact ionization coefficient alpha0 (1/V).
+        double beta0{0.0};    ///< @brief Impact ionization coefficient beta0 (V).
+        double vdsatii{0.0};  ///< @brief Impact ionization threshold vdsatii (V).
 
         // Optional fixed capacitances (F) - placeholder for full charge-based C/V model
-        double Cgs{0.0};
-        double Cgd{0.0};
-        double Cgb{0.0};
+        double Cgs{0.0};  ///< @brief Optional fixed intrinsic gate-source capacitance (F).
+        double Cgd{0.0};  ///< @brief Optional fixed intrinsic gate-drain capacitance (F).
+        double Cgb{0.0};  ///< @brief Optional fixed intrinsic gate-bulk capacitance (F).
 
         // Gate overlap capacitances (BSIM-style).
         // - cgso/cgdo: F/m scaled by effective width (Weff)
         // - cgbo:      F/m scaled by effective length (Leff)
-        double cgso{0.0};
-        double cgdo{0.0};
-        double cgbo{0.0};
+        double cgso{0.0};  ///< @brief Gate-source overlap capacitance per width (F/m).
+        double cgdo{0.0};  ///< @brief Gate-drain overlap capacitance per width (F/m).
+        double cgbo{0.0};  ///< @brief Gate-bulk overlap capacitance per length (F/m).
 
         // Body diode current (placeholder; full BSIM3 junction model TBD)
-        double diode_Is{1e-14};
-        double diode_N{1.0};
+        double diode_Is{1e-14};  ///< @brief Default body-diode saturation current Is (A).
+        double diode_N{1.0};     ///< @brief Default body-diode emission coefficient N (unitless).
         // Optional per-junction diode overrides (clean-room subset).
         // Semantics:
         // - For Is/Isr/tt: negative => inherit the common parameter (diode_Is/diode_Isr/tt).
         // - For N/Nr:      <=0 => inherit the common parameter (diode_N/diode_Nr).
-        double diode_Isd{-1.0};   // A
-        double diode_Iss{-1.0};   // A
-        double diode_Nd{-1.0};    // unitless
-        double diode_Ns{-1.0};    // unitless
-        double diode_Isrd{-1.0};  // A
-        double diode_Isrs{-1.0};  // A
-        double diode_Nrd{-1.0};   // unitless
-        double diode_Nrs{-1.0};   // unitless
+        double diode_Isd{-1.0};   ///< @brief Drain-body diode Is override (A); negative => inherit diode_Is.
+        double diode_Iss{-1.0};   ///< @brief Source-body diode Is override (A); negative => inherit diode_Is.
+        double diode_Nd{-1.0};    ///< @brief Drain-body diode N override; <=0 => inherit diode_N.
+        double diode_Ns{-1.0};    ///< @brief Source-body diode N override; <=0 => inherit diode_N.
+        double diode_Isrd{-1.0};  ///< @brief Drain-body diode Isr override (A); negative => inherit diode_Isr.
+        double diode_Isrs{-1.0};  ///< @brief Source-body diode Isr override (A); negative => inherit diode_Isr.
+        double diode_Nrd{-1.0};   ///< @brief Drain-body diode Nr override; <=0 => inherit diode_Nr.
+        double diode_Nrs{-1.0};   ///< @brief Source-body diode Nr override; <=0 => inherit diode_Nr.
         // Optional recombination current (clean-room subset, forwarded to PN_junction Isr/Nr).
-        double diode_Isr{0.0};
-        double diode_Nr{2.0};
+        double diode_Isr{0.0};  ///< @brief Default body-diode recombination current Isr (A).
+        double diode_Nr{2.0};   ///< @brief Default body-diode recombination emission coefficient Nr (unitless).
         // Junction breakdown parameters (clean-room subset, forwarded to the internal PN_junction models).
         // Set Bv<=0 or Ibv<=0 to disable breakdown on that junction.
-        double bvd{40.0};
-        double ibvd{1e-3};
-        double bvs{40.0};
-        double ibvs{1e-3};
+        double bvd{40.0};   ///< @brief Drain-body diode breakdown voltage Bv (V); <=0 disables breakdown.
+        double ibvd{1e-3};  ///< @brief Drain-body diode breakdown current Ibv (A); <=0 disables breakdown.
+        double bvs{40.0};   ///< @brief Source-body diode breakdown voltage Bv (V); <=0 disables breakdown.
+        double ibvs{1e-3};  ///< @brief Source-body diode breakdown current Ibv (A); <=0 disables breakdown.
         // Junction transit time (seconds): enables diffusion capacitance in the internal body diodes (tt * dId/dV).
-        double tt{0.0};
+        double tt{0.0};  ///< @brief Body-diode transit time tt (s) for diffusion capacitance (SPICE-style).
         // Optional per-junction transit time overrides (seconds). Negative => inherit tt.
-        double ttd{-1.0};
-        double tts{-1.0};
+        double ttd{-1.0};  ///< @brief Drain-body diode transit time override (s); negative => inherit tt.
+        double tts{-1.0};  ///< @brief Source-body diode transit time override (s); negative => inherit tt.
         // Temperature controls:
         // - Temp:   effective device temperature used for all temperature-dependent calculations (Celsius)
         // - dtemp:  instance temperature offset added on top of environment Temp or overridden Temp (Celsius)
         // - Temp_override: if true, base temperature is Temp_override_value instead of environment temperature
-        double Temp{27.0};                 // Celsius (effective)
-        double dtemp{0.0};                 // Celsius
-        double Temp_override_value{27.0};  // Celsius (base TEMP when override is enabled)
-        bool Temp_override{};              // true if instance "Temp" overrides environment temperature
+        double Temp{27.0};                 ///< @brief Effective instance temperature (°C) used for device calculations.
+        double dtemp{0.0};                 ///< @brief Instance temperature offset added to base temperature (°C).
+        double Temp_override_value{27.0};  ///< @brief Base temperature (°C) when Temp_override is enabled.
+        bool Temp_override{};              ///< @brief True if instance Temp overrides environment temperature.
 
         // Temperature scaling (clean-room subset; aligns with common BSIM3 usage).
         // - tnom: nominal model temperature (Celsius)
         // - ute: mobility temperature exponent
         // - kt1/kt2: Vth temperature coefficients
         // - at: vsat temperature coefficient
-        double tnom{27.0};  // Celsius
-        double ute{0.0};
-        double kt1{0.0};
-        double kt2{0.0};
-        double at{0.0};
+        double tnom{27.0};  ///< @brief Nominal model temperature tnom (°C).
+        double ute{0.0};    ///< @brief Mobility temperature exponent ute.
+        double kt1{0.0};    ///< @brief Threshold voltage temperature coefficient kt1.
+        double kt2{0.0};    ///< @brief Threshold voltage temperature coefficient kt2.
+        double at{0.0};     ///< @brief Saturation velocity temperature coefficient at.
 
         // Optional diffusion junction current density parameters (clean-room subset):
         // Is_d = m*(js*Area_d + jsw*Perim_d), Is_s = m*(js*Area_s + jsw*Perim_s).
         // When js==0 and jsw==0, fall back to diode_Is/diode_N with Area=m.
-        double js{0.0};    // A/m^2
-        double jsw{0.0};   // A/m
-        double jswg{0.0};  // A/m (gate-edge sidewall current density, scaled by Weff)
+        double js{0.0};    ///< @brief Junction saturation current density js (A/m^2).
+        double jsw{0.0};   ///< @brief Sidewall saturation current density jsw (A/m).
+        double jswg{0.0};  ///< @brief Gate-edge sidewall saturation current density jswg (A/m).
         // Optional per-junction diffusion current densities. If 0, fall back to the corresponding global js/jsw/jswg.
-        double jsd{0.0};    // A/m^2
-        double jss{0.0};    // A/m^2
-        double jswd{0.0};   // A/m
-        double jsws{0.0};   // A/m
-        double jswgd{0.0};  // A/m
-        double jswgs{0.0};  // A/m
+        double jsd{0.0};    ///< @brief Drain junction saturation current density override jsd (A/m^2).
+        double jss{0.0};    ///< @brief Source junction saturation current density override jss (A/m^2).
+        double jswd{0.0};   ///< @brief Drain sidewall saturation current density override jswd (A/m).
+        double jsws{0.0};   ///< @brief Source sidewall saturation current density override jsws (A/m).
+        double jswgd{0.0};  ///< @brief Drain gate-edge sidewall current density override jswgd (A/m).
+        double jswgs{0.0};  ///< @brief Source gate-edge sidewall current density override jswgs (A/m).
         // Optional diffusion junction recombination current density parameters (clean-room subset):
         // When any of these are non-zero, they override diode_Isr scaling using geometry similarly to js/jsw/jswg.
-        double jsr{0.0};    // A/m^2
-        double jsrw{0.0};   // A/m
-        double jsrwg{0.0};  // A/m (gate-edge sidewall recombination current density, scaled by Weff)
+        double jsr{0.0};    ///< @brief Junction recombination current density jsr (A/m^2).
+        double jsrw{0.0};   ///< @brief Sidewall recombination current density jsrw (A/m).
+        double jsrwg{0.0};  ///< @brief Gate-edge sidewall recombination current density jsrwg (A/m).
         // Optional per-junction recombination current densities. If 0, fall back to the corresponding global jsr/jsrw/jsrwg.
-        double jsrd{0.0};    // A/m^2
-        double jsrs{0.0};    // A/m^2
-        double jsrwd{0.0};   // A/m
-        double jsrws{0.0};   // A/m
-        double jsrwgd{0.0};  // A/m
-        double jsrwgs{0.0};  // A/m
+        double jsrd{0.0};    ///< @brief Drain junction recombination current density override jsrd (A/m^2).
+        double jsrs{0.0};    ///< @brief Source junction recombination current density override jsrs (A/m^2).
+        double jsrwd{0.0};   ///< @brief Drain sidewall recombination current density override jsrwd (A/m).
+        double jsrws{0.0};   ///< @brief Source sidewall recombination current density override jsrws (A/m).
+        double jsrwgd{0.0};  ///< @brief Drain gate-edge sidewall recombination density override jsrwgd (A/m).
+        double jsrwgs{0.0};  ///< @brief Source gate-edge sidewall recombination density override jsrwgs (A/m).
 
         // Optional S/D-B depletion capacitance (simple SPICE-style junction C model).
         // Units:
         // - Cj*Area [F] where Cj is F/m^2 and Area is m^2
         // - Cjsw*Perimeter [F] where Cjsw is F/m and Perimeter is m
-        double drainArea{0.0};        // m^2
-        double sourceArea{0.0};       // m^2
-        double drainPerimeter{0.0};   // m
-        double sourcePerimeter{0.0};  // m
+        double drainArea{0.0};        ///< @brief Drain diffusion area Ad (m^2).
+        double sourceArea{0.0};       ///< @brief Source diffusion area As (m^2).
+        double drainPerimeter{0.0};   ///< @brief Drain diffusion perimeter Pd (m).
+        double sourcePerimeter{0.0};  ///< @brief Source diffusion perimeter Ps (m).
 
         // Optional per-junction depletion parameters (clean-room subset):
         // If set, these override the corresponding common parameters for that junction only.
         // This allows asymmetric drain/source junction C–V behavior while keeping default behavior unchanged.
-        double cjd{0.0};  // F/m^2 (drain bottom junction cap density)
-        double cjs{0.0};  // F/m^2 (source bottom junction cap density)
+        double cjd{0.0};  ///< @brief Drain bottom junction capacitance density (F/m^2).
+        double cjs{0.0};  ///< @brief Source bottom junction capacitance density (F/m^2).
 
-        double cj{0.0};    // F/m^2 (bottom junction cap density)
-        double cjsw{0.0};  // F/m   (sidewall junction cap density)
+        double cj{0.0};    ///< @brief Bottom junction capacitance density (F/m^2).
+        double cjsw{0.0};  ///< @brief Sidewall junction capacitance density (F/m).
         // Optional per-junction sidewall cap densities (F/m). If 0, fall back to cjsw.
-        double cjswd{0.0};
-        double cjsws{0.0};
-        double cjswg{0.0};  // F/m  (gate-edge sidewall junction cap density)
+        double cjswd{0.0};  ///< @brief Drain sidewall junction capacitance density (F/m); 0 => inherit cjsw.
+        double cjsws{0.0};  ///< @brief Source sidewall junction capacitance density (F/m); 0 => inherit cjsw.
+        double cjswg{0.0};  ///< @brief Gate-edge sidewall junction capacitance density (F/m).
         // Optional per-junction gate-edge sidewall cap densities (F/m). If 0, fall back to cjswg.
-        double cjswgd{0.0};
-        double cjswgs{0.0};
-        double pb{1.0};  // V (junction potential)
+        double cjswgd{0.0};  ///< @brief Drain gate-edge sidewall junction cap density (F/m); 0 => inherit cjswg.
+        double cjswgs{0.0};  ///< @brief Source gate-edge sidewall junction cap density (F/m); 0 => inherit cjswg.
+        double pb{1.0};      ///< @brief Junction potential pb (V).
         // Optional per-junction bottom-junction potentials (V). If <=0, fall back to pb.
-        double pbd{0.0};
-        double pbs{0.0};
+        double pbd{0.0};  ///< @brief Drain bottom junction potential pbd (V); <=0 => inherit pb.
+        double pbs{0.0};  ///< @brief Source bottom junction potential pbs (V); <=0 => inherit pb.
         // Sidewall junction potential (V). If <=0, fall back to pb.
-        double pbsw{0.0};
+        double pbsw{0.0};  ///< @brief Sidewall junction potential pbsw (V); <=0 => inherit pb.
         // Optional per-junction sidewall junction potentials (V). If <=0, fall back to pbsw/pb.
-        double pbswd{0.0};
-        double pbsws{0.0};
+        double pbswd{0.0};  ///< @brief Drain sidewall junction potential pbswd (V); <=0 => inherit pbsw/pb.
+        double pbsws{0.0};  ///< @brief Source sidewall junction potential pbsws (V); <=0 => inherit pbsw/pb.
         // Gate-edge sidewall junction potential (V). If <=0, fall back to pbsw/pb.
-        double pbswg{0.0};
+        double pbswg{0.0};  ///< @brief Gate-edge sidewall junction potential pbswg (V); <=0 => inherit pbsw/pb.
         // Optional per-junction gate-edge sidewall junction potentials (V). If <=0, fall back to pbswg/pbsw/pb.
-        double pbswgd{0.0};
-        double pbswgs{0.0};
+        double pbswgd{0.0};  ///< @brief Drain gate-edge sidewall junction potential pbswgd (V); <=0 => inherit pbswg/pbsw/pb.
+        double pbswgs{0.0};  ///< @brief Source gate-edge sidewall junction potential pbswgs (V); <=0 => inherit pbswg/pbsw/pb.
         // Junction depletion temperature coefficients (clean-room SPICE-style subset).
         // These scale around TNOM:
         //   cj(T)   = cj(Tnom)   * (1 + tcj*(T-Tnom))
         //   cjsw(T) = cjsw(Tnom) * (1 + tcjsw*(T-Tnom))
         //   pb(T)   = pb(Tnom)   * (1 + tpb*(T-Tnom))
         //   pbsw(T) = pbsw(Tnom) * (1 + tpbsw*(T-Tnom))
-        double tcj{0.0};
-        double tcjsw{0.0};
-        double tpb{0.0};
-        double tpbsw{0.0};
-        double tcjswg{0.0};
-        double tpbswg{0.0};
-        double mj{0.5};  // grading coefficient
-        double mjsw{0.33};
-        double mjswg{0.33};
+        double tcj{0.0};     ///< @brief Temperature coefficient for cj (1/°C).
+        double tcjsw{0.0};   ///< @brief Temperature coefficient for cjsw (1/°C).
+        double tpb{0.0};     ///< @brief Temperature coefficient for pb (1/°C).
+        double tpbsw{0.0};   ///< @brief Temperature coefficient for pbsw (1/°C).
+        double tcjswg{0.0};  ///< @brief Temperature coefficient for cjswg (1/°C).
+        double tpbswg{0.0};  ///< @brief Temperature coefficient for pbswg (1/°C).
+        double mj{0.5};      ///< @brief Bottom junction grading coefficient mj.
+        double mjsw{0.33};   ///< @brief Sidewall junction grading coefficient mjsw.
+        double mjswg{0.33};  ///< @brief Gate-edge sidewall grading coefficient mjswg.
         // Optional per-junction grading coefficients. Negative => inherit common coefficient.
-        double mjd{-1.0};
-        double mjs{-1.0};
-        double mjswd{-1.0};
-        double mjsws{-1.0};
-        double mjswgd{-1.0};
-        double mjswgs{-1.0};
-        double fc{0.5};  // forward-bias coefficient
+        double mjd{-1.0};     ///< @brief Drain bottom junction grading coefficient mjd; negative => inherit mj.
+        double mjs{-1.0};     ///< @brief Source bottom junction grading coefficient mjs; negative => inherit mj.
+        double mjswd{-1.0};   ///< @brief Drain sidewall grading coefficient mjswd; negative => inherit mjsw.
+        double mjsws{-1.0};   ///< @brief Source sidewall grading coefficient mjsws; negative => inherit mjsw.
+        double mjswgd{-1.0};  ///< @brief Drain gate-edge sidewall grading coefficient mjswgd; negative => inherit mjswg.
+        double mjswgs{-1.0};  ///< @brief Source gate-edge sidewall grading coefficient mjswgs; negative => inherit mjswg.
+        double fc{0.5};       ///< @brief Forward-bias depletion coefficient fc.
         // Optional per-junction forward-bias coefficient overrides for depletion C model.
         // Negative => inherit the common fc.
-        double fcd{-1.0};
-        double fcs{-1.0};
+        double fcd{-1.0};  ///< @brief Drain forward-bias depletion coefficient override fcd; negative => inherit fc.
+        double fcs{-1.0};  ///< @brief Source forward-bias depletion coefficient override fcs; negative => inherit fc.
 
         // Temperature scaling for junction saturation currents (SPICE-style).
-        double xti{3.0};  // temperature exponent
-        double eg{1.11};  // eV
+        double xti{3.0};  ///< @brief Saturation current temperature exponent xti.
+        double eg{1.11};  ///< @brief Semiconductor bandgap energy eg (eV).
 
         // Linearization state (Ids defined positive from D->S)
-        double gm{};
-        double gds{};
-        double gmb{};
-        double Ieq{};
-        bool mode_swapped{};  // true if channel "source/drain" are swapped in the last DC linearization
-        double vgs_s_last{};
-        double vds_s_last{};
-        double vbs_s_last{};
+        double gm{};          ///< @brief Small-signal transconductance gm from last DC linearization (S).
+        double gds{};         ///< @brief Small-signal output conductance gds from last DC linearization (S).
+        double gmb{};         ///< @brief Small-signal body transconductance gmb from last DC linearization (S).
+        double Ieq{};         ///< @brief Equivalent Norton current for Ids linearization (A), D->S positive.
+        bool mode_swapped{};  ///< @brief True if channel source/drain were swapped in last DC linearization.
+        double vgs_s_last{};  ///< @brief Last (possibly swapped) Vgs used for DC limiting (V).
+        double vds_s_last{};  ///< @brief Last (possibly swapped) Vds used for DC limiting (V).
+        double vbs_s_last{};  ///< @brief Last (possibly swapped) Vbs used for DC limiting (V).
         // Physical-terminal bias history (no D/S swapping) used to limit auxiliary branches (GIDL/GISL, Ig*).
-        double vgs_s_phys_last{};
-        double vds_s_phys_last{};
-        double vbs_s_phys_last{};
-        bool dc_bias_valid{};
-        bool dc_bias_swapped{};  // last bias values correspond to swapped mode
-        bool dc_bias_phys_valid{};
+        double vgs_s_phys_last{};   ///< @brief Last physical-terminal Vgs used for auxiliary limiting (V).
+        double vds_s_phys_last{};   ///< @brief Last physical-terminal Vds used for auxiliary limiting (V).
+        double vbs_s_phys_last{};   ///< @brief Last physical-terminal Vbs used for auxiliary limiting (V).
+        bool dc_bias_valid{};       ///< @brief True if last (possibly swapped) DC bias snapshot is valid.
+        bool dc_bias_swapped{};     ///< @brief True if last dc_bias_* values correspond to swapped mode.
+        bool dc_bias_phys_valid{};  ///< @brief True if last physical-terminal DC bias snapshot is valid.
 
         // Internal diode models (D-B and S-B)
-        PN_junction diode_db{};
-        PN_junction diode_sb{};
+        PN_junction diode_db{};  ///< @brief Internal drain-body diode model (D-B).
+        PN_junction diode_sb{};  ///< @brief Internal source-body diode model (S-B).
 
         // TR capacitor state
-        details::bsim3v32_cap_state cgs_state{};
-        details::bsim3v32_cap_state cgd_state{};
-        details::bsim3v32_cap_state cgb_state{};
-        details::bsim3v32_cap_state cgs_int_state{};
-        details::bsim3v32_cap_state cgd_int_state{};
-        details::bsim3v32_cap_state cgb_int_state{};
-        bool cap_mode_swapped{};  // frozen channel orientation for TR companion caps
-        details::bsim3v32_cap_state capbd_state{};
-        details::bsim3v32_cap_state capbs_state{};
+        details::bsim3v32_cap_state cgs_state{};      ///< @brief TR state for intrinsic Cgs (external terminals).
+        details::bsim3v32_cap_state cgd_state{};      ///< @brief TR state for intrinsic Cgd (external terminals).
+        details::bsim3v32_cap_state cgb_state{};      ///< @brief TR state for intrinsic Cgb (external terminals).
+        details::bsim3v32_cap_state cgs_int_state{};  ///< @brief TR state for intrinsic Cgs (internal terminals, when rgateMod/rg enabled).
+        details::bsim3v32_cap_state cgd_int_state{};  ///< @brief TR state for intrinsic Cgd (internal terminals, when rgateMod/rg enabled).
+        details::bsim3v32_cap_state cgb_int_state{};  ///< @brief TR state for intrinsic Cgb (internal terminals, when rgateMod/rg enabled).
+        bool cap_mode_swapped{};                      ///< @brief Frozen channel orientation used for TR companion capacitors.
+        details::bsim3v32_cap_state capbd_state{};    ///< @brief TR state for depletion cap Cbd.
+        details::bsim3v32_cap_state capbs_state{};    ///< @brief TR state for depletion cap Cbs.
 
         // AC small-signal capacitances captured at the (real) operating point (ACOP / DC / OP).
-        double cgs_intr_ac{};
-        double cgd_intr_ac{};
-        double cgb_intr_ac{};
-        double cbd_ac{};
-        double cbs_ac{};
+        double cgs_intr_ac{};  ///< @brief Intrinsic Cgs captured at AC operating point (F).
+        double cgd_intr_ac{};  ///< @brief Intrinsic Cgd captured at AC operating point (F).
+        double cgb_intr_ac{};  ///< @brief Intrinsic Cgb captured at AC operating point (F).
+        double cbd_ac{};       ///< @brief Depletion capacitance Cbd captured at AC operating point (F).
+        double cbs_ac{};       ///< @brief Depletion capacitance Cbs captured at AC operating point (F).
 
         // Charge-based intrinsic C-matrix for AC (captured at OP) and TR (trapezoidal companion).
         // Order is [D,G,S,B] where D/S follow the current channel mode selection.
-        double cmat_ac[4][4]{};
-        double cmat_tr_prev_g[4][4]{};
-        double cmat_tr_hist[4]{};
+        double cmat_ac[4][4]{};         ///< @brief Intrinsic charge-based small-signal C-matrix captured at OP (F).
+        double cmat_tr_prev_g[4][4]{};  ///< @brief Previous TR companion conductances for C-matrix stamping.
+        double cmat_tr_hist[4]{};       ///< @brief TR history current vector for C-matrix stamping (A).
 
         // Internal nodes (only used when Rd/Rs > 0).
-        ::phy_engine::model::node_t internal_nodes[6]{};  // packed prefix of used nodes
-        ::phy_engine::model::node_t* nd_int{};            // D'
-        ::phy_engine::model::node_t* ns_int{};            // S'
-        ::phy_engine::model::node_t* ng_int{};            // G'
-        ::phy_engine::model::node_t* nb_int{};            // B'
-        ::phy_engine::model::node_t* nbd_int{};           // B'd (local body near drain junction)
-        ::phy_engine::model::node_t* nbs_int{};           // B's (local body near source junction)
+        ::phy_engine::model::node_t internal_nodes[6]{};  ///< @brief Packed array of allocated internal nodes (only prefix is used).
+        ::phy_engine::model::node_t* nd_int{};            ///< @brief Internal drain node D' (allocated when Rd_total > 0).
+        ::phy_engine::model::node_t* ns_int{};            ///< @brief Internal source node S' (allocated when Rs_total > 0).
+        ::phy_engine::model::node_t* ng_int{};            ///< @brief Internal gate node G' (allocated when rgateMod!=0 and rg>0).
+        ::phy_engine::model::node_t* nb_int{};            ///< @brief Internal bulk node B' (allocated when bulk connected and Rb>0).
+        ::phy_engine::model::node_t* nbd_int{};           ///< @brief Local body node near drain junction (allocated when rbdb>0).
+        ::phy_engine::model::node_t* nbs_int{};           ///< @brief Local body node near source junction (allocated when rbsb>0).
     };
 
     using bsim3v32_nmos = bsim3v32_mos<false>;
