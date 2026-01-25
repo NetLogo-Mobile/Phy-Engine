@@ -618,7 +618,9 @@ namespace phy_engine::verilog::digital
 
                     if(j > i)
                     {
-                        auto const seg{::fast_io::u8string_view{line_text.data() + i, j - i}};
+                        auto const seg{
+                            ::fast_io::u8string_view{line_text.data() + i, j - i}
+                        };
                         auto const er{expand_text(expand_text, seg, line_no, 1 + i, 0)};
                         append_expanded(er);
                         i = j;
@@ -824,10 +826,9 @@ namespace phy_engine::verilog::digital
                 else if(current_active())
                 {
                     // Expand macros (object-like and function-like): `NAME / `NAME(...), but never inside comments/strings.
-                    auto const expanded{expand_line_with_comments(
-                        ::fast_io::u8string_view{line_begin, static_cast<::std::size_t>(logical_end - line_begin)},
-                        line,
-                        in_block_comment)};
+                    auto const expanded{expand_line_with_comments(::fast_io::u8string_view{line_begin, static_cast<::std::size_t>(logical_end - line_begin)},
+                                                                  line,
+                                                                  in_block_comment)};
                     out.output.append(::fast_io::u8string_view{expanded.text.data(), expanded.text.size()});
                     for(auto const& sp: expanded.map) { out.source_map.push_back(sp); }
                     out.output.push_back(u8'\n');
@@ -1618,9 +1619,7 @@ namespace phy_engine::verilog::digital
             return ::fast_io::u8string_view{src.data() + start, end - start};
         }
 
-        inline void append_error_header(::fast_io::u8string& out,
-                                        compile_error const& err,
-                                        ::fast_io::u8string_view filename) noexcept
+        inline void append_error_header(::fast_io::u8string& out, compile_error const& err, ::fast_io::u8string_view filename) noexcept
         {
             if(!filename.empty())
             {
@@ -1636,9 +1635,7 @@ namespace phy_engine::verilog::digital
         }
     }  // namespace diagnostic_details
 
-    inline ::fast_io::u8string format_compile_error(compile_error const& err,
-                                                    ::fast_io::u8string_view src,
-                                                    diagnostic_options const& opt = {}) noexcept
+    inline ::fast_io::u8string format_compile_error(compile_error const& err, ::fast_io::u8string_view src, diagnostic_options const& opt = {}) noexcept
     {
         using namespace diagnostic_details;
 
@@ -1680,9 +1677,8 @@ namespace phy_engine::verilog::digital
         return out;
     }
 
-    inline ::fast_io::u8string format_compile_errors(::fast_io::vector<compile_error> const& errors,
-                                                     ::fast_io::u8string_view src,
-                                                     diagnostic_options const& opt = {}) noexcept
+    inline ::fast_io::u8string
+        format_compile_errors(::fast_io::vector<compile_error> const& errors, ::fast_io::u8string_view src, diagnostic_options const& opt = {}) noexcept
     {
         using namespace diagnostic_details;
 
@@ -1740,12 +1736,8 @@ namespace phy_engine::verilog::digital
         return out;
     }
 
-    inline ::fast_io::u8string format_compile_errors(compile_result const& cr,
-                                                     ::fast_io::u8string_view src,
-                                                     diagnostic_options const& opt = {}) noexcept
-    {
-        return format_compile_errors(cr.errors, src, opt);
-    }
+    inline ::fast_io::u8string format_compile_errors(compile_result const& cr, ::fast_io::u8string_view src, diagnostic_options const& opt = {}) noexcept
+    { return format_compile_errors(cr.errors, src, opt); }
 
     namespace details
     {
@@ -2950,8 +2942,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_add(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                // Verilog sizing: '+' result width is max operand width + 1 (carry-out bit).
-                ::std::size_t w{::std::max(width(a), width(b)) + 1};
+                // Verilog sizing: '+' result width is max operand width (carry-out bit is discarded unless explicitly widened).
+                ::std::size_t w{::std::max(width(a), width(b))};
                 if(w > max_concat_bits)
                 {
                     if(p) { p->err(p->peek(), u8"addition result too wide (limit exceeded)"); }
@@ -2997,8 +2989,8 @@ namespace phy_engine::verilog::digital
             [[nodiscard]] expr_value arith_sub(expr_value const& a, expr_value const& b) noexcept
             {
                 bool const signed_op{a.is_signed && b.is_signed};
-                // Verilog sizing: '-' result width is max operand width + 1.
-                ::std::size_t w{::std::max(width(a), width(b)) + 1};
+                // Verilog sizing: '-' result width is max operand width (borrow bit is discarded unless explicitly widened).
+                ::std::size_t w{::std::max(width(a), width(b))};
                 if(w > max_concat_bits)
                 {
                     if(p) { p->err(p->peek(), u8"subtraction result too wide (limit exceeded)"); }
@@ -3069,8 +3061,8 @@ namespace phy_engine::verilog::digital
                         return v.index_unchecked(v.size() - 1u - bit);  // msb->lsb storage
                     };
 
-                    auto mul2_tile = [&](::std::size_t a0, ::std::size_t a1, ::std::size_t b0, ::std::size_t b1) noexcept
-                        -> ::fast_io::vector<::std::size_t> {
+                    auto mul2_tile = [&](::std::size_t a0, ::std::size_t a1, ::std::size_t b0, ::std::size_t b1) noexcept -> ::fast_io::vector<::std::size_t>
+                    {
                         // p0..p3 (lsb->msb):
                         auto const p0{make_and(a0, b0)};
                         auto const t1{make_and(a0, b1)};
@@ -7948,7 +7940,10 @@ namespace phy_engine::verilog::digital
                 if(ev.lhs_signal >= st.values.size()) { continue; }
 
                 if(ev.nonblocking) { st.nba_queue.push_back({ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st)}); }
-                else { (void)assign_signal(st, ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st)); }
+                else
+                {
+                    (void)assign_signal(st, ev.lhs_signal, eval_expr_cached(m, ev.expr_root, st));
+                }
             }
 
             st.events = ::std::move(keep);
@@ -7987,7 +7982,7 @@ namespace phy_engine::verilog::digital
 
                     auto set_bus = [&](logic_t v) noexcept
                     {
-                        for(auto const sig : vd.bits)
+                        for(auto const sig: vd.bits)
                         {
                             if(sig < st.values.size()) { st.values.index_unchecked(sig) = v; }
                         }
@@ -8002,14 +7997,8 @@ namespace phy_engine::verilog::digital
                     }
                     rstn = normalize_z_to_x(rstn);
 
-                    if(rstn == logic_t::false_state)
-                    {
-                        set_bus(logic_t::false_state);
-                    }
-                    else if(is_unknown(rstn))
-                    {
-                        set_bus(logic_t::indeterminate_state);
-                    }
+                    if(rstn == logic_t::false_state) { set_bus(logic_t::false_state); }
+                    else if(is_unknown(rstn)) { set_bus(logic_t::indeterminate_state); }
                     else if(clk_sig != SIZE_MAX && clk_sig < st.values.size() && clk_sig < st.prev_values.size())
                     {
                         auto const a{normalize_z_to_x(st.prev_values.index_unchecked(clk_sig))};
@@ -8022,16 +8011,21 @@ namespace phy_engine::verilog::digital
                             for(::std::size_t i{}; i < 4; ++i)
                             {
                                 auto const sig = vd.bits.index_unchecked(i);
-                                if(sig >= st.values.size()) { unknown_state = true; break; }
+                                if(sig >= st.values.size())
+                                {
+                                    unknown_state = true;
+                                    break;
+                                }
                                 auto const v{normalize_z_to_x(st.values.index_unchecked(sig))};
-                                if(is_unknown(v)) { unknown_state = true; break; }
+                                if(is_unknown(v))
+                                {
+                                    unknown_state = true;
+                                    break;
+                                }
                                 if(v == logic_t::true_state) { state_u |= static_cast<::std::uint8_t>(1u << (3u - static_cast<unsigned>(i))); }
                             }
 
-                            if(unknown_state)
-                            {
-                                set_bus(logic_t::indeterminate_state);
-                            }
+                            if(unknown_state) { set_bus(logic_t::indeterminate_state); }
                             else
                             {
                                 bool const b3 = ((state_u >> 3u) & 1u) != 0u;
