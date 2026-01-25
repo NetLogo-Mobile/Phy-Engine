@@ -5,6 +5,17 @@
 
 namespace phy_engine::model
 {
+    namespace pn_details
+    {
+        inline double limexp(double x) noexcept
+        {
+            // Smooth overflow protection similar to SPICE "limexp".
+            if(x > 50.0) { return ::std::exp(50.0) * (1.0 + (x - 50.0)); }
+            if(x < -50.0) { return ::std::exp(-50.0); }
+            return ::std::exp(x);
+        }
+    }  // namespace pn_details
+
     struct PN_junction
     {
         inline static constexpr ::fast_io::u8string_view model_name{u8"PN Junction"};
@@ -361,18 +372,18 @@ namespace phy_engine::model
 
             if(pn.Bv_set && Ud < -pn.Bv_eff) /* breakdown */
             {
-                double e{::std::exp(-(pn.Bv_eff + Ud) / Ute)};
+                double e{pn_details::limexp(-(pn.Bv_eff + Ud) / Ute)};
                 Id = -pn.Is_eff * e;
                 pn.geq = pn.Is_eff * e / Ute;
             }
             else
             {
-                double e{::std::exp(Ud / Ute)};
+                double e{pn_details::limexp(Ud / Ute)};
                 pn.geq = pn.Is_eff * e / Ute;
                 Id = pn.Is_eff * (e - 1.0);
 
                 /* recombination current */
-                e = ::std::exp(Ud / Uter);
+                e = pn_details::limexp(Ud / Uter);
                 pn.geq += pn.Isr_eff * e / Uter;
                 Id += pn.Isr_eff * (e - 1.0);
             }

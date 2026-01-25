@@ -22,14 +22,11 @@
 // - Gate leakage: implement full BSIM3v3.2 gate current models (Ig*, Igb/igs/igd variants, bias/temperature dependence, partitioning, and derivatives) beyond
 // the current simplified hooks.
 // - GIDL/GISL: extend to full BSIM3v3.2 behavior (bias dependence, temperature, derivatives, and corner cases) beyond the current simplified subset.
-// - Rds/Rd/Rs/Rg/Rb models: implement the complete BSIM3 series-resistance options (including bias/geometry effects, if required) and ensure consistent
-// stamping for DC/AC/TR.
 // - Junctions: implement full BSIM3v3.2 junction current and capacitance models (incl. sidewall/gate-edge, breakdown behavior, and charge conservation), beyond
 // the current SPICE-style subset.
 // - NQS: add non-quasi-static support (analysis hooks + model equations) if the engine is expected to support NQS transient/AC behavior.
 // - Noise: add BSIM3v3.2 noise models (thermal, flicker, induced gate noise, correlation) and expose them through the simulator’s noise analysis
 // infrastructure.
-// - Numerical robustness: add full limiter/smoothing behavior for all nonlinear branches to match reference convergence behavior across operating regions.
 // - Validation: expand regression tests to cover parameter sweeps and operating-region transitions; cross-validate against a trusted reference simulator via
 // black-box comparisons (without importing third-party code).
 
@@ -399,6 +396,20 @@ namespace phy_engine::model
             return ::std::pow(ratio, xti_eff) * ::std::exp(exp_term);
         }
 
+        inline double bsim3v32_barrier_v_temp_scale(double barrier_v, double temp_c, double tnom_c) noexcept
+        {
+            // First-order temperature scaling for "barrier-like" voltage parameters used inside
+            // exp(-barrier/voltage) leakage expressions (GIDL/GISL, Ig*).
+            //
+            // Interpreting a voltage-like barrier as E/q, the exponential argument typically scales
+            // with 1/T. To keep behavior anchored at TNOM:
+            //   barrier(T) = barrier(Tnom) * (Tnom / T)
+            double const t_k{temp_c + k_t0};
+            double const tnom_k{tnom_c + k_t0};
+            if(!(t_k > 1.0) || !(tnom_k > 1.0)) { return barrier_v; }
+            return barrier_v * (tnom_k / t_k);
+        }
+
         inline double bsim3v32_vth0_temp_mag(double vth0, double temp_c, double tnom_c, double kt1, double kt2) noexcept
         {
             // Treat Vth0 as a magnitude internally to allow PMOS modelcards that specify negative Vth0.
@@ -751,9 +762,9 @@ namespace phy_engine::model
             double const vth0_eff_geom{details::bsim3v32_lw_scale(m.Vth0, m.lvth0, m.wvth0, m.pvth0, leff, weff, m.lref, m.wref)};
             double const kp_eff_geom{details::bsim3v32_lw_scale(m.Kp, m.lkp, m.wkp, m.pkp, leff, weff, m.lref, m.wref)};
             double u0{details::bsim3v32_lw_scale(m.u0, m.lu0, m.wu0, m.pu0, leff, weff, m.lref, m.wref)};
-            double const ua_eff{details::bsim3v32_lw_scale(m.ua, m.lua, m.wua, m.pua, leff, weff, m.lref, m.wref)};
-            double const ub_eff{details::bsim3v32_lw_scale(m.ub, m.lub, m.wub, m.pub, leff, weff, m.lref, m.wref)};
-            double const uc_eff{details::bsim3v32_lw_scale(m.uc, m.luc, m.wuc, m.puc, leff, weff, m.lref, m.wref)};
+            double ua_eff{details::bsim3v32_lw_scale(m.ua, m.lua, m.wua, m.pua, leff, weff, m.lref, m.wref)};
+            double ub_eff{details::bsim3v32_lw_scale(m.ub, m.lub, m.wub, m.pub, leff, weff, m.lref, m.wref)};
+            double uc_eff{details::bsim3v32_lw_scale(m.uc, m.luc, m.wuc, m.puc, leff, weff, m.lref, m.wref)};
             double const vsat_eff_geom{details::bsim3v32_lw_scale(m.vsat, m.lvsat, m.wvsat, m.pvsat, leff, weff, m.lref, m.wref)};
             if(u0 <= 0.0)
             {
@@ -767,11 +778,19 @@ namespace phy_engine::model
             // Temperature scaling (subset).
             double const t_k{m.Temp + k_t0};
             double const tnom_k{m.tnom + k_t0};
+            double const dt_c{m.Temp - m.tnom};
             if(u0 > 0.0 && m.ute != 0.0 && t_k > 1.0 && tnom_k > 1.0)
             {
                 double const ratio{t_k / tnom_k};
                 // mobility ~ (T/Tnom)^(-ute)
                 u0 *= ::std::pow(ratio, -m.ute);
+            }
+            // Temperature dependence of mobility-degradation coefficients (clean-room subset).
+            if(dt_c != 0.0)
+            {
+                ua_eff += m.ua1 * dt_c;
+                ub_eff += m.ub1 * dt_c;
+                uc_eff += m.uc1 * dt_c;
             }
 
             double const nch_eff_raw{details::bsim3v32_lw_scale(m.nch, m.lnch, m.wnch, m.pnch, leff, weff, m.lref, m.wref)};
@@ -792,7 +811,6 @@ namespace phy_engine::model
             double const k2ox{k2_eff * tox_ratio};
 
             double const sqrt_phi{::std::sqrt(phi_s)};
-            double const dt_c{m.Temp - m.tnom};
             double const vth0_t{bsim3v32_vth0_temp_mag(vth0_eff_geom, m.Temp, m.tnom, m.kt1, m.kt2)};
             double const vth0ox{vth0_t - k1_eff * sqrt_phi};
 
@@ -961,9 +979,16 @@ namespace phy_engine::model
             }
             Real const vascbe{bsim3v32_value(inv_vascbe) > 0.0 ? (1.0 / inv_vascbe) : Real{1e30}};
 
-            Real rds_eff{::std::max(m.rds, 0.0)};
-            double const rdsw_eff_geom{details::bsim3v32_lw_scale(m.rdsw, m.lrdsw, m.wrdsw, m.prdsw, leff, weff, m.lref, m.wref)};
-            if(rdsw_eff_geom > 0.0)
+            Real rds_eff{};
+            bool const rds_enabled{m.rdsMod != 0.0};
+            if(rds_enabled) { rds_eff = ::std::max(m.rds, 0.0); }
+            double rdsw_eff_geom{details::bsim3v32_lw_scale(m.rdsw, m.lrdsw, m.wrdsw, m.prdsw, leff, weff, m.lref, m.wref)};
+            if(rdsw_eff_geom > 0.0 && dt_c != 0.0 && m.prt != 0.0)
+            {
+                rdsw_eff_geom *= (1.0 + m.prt * dt_c);
+                if(!(rdsw_eff_geom > 0.0)) { rdsw_eff_geom = 0.0; }
+            }
+            if(rds_enabled && rdsw_eff_geom > 0.0)
             {
                 // rdsw is Ohm*m; convert to Ohm by dividing by effective width.
                 double const weff_d{weff > 1e-18 ? weff : 1e-18};
@@ -1010,7 +1035,8 @@ namespace phy_engine::model
 
             Real denom{vdg_eff + m.cgidl};
             if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
-            Real const expo{bsim3v32_exp(Real{-m.bgidl} / denom)};
+            double const bg_eff{bsim3v32_barrier_v_temp_scale(m.bgidl, m.Temp, m.tnom)};
+            Real const expo{bsim3v32_exp(Real{-bg_eff} / denom)};
             return Real{m.agidl * weff} * vdb_eff * expo;
         }
 
@@ -1034,7 +1060,8 @@ namespace phy_engine::model
 
             Real denom{vsg_eff + cg};
             if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
-            Real const expo{bsim3v32_exp(Real{-bg} / denom)};
+            double const bg_eff{bsim3v32_barrier_v_temp_scale(bg, m.Temp, m.tnom)};
+            Real const expo{bsim3v32_exp(Real{-bg_eff} / denom)};
             return Real{ag * weff} * vsb_eff * expo;
         }
 
@@ -1054,7 +1081,8 @@ namespace phy_engine::model
             Real const vgb_eff{bsim3v32_pos_smooth(vgb_s - m.eigb)};
             Real denom{vgb_eff + m.cigb};
             if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
-            Real const expo{bsim3v32_exp(Real{-b} / denom)};
+            double const b_eff{bsim3v32_barrier_v_temp_scale(b, m.Temp, m.tnom)};
+            Real const expo{bsim3v32_exp(Real{-b_eff} / denom)};
             return Real{m.aigb * weff * leff} * vgb_eff * vgb_eff * expo;
         }
 
@@ -1075,7 +1103,8 @@ namespace phy_engine::model
             Real const vgs_eff{bsim3v32_pos_smooth(vgs_s - e)};
             Real denom{vgs_eff + c};
             if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
-            Real const expo{bsim3v32_exp(Real{-b} / denom)};
+            double const b_eff{bsim3v32_barrier_v_temp_scale(b, m.Temp, m.tnom)};
+            Real const expo{bsim3v32_exp(Real{-b_eff} / denom)};
             return Real{m.aigs * weff * leff} * vgs_eff * vgs_eff * expo;
         }
 
@@ -1096,7 +1125,8 @@ namespace phy_engine::model
             Real const vgd_eff{bsim3v32_pos_smooth(vgd_s - e)};
             Real denom{vgd_eff + c};
             if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
-            Real const expo{bsim3v32_exp(Real{-b} / denom)};
+            double const b_eff{bsim3v32_barrier_v_temp_scale(b, m.Temp, m.tnom)};
+            Real const expo{bsim3v32_exp(Real{-b_eff} / denom)};
             return Real{m.aigd * weff * leff} * vgd_eff * vgd_eff * expo;
         }
 
@@ -1118,7 +1148,8 @@ namespace phy_engine::model
 
             Real denom{vds_eff};
             if(bsim3v32_value(denom) <= 1e-12) { denom = Real{1e-12}; }
-            Real const expo{bsim3v32_exp(Real{-m.beta0} / denom)};
+            double const beta_eff{bsim3v32_barrier_v_temp_scale(m.beta0, m.Temp, m.tnom)};
+            Real const expo{bsim3v32_exp(Real{-beta_eff} / denom)};
             Real const ids_mag{bsim3v32_abs_smooth(ids_s)};
             return Real{m.alpha0} * ids_mag * vds_eff * expo;
         }
@@ -1251,22 +1282,28 @@ namespace phy_engine::model
 
             // Mobility for the C/V charge model (re-evaluated with vgsteff_cv and vbseff).
             double u0{details::bsim3v32_lw_scale(m.u0, m.lu0, m.wu0, m.pu0, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
-            double const kp_eff_geom{details::bsim3v32_lw_scale(
-                m.Kp, m.lkp, m.wkp, m.pkp, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const kp_eff_geom{details::bsim3v32_lw_scale(m.Kp, m.lkp, m.wkp, m.pkp, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
             if(u0 <= 0.0 && kp_eff_geom > 0.0) { u0 = kp_eff_geom / bsim3v32_value(c.cox); }
 
-            // Temperature scaling of mobility (subset, consistent with DC core).
+            // Temperature scaling (subset, consistent with DC core).
             double const t_k{m.Temp + k_t0};
             double const tnom_k{m.tnom + k_t0};
+            double const dt_c{m.Temp - m.tnom};
             if(u0 > 0.0 && m.ute != 0.0 && t_k > 1.0 && tnom_k > 1.0)
             {
                 double const ratio{t_k / tnom_k};
                 u0 *= ::std::pow(ratio, -m.ute);
             }
 
-            double const ua_eff{details::bsim3v32_lw_scale(m.ua, m.lua, m.wua, m.pua, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
-            double const ub_eff{details::bsim3v32_lw_scale(m.ub, m.lub, m.wub, m.pub, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
-            double const uc_eff{details::bsim3v32_lw_scale(m.uc, m.luc, m.wuc, m.puc, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double ua_eff{details::bsim3v32_lw_scale(m.ua, m.lua, m.wua, m.pua, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double ub_eff{details::bsim3v32_lw_scale(m.ub, m.lub, m.wub, m.pub, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double uc_eff{details::bsim3v32_lw_scale(m.uc, m.luc, m.wuc, m.puc, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            if(dt_c != 0.0)
+            {
+                ua_eff += m.ua1 * dt_c;
+                ub_eff += m.ub1 * dt_c;
+                uc_eff += m.uc1 * dt_c;
+            }
             Real ueff_cv{};
             if(m.mobMod < 1.5)
             {
@@ -1287,9 +1324,8 @@ namespace phy_engine::model
             }
 
             // Velocity saturation and Vdsat/Vdseff (same functional form as DC core).
-            double const dt_c{m.Temp - m.tnom};
-            double const vsat_eff_geom{details::bsim3v32_lw_scale(
-                m.vsat, m.lvsat, m.wvsat, m.pvsat, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
+            double const vsat_eff_geom{
+                details::bsim3v32_lw_scale(m.vsat, m.lvsat, m.wvsat, m.pvsat, bsim3v32_value(c.leff), bsim3v32_value(c.weff), m.lref, m.wref)};
             double vsat{vsat_eff_geom > 0.0 ? vsat_eff_geom : 8e4};
             if(m.at != 0.0)
             {
@@ -1602,6 +1638,11 @@ namespace phy_engine::model
         double nrs{0.0};  // squares
         // Optional gate resistance (Ohm). When >0, use internal G' node for intrinsic gm/caps.
         double rg{0.0};
+        // Resistance model selectors (clean-room subset, BSIM-like naming):
+        // - rgateMod: when 0, disable rg even if rg>0; otherwise enable.
+        // - rbodyMod: when 0, disable rbdb/rbsb distributed body resistances; otherwise enable.
+        double rgateMod{1.0};
+        double rbodyMod{1.0};
 
         // Charge/capacitance model controls (BSIM3 names).
         // Note: BSIM3/NGSPICE default capMod is typically 3. For now:
@@ -1749,6 +1790,11 @@ namespace phy_engine::model
         double ua{0.0};
         double ub{0.0};
         double uc{0.0};
+        // Temperature dependence (clean-room subset, BSIM-like naming):
+        // ua/ub/uc are mobility-degradation coefficients; ua1/ub1/uc1 are their linear temperature slopes around TNOM.
+        double ua1{0.0};   // 1/(V*°C)
+        double ub1{0.0};   // 1/(V*°C^2) in some references; treated here as linear slope in °C
+        double uc1{0.0};   // 1/(V*°C)
         double vsat{8e4};  // m/s
 
         double k1{0.0};
@@ -1784,13 +1830,17 @@ namespace phy_engine::model
         double pscbe1{0.0};
         double pscbe2{0.0};
         double delta{1e-2};  // smoothing for Vdseff
-        double rds{0.0};     // internal Rds (Ohm), used in Ids expression
-        // BSIM3 Rds model (clean-room subset):
+        // rdsMod: when 0, disable the internal Rds model (rds/rdsw/prwg/prwb).
+        double rdsMod{1.0};
+        double rds{0.0};  // internal Rds (Ohm), used in Ids expression
+                          // BSIM3 Rds model (clean-room subset):
         // - rdsw: source/drain resistance per effective width (Ohm*m). Effective Rds adds rdsw/Weff.
         // - prwg/prwb: bias dependence vs Vgsteff and Vbseff.
+        // - prt: linear temperature coefficient for rdsw around TNOM (rdsw(T) ~= rdsw(Tnom)*(1+prt*(T-Tnom))).
         double rdsw{0.0};  // Ohm*m
         double prwg{0.0};  // 1/V
         double prwb{0.0};  // 1/V
+        double prt{0.0};   // 1/°C
 
         double keta{0.0};
 
@@ -1853,6 +1903,18 @@ namespace phy_engine::model
         // Body diode current (placeholder; full BSIM3 junction model TBD)
         double diode_Is{1e-14};
         double diode_N{1.0};
+        // Optional per-junction diode overrides (clean-room subset).
+        // Semantics:
+        // - For Is/Isr/tt: negative => inherit the common parameter (diode_Is/diode_Isr/tt).
+        // - For N/Nr:      <=0 => inherit the common parameter (diode_N/diode_Nr).
+        double diode_Isd{-1.0};   // A
+        double diode_Iss{-1.0};   // A
+        double diode_Nd{-1.0};    // unitless
+        double diode_Ns{-1.0};    // unitless
+        double diode_Isrd{-1.0};  // A
+        double diode_Isrs{-1.0};  // A
+        double diode_Nrd{-1.0};   // unitless
+        double diode_Nrs{-1.0};   // unitless
         // Optional recombination current (clean-room subset, forwarded to PN_junction Isr/Nr).
         double diode_Isr{0.0};
         double diode_Nr{2.0};
@@ -1864,6 +1926,9 @@ namespace phy_engine::model
         double ibvs{1e-3};
         // Junction transit time (seconds): enables diffusion capacitance in the internal body diodes (tt * dId/dV).
         double tt{0.0};
+        // Optional per-junction transit time overrides (seconds). Negative => inherit tt.
+        double ttd{-1.0};
+        double tts{-1.0};
         // Temperature controls:
         // - Temp:   effective device temperature used for all temperature-dependent calculations (Celsius)
         // - dtemp:  instance temperature offset added on top of environment Temp or overridden Temp (Celsius)
@@ -1890,6 +1955,25 @@ namespace phy_engine::model
         double js{0.0};    // A/m^2
         double jsw{0.0};   // A/m
         double jswg{0.0};  // A/m (gate-edge sidewall current density, scaled by Weff)
+        // Optional per-junction diffusion current densities. If 0, fall back to the corresponding global js/jsw/jswg.
+        double jsd{0.0};    // A/m^2
+        double jss{0.0};    // A/m^2
+        double jswd{0.0};   // A/m
+        double jsws{0.0};   // A/m
+        double jswgd{0.0};  // A/m
+        double jswgs{0.0};  // A/m
+        // Optional diffusion junction recombination current density parameters (clean-room subset):
+        // When any of these are non-zero, they override diode_Isr scaling using geometry similarly to js/jsw/jswg.
+        double jsr{0.0};    // A/m^2
+        double jsrw{0.0};   // A/m
+        double jsrwg{0.0};  // A/m (gate-edge sidewall recombination current density, scaled by Weff)
+        // Optional per-junction recombination current densities. If 0, fall back to the corresponding global jsr/jsrw/jsrwg.
+        double jsrd{0.0};    // A/m^2
+        double jsrs{0.0};    // A/m^2
+        double jsrwd{0.0};   // A/m
+        double jsrws{0.0};   // A/m
+        double jsrwgd{0.0};  // A/m
+        double jsrwgs{0.0};  // A/m
 
         // Optional S/D-B depletion capacitance (simple SPICE-style junction C model).
         // Units:
@@ -1900,14 +1984,35 @@ namespace phy_engine::model
         double drainPerimeter{0.0};   // m
         double sourcePerimeter{0.0};  // m
 
-        double cj{0.0};     // F/m^2 (bottom junction cap density)
-        double cjsw{0.0};   // F/m   (sidewall junction cap density)
+        // Optional per-junction depletion parameters (clean-room subset):
+        // If set, these override the corresponding common parameters for that junction only.
+        // This allows asymmetric drain/source junction C–V behavior while keeping default behavior unchanged.
+        double cjd{0.0};  // F/m^2 (drain bottom junction cap density)
+        double cjs{0.0};  // F/m^2 (source bottom junction cap density)
+
+        double cj{0.0};    // F/m^2 (bottom junction cap density)
+        double cjsw{0.0};  // F/m   (sidewall junction cap density)
+        // Optional per-junction sidewall cap densities (F/m). If 0, fall back to cjsw.
+        double cjswd{0.0};
+        double cjsws{0.0};
         double cjswg{0.0};  // F/m  (gate-edge sidewall junction cap density)
-        double pb{1.0};     // V (junction potential)
+        // Optional per-junction gate-edge sidewall cap densities (F/m). If 0, fall back to cjswg.
+        double cjswgd{0.0};
+        double cjswgs{0.0};
+        double pb{1.0};  // V (junction potential)
+        // Optional per-junction bottom-junction potentials (V). If <=0, fall back to pb.
+        double pbd{0.0};
+        double pbs{0.0};
         // Sidewall junction potential (V). If <=0, fall back to pb.
         double pbsw{0.0};
+        // Optional per-junction sidewall junction potentials (V). If <=0, fall back to pbsw/pb.
+        double pbswd{0.0};
+        double pbsws{0.0};
         // Gate-edge sidewall junction potential (V). If <=0, fall back to pbsw/pb.
         double pbswg{0.0};
+        // Optional per-junction gate-edge sidewall junction potentials (V). If <=0, fall back to pbswg/pbsw/pb.
+        double pbswgd{0.0};
+        double pbswgs{0.0};
         // Junction depletion temperature coefficients (clean-room SPICE-style subset).
         // These scale around TNOM:
         //   cj(T)   = cj(Tnom)   * (1 + tcj*(T-Tnom))
@@ -1923,7 +2028,18 @@ namespace phy_engine::model
         double mj{0.5};  // grading coefficient
         double mjsw{0.33};
         double mjswg{0.33};
+        // Optional per-junction grading coefficients. Negative => inherit common coefficient.
+        double mjd{-1.0};
+        double mjs{-1.0};
+        double mjswd{-1.0};
+        double mjsws{-1.0};
+        double mjswgd{-1.0};
+        double mjswgs{-1.0};
         double fc{0.5};  // forward-bias coefficient
+        // Optional per-junction forward-bias coefficient overrides for depletion C model.
+        // Negative => inherit the common fc.
+        double fcd{-1.0};
+        double fcs{-1.0};
 
         // Temperature scaling for junction saturation currents (SPICE-style).
         double xti{3.0};  // temperature exponent
@@ -1938,8 +2054,13 @@ namespace phy_engine::model
         double vgs_s_last{};
         double vds_s_last{};
         double vbs_s_last{};
+        // Physical-terminal bias history (no D/S swapping) used to limit auxiliary branches (GIDL/GISL, Ig*).
+        double vgs_s_phys_last{};
+        double vds_s_phys_last{};
+        double vbs_s_phys_last{};
         bool dc_bias_valid{};
         bool dc_bias_swapped{};  // last bias values correspond to swapped mode
+        bool dc_bias_phys_valid{};
 
         // Internal diode models (D-B and S-B)
         PN_junction diode_db{};
@@ -1996,6 +2117,35 @@ namespace phy_engine::model
         {
             case 0: m.W = vi.d; return true;
             case 1: m.L = vi.d; return true;
+            case 365: m.W = vi.d; return true;     // w
+            case 366: m.L = vi.d; return true;     // l
+            case 368: m.Kp = vi.d; return true;    // kp
+            case 369: m.Vth0 = vi.d; return true;  // vth0
+            case 370:
+            {
+                // temp (alias of Temp): same override semantics as "Temp".
+                if(::std::isfinite(vi.d))
+                {
+                    m.Temp_override_value = vi.d;
+                    m.Temp_override = true;
+                    m.Temp = m.Temp_override_value + m.dtemp;
+                    m.dc_bias_valid = false;
+                    m.dc_bias_phys_valid = false;
+                }
+                else
+                {
+                    m.Temp_override = false;
+                    m.dc_bias_valid = false;
+                    m.dc_bias_phys_valid = false;
+                }
+                return true;
+            }
+            case 371: m.Rd = vi.d; return true;   // rd
+            case 372: m.Rs = vi.d; return true;   // rs
+            case 373: m.Rb = vi.d; return true;   // rb
+            case 374: m.Cgs = vi.d; return true;  // cgs
+            case 375: m.Cgd = vi.d; return true;  // cgd
+            case 376: m.Cgb = vi.d; return true;  // cgb
             case 13: m.m_mult = vi.d; return true;
             case 100: m.nf = vi.d; return true;
             case 102: m.lref = vi.d; return true;
@@ -2166,6 +2316,24 @@ namespace phy_engine::model
             case 68: m.cgbo = vi.d; return true;
             case 10: m.diode_Is = vi.d; return true;
             case 11: m.diode_N = vi.d; return true;
+            case 337: m.diode_Isd = vi.d; return true;
+            case 338: m.diode_Iss = vi.d; return true;
+            case 339: m.diode_Nd = vi.d; return true;
+            case 340: m.diode_Ns = vi.d; return true;
+            case 341: m.diode_Isrd = vi.d; return true;
+            case 342: m.diode_Isrs = vi.d; return true;
+            case 343: m.diode_Nrd = vi.d; return true;
+            case 344: m.diode_Nrs = vi.d; return true;
+            case 347: m.diode_Isd = vi.d; return true;   // isd
+            case 348: m.diode_Iss = vi.d; return true;   // iss
+            case 349: m.diode_Nd = vi.d; return true;    // nd
+            case 350: m.diode_Ns = vi.d; return true;    // ns
+            case 351: m.diode_Isrd = vi.d; return true;  // isrd
+            case 352: m.diode_Isrs = vi.d; return true;  // isrs
+            case 353: m.diode_Is = vi.d; return true;    // is
+            case 354: m.diode_N = vi.d; return true;     // n
+            case 355: m.diode_Isr = vi.d; return true;   // isr
+            case 356: m.diode_Nr = vi.d; return true;    // nr
             case 261: m.diode_Isr = vi.d; return true;
             case 262: m.diode_Nr = vi.d; return true;
             case 12:
@@ -2175,11 +2343,13 @@ namespace phy_engine::model
                     m.Temp_override = true;
                     m.Temp = m.Temp_override_value + m.dtemp;
                     m.dc_bias_valid = false;
+                    m.dc_bias_phys_valid = false;
                 }
                 else
                 {
                     m.Temp_override = false;
                     m.dc_bias_valid = false;
+                    m.dc_bias_phys_valid = false;
                 }
                 return true;
             case 263:
@@ -2192,13 +2362,24 @@ namespace phy_engine::model
                     m.Temp += (m.dtemp - old_dtemp);
                 }
                 m.dc_bias_valid = false;
+                m.dc_bias_phys_valid = false;
                 return true;
             }
             case 83: m.tt = vi.d; return true;
+            case 345: m.ttd = vi.d; return true;
+            case 346: m.tts = vi.d; return true;
             case 257: m.bvd = vi.d; return true;
             case 258: m.ibvd = vi.d; return true;
             case 259: m.bvs = vi.d; return true;
             case 260: m.ibvs = vi.d; return true;
+            case 357:
+                m.bvd = vi.d;
+                m.bvs = vi.d;
+                return true;  // bv
+            case 358:
+                m.ibvd = vi.d;
+                m.ibvs = vi.d;
+                return true;  // ibv
             case 71: m.tnom = vi.d; return true;
             case 72: m.ute = vi.d; return true;
             case 73: m.kt1 = vi.d; return true;
@@ -2207,6 +2388,27 @@ namespace phy_engine::model
             case 69: m.js = vi.d; return true;
             case 70: m.jsw = vi.d; return true;
             case 101: m.jswg = vi.d; return true;
+            case 325: m.jsd = vi.d; return true;
+            case 326: m.jss = vi.d; return true;
+            case 327: m.jswd = vi.d; return true;
+            case 328: m.jsws = vi.d; return true;
+            case 329: m.jswgd = vi.d; return true;
+            case 330: m.jswgs = vi.d; return true;
+            case 304: m.jsr = vi.d; return true;
+            case 305: m.jsrw = vi.d; return true;
+            case 306: m.jsrwg = vi.d; return true;
+            case 331: m.jsrd = vi.d; return true;
+            case 332: m.jsrs = vi.d; return true;
+            case 333: m.jsrwd = vi.d; return true;
+            case 334: m.jsrws = vi.d; return true;
+            case 335: m.jsrwgd = vi.d; return true;
+            case 336: m.jsrwgs = vi.d; return true;
+            case 307: m.rdsMod = vi.d; return true;
+            case 308: m.rgateMod = vi.d; return true;
+            case 309: m.rbodyMod = vi.d; return true;
+            case 310: m.rdsMod = vi.d; return true;    // rdsmod
+            case 311: m.rgateMod = vi.d; return true;  // rgatemod
+            case 312: m.rbodyMod = vi.d; return true;  // rbodymod
             case 76: m.xti = vi.d; return true;
             case 77: m.eg = vi.d; return true;
             case 16: m.drainArea = vi.d; return true;
@@ -2219,11 +2421,23 @@ namespace phy_engine::model
             case 81: m.drainPerimeter = vi.d; return true;   // pd
             case 82: m.sourcePerimeter = vi.d; return true;  // ps
             case 20: m.cj = vi.d; return true;
+            case 313: m.cjd = vi.d; return true;
+            case 314: m.cjs = vi.d; return true;
             case 21: m.cjsw = vi.d; return true;
+            case 317: m.cjswd = vi.d; return true;
+            case 318: m.cjsws = vi.d; return true;
             case 89: m.cjswg = vi.d; return true;
+            case 319: m.cjswgd = vi.d; return true;
+            case 320: m.cjswgs = vi.d; return true;
             case 22: m.pb = vi.d; return true;
+            case 315: m.pbd = vi.d; return true;
+            case 316: m.pbs = vi.d; return true;
             case 84: m.pbsw = vi.d; return true;
+            case 321: m.pbswd = vi.d; return true;
+            case 322: m.pbsws = vi.d; return true;
             case 90: m.pbswg = vi.d; return true;
+            case 323: m.pbswgd = vi.d; return true;
+            case 324: m.pbswgs = vi.d; return true;
             case 85: m.tcj = vi.d; return true;
             case 86: m.tcjsw = vi.d; return true;
             case 87: m.tpb = vi.d; return true;
@@ -2233,7 +2447,15 @@ namespace phy_engine::model
             case 23: m.mj = vi.d; return true;
             case 24: m.mjsw = vi.d; return true;
             case 93: m.mjswg = vi.d; return true;
+            case 359: m.mjd = vi.d; return true;
+            case 360: m.mjs = vi.d; return true;
+            case 361: m.mjswd = vi.d; return true;
+            case 362: m.mjsws = vi.d; return true;
+            case 363: m.mjswgd = vi.d; return true;
+            case 364: m.mjswgs = vi.d; return true;
             case 25: m.fc = vi.d; return true;
+            case 377: m.fcd = vi.d; return true;
+            case 378: m.fcs = vi.d; return true;
             case 26: m.tox = vi.d; return true;
             case 27: m.toxm = vi.d; return true;
             case 28: m.nch = vi.d; return true;
@@ -2241,6 +2463,9 @@ namespace phy_engine::model
             case 30: m.ua = vi.d; return true;
             case 31: m.ub = vi.d; return true;
             case 32: m.uc = vi.d; return true;
+            case 300: m.ua1 = vi.d; return true;
+            case 301: m.ub1 = vi.d; return true;
+            case 302: m.uc1 = vi.d; return true;
             case 33: m.vsat = vi.d; return true;
             case 34: m.k1 = vi.d; return true;
             case 35: m.k2 = vi.d; return true;
@@ -2272,8 +2497,10 @@ namespace phy_engine::model
             case 94: m.rdsw = vi.d; return true;
             case 95: m.prwg = vi.d; return true;
             case 96: m.prwb = vi.d; return true;
+            case 303: m.prt = vi.d; return true;
             case 61: m.keta = vi.d; return true;
             case 62: m.capMod = vi.d; return true;
+            case 367: m.capMod = vi.d; return true;  // capmod
             case 63: m.xpart = vi.d; return true;
             case 64: m.dwc = vi.d; return true;
             case 65: m.dlc = vi.d; return true;
@@ -2292,6 +2519,17 @@ namespace phy_engine::model
         {
             case 0: return {.d{m.W}, .type{::phy_engine::model::variant_type::d}};
             case 1: return {.d{m.L}, .type{::phy_engine::model::variant_type::d}};
+            case 365: return {.d{m.W}, .type{::phy_engine::model::variant_type::d}};     // w
+            case 366: return {.d{m.L}, .type{::phy_engine::model::variant_type::d}};     // l
+            case 368: return {.d{m.Kp}, .type{::phy_engine::model::variant_type::d}};    // kp
+            case 369: return {.d{m.Vth0}, .type{::phy_engine::model::variant_type::d}};  // vth0
+            case 370: return {.d{m.Temp}, .type{::phy_engine::model::variant_type::d}};  // temp
+            case 371: return {.d{m.Rd}, .type{::phy_engine::model::variant_type::d}};    // rd
+            case 372: return {.d{m.Rs}, .type{::phy_engine::model::variant_type::d}};    // rs
+            case 373: return {.d{m.Rb}, .type{::phy_engine::model::variant_type::d}};    // rb
+            case 374: return {.d{m.Cgs}, .type{::phy_engine::model::variant_type::d}};   // cgs
+            case 375: return {.d{m.Cgd}, .type{::phy_engine::model::variant_type::d}};   // cgd
+            case 376: return {.d{m.Cgb}, .type{::phy_engine::model::variant_type::d}};   // cgb
             case 13: return {.d{m.m_mult}, .type{::phy_engine::model::variant_type::d}};
             case 100: return {.d{m.nf}, .type{::phy_engine::model::variant_type::d}};
             case 102: return {.d{m.lref}, .type{::phy_engine::model::variant_type::d}};
@@ -2462,15 +2700,37 @@ namespace phy_engine::model
             case 68: return {.d{m.cgbo}, .type{::phy_engine::model::variant_type::d}};
             case 10: return {.d{m.diode_Is}, .type{::phy_engine::model::variant_type::d}};
             case 11: return {.d{m.diode_N}, .type{::phy_engine::model::variant_type::d}};
+            case 337: return {.d{m.diode_Isd}, .type{::phy_engine::model::variant_type::d}};
+            case 338: return {.d{m.diode_Iss}, .type{::phy_engine::model::variant_type::d}};
+            case 339: return {.d{m.diode_Nd}, .type{::phy_engine::model::variant_type::d}};
+            case 340: return {.d{m.diode_Ns}, .type{::phy_engine::model::variant_type::d}};
+            case 341: return {.d{m.diode_Isrd}, .type{::phy_engine::model::variant_type::d}};
+            case 342: return {.d{m.diode_Isrs}, .type{::phy_engine::model::variant_type::d}};
+            case 343: return {.d{m.diode_Nrd}, .type{::phy_engine::model::variant_type::d}};
+            case 344: return {.d{m.diode_Nrs}, .type{::phy_engine::model::variant_type::d}};
+            case 347: return {.d{m.diode_Isd}, .type{::phy_engine::model::variant_type::d}};   // isd
+            case 348: return {.d{m.diode_Iss}, .type{::phy_engine::model::variant_type::d}};   // iss
+            case 349: return {.d{m.diode_Nd}, .type{::phy_engine::model::variant_type::d}};    // nd
+            case 350: return {.d{m.diode_Ns}, .type{::phy_engine::model::variant_type::d}};    // ns
+            case 351: return {.d{m.diode_Isrd}, .type{::phy_engine::model::variant_type::d}};  // isrd
+            case 352: return {.d{m.diode_Isrs}, .type{::phy_engine::model::variant_type::d}};  // isrs
+            case 353: return {.d{m.diode_Is}, .type{::phy_engine::model::variant_type::d}};    // is
+            case 354: return {.d{m.diode_N}, .type{::phy_engine::model::variant_type::d}};     // n
+            case 355: return {.d{m.diode_Isr}, .type{::phy_engine::model::variant_type::d}};   // isr
+            case 356: return {.d{m.diode_Nr}, .type{::phy_engine::model::variant_type::d}};    // nr
             case 261: return {.d{m.diode_Isr}, .type{::phy_engine::model::variant_type::d}};
             case 262: return {.d{m.diode_Nr}, .type{::phy_engine::model::variant_type::d}};
             case 12: return {.d{m.Temp}, .type{::phy_engine::model::variant_type::d}};
             case 263: return {.d{m.dtemp}, .type{::phy_engine::model::variant_type::d}};
             case 83: return {.d{m.tt}, .type{::phy_engine::model::variant_type::d}};
+            case 345: return {.d{m.ttd}, .type{::phy_engine::model::variant_type::d}};
+            case 346: return {.d{m.tts}, .type{::phy_engine::model::variant_type::d}};
             case 257: return {.d{m.bvd}, .type{::phy_engine::model::variant_type::d}};
             case 258: return {.d{m.ibvd}, .type{::phy_engine::model::variant_type::d}};
             case 259: return {.d{m.bvs}, .type{::phy_engine::model::variant_type::d}};
             case 260: return {.d{m.ibvs}, .type{::phy_engine::model::variant_type::d}};
+            case 357: return {.d{m.bvd}, .type{::phy_engine::model::variant_type::d}};   // bv
+            case 358: return {.d{m.ibvd}, .type{::phy_engine::model::variant_type::d}};  // ibv
             case 71: return {.d{m.tnom}, .type{::phy_engine::model::variant_type::d}};
             case 72: return {.d{m.ute}, .type{::phy_engine::model::variant_type::d}};
             case 73: return {.d{m.kt1}, .type{::phy_engine::model::variant_type::d}};
@@ -2479,6 +2739,27 @@ namespace phy_engine::model
             case 69: return {.d{m.js}, .type{::phy_engine::model::variant_type::d}};
             case 70: return {.d{m.jsw}, .type{::phy_engine::model::variant_type::d}};
             case 101: return {.d{m.jswg}, .type{::phy_engine::model::variant_type::d}};
+            case 325: return {.d{m.jsd}, .type{::phy_engine::model::variant_type::d}};
+            case 326: return {.d{m.jss}, .type{::phy_engine::model::variant_type::d}};
+            case 327: return {.d{m.jswd}, .type{::phy_engine::model::variant_type::d}};
+            case 328: return {.d{m.jsws}, .type{::phy_engine::model::variant_type::d}};
+            case 329: return {.d{m.jswgd}, .type{::phy_engine::model::variant_type::d}};
+            case 330: return {.d{m.jswgs}, .type{::phy_engine::model::variant_type::d}};
+            case 304: return {.d{m.jsr}, .type{::phy_engine::model::variant_type::d}};
+            case 305: return {.d{m.jsrw}, .type{::phy_engine::model::variant_type::d}};
+            case 306: return {.d{m.jsrwg}, .type{::phy_engine::model::variant_type::d}};
+            case 331: return {.d{m.jsrd}, .type{::phy_engine::model::variant_type::d}};
+            case 332: return {.d{m.jsrs}, .type{::phy_engine::model::variant_type::d}};
+            case 333: return {.d{m.jsrwd}, .type{::phy_engine::model::variant_type::d}};
+            case 334: return {.d{m.jsrws}, .type{::phy_engine::model::variant_type::d}};
+            case 335: return {.d{m.jsrwgd}, .type{::phy_engine::model::variant_type::d}};
+            case 336: return {.d{m.jsrwgs}, .type{::phy_engine::model::variant_type::d}};
+            case 307: return {.d{m.rdsMod}, .type{::phy_engine::model::variant_type::d}};
+            case 308: return {.d{m.rgateMod}, .type{::phy_engine::model::variant_type::d}};
+            case 309: return {.d{m.rbodyMod}, .type{::phy_engine::model::variant_type::d}};
+            case 310: return {.d{m.rdsMod}, .type{::phy_engine::model::variant_type::d}};    // rdsmod
+            case 311: return {.d{m.rgateMod}, .type{::phy_engine::model::variant_type::d}};  // rgatemod
+            case 312: return {.d{m.rbodyMod}, .type{::phy_engine::model::variant_type::d}};  // rbodymod
             case 76: return {.d{m.xti}, .type{::phy_engine::model::variant_type::d}};
             case 77: return {.d{m.eg}, .type{::phy_engine::model::variant_type::d}};
             case 16: return {.d{m.drainArea}, .type{::phy_engine::model::variant_type::d}};
@@ -2490,11 +2771,23 @@ namespace phy_engine::model
             case 81: return {.d{m.drainPerimeter}, .type{::phy_engine::model::variant_type::d}};   // pd
             case 82: return {.d{m.sourcePerimeter}, .type{::phy_engine::model::variant_type::d}};  // ps
             case 20: return {.d{m.cj}, .type{::phy_engine::model::variant_type::d}};
+            case 313: return {.d{m.cjd}, .type{::phy_engine::model::variant_type::d}};
+            case 314: return {.d{m.cjs}, .type{::phy_engine::model::variant_type::d}};
             case 21: return {.d{m.cjsw}, .type{::phy_engine::model::variant_type::d}};
+            case 317: return {.d{m.cjswd}, .type{::phy_engine::model::variant_type::d}};
+            case 318: return {.d{m.cjsws}, .type{::phy_engine::model::variant_type::d}};
             case 89: return {.d{m.cjswg}, .type{::phy_engine::model::variant_type::d}};
+            case 319: return {.d{m.cjswgd}, .type{::phy_engine::model::variant_type::d}};
+            case 320: return {.d{m.cjswgs}, .type{::phy_engine::model::variant_type::d}};
             case 22: return {.d{m.pb}, .type{::phy_engine::model::variant_type::d}};
+            case 315: return {.d{m.pbd}, .type{::phy_engine::model::variant_type::d}};
+            case 316: return {.d{m.pbs}, .type{::phy_engine::model::variant_type::d}};
             case 84: return {.d{m.pbsw}, .type{::phy_engine::model::variant_type::d}};
+            case 321: return {.d{m.pbswd}, .type{::phy_engine::model::variant_type::d}};
+            case 322: return {.d{m.pbsws}, .type{::phy_engine::model::variant_type::d}};
             case 90: return {.d{m.pbswg}, .type{::phy_engine::model::variant_type::d}};
+            case 323: return {.d{m.pbswgd}, .type{::phy_engine::model::variant_type::d}};
+            case 324: return {.d{m.pbswgs}, .type{::phy_engine::model::variant_type::d}};
             case 85: return {.d{m.tcj}, .type{::phy_engine::model::variant_type::d}};
             case 86: return {.d{m.tcjsw}, .type{::phy_engine::model::variant_type::d}};
             case 87: return {.d{m.tpb}, .type{::phy_engine::model::variant_type::d}};
@@ -2504,7 +2797,15 @@ namespace phy_engine::model
             case 23: return {.d{m.mj}, .type{::phy_engine::model::variant_type::d}};
             case 24: return {.d{m.mjsw}, .type{::phy_engine::model::variant_type::d}};
             case 93: return {.d{m.mjswg}, .type{::phy_engine::model::variant_type::d}};
+            case 359: return {.d{m.mjd}, .type{::phy_engine::model::variant_type::d}};
+            case 360: return {.d{m.mjs}, .type{::phy_engine::model::variant_type::d}};
+            case 361: return {.d{m.mjswd}, .type{::phy_engine::model::variant_type::d}};
+            case 362: return {.d{m.mjsws}, .type{::phy_engine::model::variant_type::d}};
+            case 363: return {.d{m.mjswgd}, .type{::phy_engine::model::variant_type::d}};
+            case 364: return {.d{m.mjswgs}, .type{::phy_engine::model::variant_type::d}};
             case 25: return {.d{m.fc}, .type{::phy_engine::model::variant_type::d}};
+            case 377: return {.d{m.fcd}, .type{::phy_engine::model::variant_type::d}};
+            case 378: return {.d{m.fcs}, .type{::phy_engine::model::variant_type::d}};
             case 26: return {.d{m.tox}, .type{::phy_engine::model::variant_type::d}};
             case 27: return {.d{m.toxm}, .type{::phy_engine::model::variant_type::d}};
             case 28: return {.d{m.nch}, .type{::phy_engine::model::variant_type::d}};
@@ -2512,6 +2813,9 @@ namespace phy_engine::model
             case 30: return {.d{m.ua}, .type{::phy_engine::model::variant_type::d}};
             case 31: return {.d{m.ub}, .type{::phy_engine::model::variant_type::d}};
             case 32: return {.d{m.uc}, .type{::phy_engine::model::variant_type::d}};
+            case 300: return {.d{m.ua1}, .type{::phy_engine::model::variant_type::d}};
+            case 301: return {.d{m.ub1}, .type{::phy_engine::model::variant_type::d}};
+            case 302: return {.d{m.uc1}, .type{::phy_engine::model::variant_type::d}};
             case 33: return {.d{m.vsat}, .type{::phy_engine::model::variant_type::d}};
             case 34: return {.d{m.k1}, .type{::phy_engine::model::variant_type::d}};
             case 35: return {.d{m.k2}, .type{::phy_engine::model::variant_type::d}};
@@ -2543,8 +2847,10 @@ namespace phy_engine::model
             case 94: return {.d{m.rdsw}, .type{::phy_engine::model::variant_type::d}};
             case 95: return {.d{m.prwg}, .type{::phy_engine::model::variant_type::d}};
             case 96: return {.d{m.prwb}, .type{::phy_engine::model::variant_type::d}};
+            case 303: return {.d{m.prt}, .type{::phy_engine::model::variant_type::d}};
             case 61: return {.d{m.keta}, .type{::phy_engine::model::variant_type::d}};
             case 62: return {.d{m.capMod}, .type{::phy_engine::model::variant_type::d}};
+            case 367: return {.d{m.capMod}, .type{::phy_engine::model::variant_type::d}};  // capmod
             case 63: return {.d{m.xpart}, .type{::phy_engine::model::variant_type::d}};
             case 64: return {.d{m.dwc}, .type{::phy_engine::model::variant_type::d}};
             case 65: return {.d{m.dlc}, .type{::phy_engine::model::variant_type::d}};
@@ -2563,6 +2869,17 @@ namespace phy_engine::model
         {
             case 0: return u8"W";
             case 1: return u8"L";
+            case 365: return u8"w";
+            case 366: return u8"l";
+            case 368: return u8"kp";
+            case 369: return u8"vth0";
+            case 370: return u8"temp";
+            case 371: return u8"rd";
+            case 372: return u8"rs";
+            case 373: return u8"rb";
+            case 374: return u8"cgs";
+            case 375: return u8"cgd";
+            case 376: return u8"cgb";
             case 13: return u8"m";
             case 100: return u8"nf";
             case 102: return u8"lref";
@@ -2733,15 +3050,37 @@ namespace phy_engine::model
             case 68: return u8"cgbo";
             case 10: return u8"diode_Is";
             case 11: return u8"diode_N";
+            case 337: return u8"diode_Isd";
+            case 338: return u8"diode_Iss";
+            case 339: return u8"diode_Nd";
+            case 340: return u8"diode_Ns";
+            case 341: return u8"diode_Isrd";
+            case 342: return u8"diode_Isrs";
+            case 343: return u8"diode_Nrd";
+            case 344: return u8"diode_Nrs";
+            case 347: return u8"isd";
+            case 348: return u8"iss";
+            case 349: return u8"nd";
+            case 350: return u8"ns";
+            case 351: return u8"isrd";
+            case 352: return u8"isrs";
+            case 353: return u8"is";
+            case 354: return u8"n";
+            case 355: return u8"isr";
+            case 356: return u8"nr";
             case 261: return u8"diode_Isr";
             case 262: return u8"diode_Nr";
             case 12: return u8"Temp";
             case 263: return u8"dtemp";
             case 83: return u8"tt";
+            case 345: return u8"ttd";
+            case 346: return u8"tts";
             case 257: return u8"bvd";
             case 258: return u8"ibvd";
             case 259: return u8"bvs";
             case 260: return u8"ibvs";
+            case 357: return u8"bv";
+            case 358: return u8"ibv";
             case 71: return u8"tnom";
             case 72: return u8"ute";
             case 73: return u8"kt1";
@@ -2750,6 +3089,27 @@ namespace phy_engine::model
             case 69: return u8"js";
             case 70: return u8"jsw";
             case 101: return u8"jswg";
+            case 325: return u8"jsd";
+            case 326: return u8"jss";
+            case 327: return u8"jswd";
+            case 328: return u8"jsws";
+            case 329: return u8"jswgd";
+            case 330: return u8"jswgs";
+            case 304: return u8"jsr";
+            case 305: return u8"jsrw";
+            case 306: return u8"jsrwg";
+            case 331: return u8"jsrd";
+            case 332: return u8"jsrs";
+            case 333: return u8"jsrwd";
+            case 334: return u8"jsrws";
+            case 335: return u8"jsrwgd";
+            case 336: return u8"jsrwgs";
+            case 307: return u8"rdsMod";
+            case 308: return u8"rgateMod";
+            case 309: return u8"rbodyMod";
+            case 310: return u8"rdsmod";
+            case 311: return u8"rgatemod";
+            case 312: return u8"rbodymod";
             case 76: return u8"xti";
             case 77: return u8"eg";
             case 16: return u8"drainArea";
@@ -2761,11 +3121,23 @@ namespace phy_engine::model
             case 81: return u8"pd";
             case 82: return u8"ps";
             case 20: return u8"cj";
+            case 313: return u8"cjd";
+            case 314: return u8"cjs";
             case 21: return u8"cjsw";
+            case 317: return u8"cjswd";
+            case 318: return u8"cjsws";
             case 89: return u8"cjswg";
+            case 319: return u8"cjswgd";
+            case 320: return u8"cjswgs";
             case 22: return u8"pb";
+            case 315: return u8"pbd";
+            case 316: return u8"pbs";
             case 84: return u8"pbsw";
+            case 321: return u8"pbswd";
+            case 322: return u8"pbsws";
             case 90: return u8"pbswg";
+            case 323: return u8"pbswgd";
+            case 324: return u8"pbswgs";
             case 85: return u8"tcj";
             case 86: return u8"tcjsw";
             case 87: return u8"tpb";
@@ -2775,7 +3147,15 @@ namespace phy_engine::model
             case 23: return u8"mj";
             case 24: return u8"mjsw";
             case 93: return u8"mjswg";
+            case 359: return u8"mjd";
+            case 360: return u8"mjs";
+            case 361: return u8"mjswd";
+            case 362: return u8"mjsws";
+            case 363: return u8"mjswgd";
+            case 364: return u8"mjswgs";
             case 25: return u8"fc";
+            case 377: return u8"fcd";
+            case 378: return u8"fcs";
             case 26: return u8"tox";
             case 27: return u8"toxm";
             case 28: return u8"nch";
@@ -2783,6 +3163,9 @@ namespace phy_engine::model
             case 30: return u8"ua";
             case 31: return u8"ub";
             case 32: return u8"uc";
+            case 300: return u8"ua1";
+            case 301: return u8"ub1";
+            case 302: return u8"uc1";
             case 33: return u8"vsat";
             case 34: return u8"k1";
             case 35: return u8"k2";
@@ -2814,8 +3197,10 @@ namespace phy_engine::model
             case 94: return u8"rdsw";
             case 95: return u8"prwg";
             case 96: return u8"prwb";
+            case 303: return u8"prt";
             case 61: return u8"keta";
             case 62: return u8"capMod";
+            case 367: return u8"capmod";
             case 63: return u8"xpart";
             case 64: return u8"dwc";
             case 65: return u8"dlc";
@@ -2845,51 +3230,121 @@ namespace phy_engine::model
         // Keep diode internals numerically well-defined even if m<=0 (treat as "almost off").
         double const scale_diode{scale > 0.0 ? scale : 1e-30};
         double const temp_is_scale{details::bsim3v32_is_temp_scale(m.Temp, m.tnom, m.xti, m.eg)};
-        double const diode_is{(m.diode_Is > 0.0 ? m.diode_Is : 1e-30) * temp_is_scale};
-        double const diode_isr{(m.diode_Isr > 0.0 ? m.diode_Isr : 0.0) * temp_is_scale};
+        double const diode_is_param_d{(m.diode_Isd >= 0.0) ? m.diode_Isd : m.diode_Is};
+        double const diode_is_param_s{(m.diode_Iss >= 0.0) ? m.diode_Iss : m.diode_Is};
+        double const diode_is_d{(diode_is_param_d > 0.0 ? diode_is_param_d : 1e-30) * temp_is_scale};
+        double const diode_is_s{(diode_is_param_s > 0.0 ? diode_is_param_s : 1e-30) * temp_is_scale};
+
+        double const diode_isr_param_d{(m.diode_Isrd >= 0.0) ? m.diode_Isrd : m.diode_Isr};
+        double const diode_isr_param_s{(m.diode_Isrs >= 0.0) ? m.diode_Isrs : m.diode_Isr};
+        double const diode_isr_d{(diode_isr_param_d > 0.0 ? diode_isr_param_d : 0.0) * temp_is_scale};
+        double const diode_isr_s{(diode_isr_param_s > 0.0 ? diode_isr_param_s : 0.0) * temp_is_scale};
+
+        double const diode_n_d{(m.diode_Nd > 0.0) ? m.diode_Nd : m.diode_N};
+        double const diode_n_s{(m.diode_Ns > 0.0) ? m.diode_Ns : m.diode_N};
+        double const diode_nr_d{(m.diode_Nrd > 0.0) ? m.diode_Nrd : m.diode_Nr};
+        double const diode_nr_s{(m.diode_Nrs > 0.0) ? m.diode_Nrs : m.diode_Nr};
+
+        double const tt_d{(m.ttd >= 0.0) ? m.ttd : m.tt};
+        double const tt_s{(m.tts >= 0.0) ? m.tts : m.tt};
 
         // Propagate basic diode params and attach to external nodes.
-        m.diode_db.N = m.diode_N;
-        m.diode_db.Isr = diode_isr;
-        m.diode_db.Nr = m.diode_Nr;
+        m.diode_db.N = (diode_n_d > 0.0 ? diode_n_d : 1.0);
+        m.diode_db.Isr = diode_isr_d;
+        m.diode_db.Nr = (diode_nr_d > 0.0 ? diode_nr_d : 2.0);
         m.diode_db.Temp = m.Temp;
-        m.diode_db.tt = m.tt;
+        m.diode_db.tt = (tt_d > 0.0 ? tt_d : 0.0);
         m.diode_db.Bv = m.bvd;
-        // Scale breakdown current with instance multiplier so the fitted breakdown knee stays scale-invariant.
-        m.diode_db.Ibv = m.ibvd * scale_diode;
         m.diode_db.Bv_set = (m.bvd > 0.0 && m.ibvd > 0.0);
-        m.diode_sb.N = m.diode_N;
-        m.diode_sb.Isr = diode_isr;
-        m.diode_sb.Nr = m.diode_Nr;
+        m.diode_sb.N = (diode_n_s > 0.0 ? diode_n_s : 1.0);
+        m.diode_sb.Isr = diode_isr_s;
+        m.diode_sb.Nr = (diode_nr_s > 0.0 ? diode_nr_s : 2.0);
         m.diode_sb.Temp = m.Temp;
-        m.diode_sb.tt = m.tt;
+        m.diode_sb.tt = (tt_s > 0.0 ? tt_s : 0.0);
         m.diode_sb.Bv = m.bvs;
-        m.diode_sb.Ibv = m.ibvs * scale_diode;
         m.diode_sb.Bv_set = (m.bvs > 0.0 && m.ibvs > 0.0);
 
-        if(m.js != 0.0 || m.jsw != 0.0 || m.jswg != 0.0)
+        bool const use_js{m.js != 0.0 || m.jsw != 0.0 || m.jswg != 0.0 || m.jsd != 0.0 || m.jss != 0.0 || m.jswd != 0.0 || m.jsws != 0.0 || m.jswgd != 0.0 ||
+                          m.jswgs != 0.0};
+        bool const use_jsr{m.jsr != 0.0 || m.jsrw != 0.0 || m.jsrwg != 0.0 || m.jsrd != 0.0 || m.jsrs != 0.0 || m.jsrwd != 0.0 || m.jsrws != 0.0 ||
+                           m.jsrwgd != 0.0 || m.jsrwgs != 0.0};
+        bool const use_geom_currents{use_js || use_jsr};
+
+        if(use_geom_currents)
         {
-            // Use diffusion geometry scaling (area + sidewall perimeter).
+            // Use diffusion geometry scaling (area + sidewall perimeter) for Is and/or Isr.
             double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
-            double is_db{(m.js * m.drainArea + m.jsw * m.drainPerimeter + m.jswg * weff) * scale * temp_is_scale};
-            double is_sb{(m.js * m.sourceArea + m.jsw * m.sourcePerimeter + m.jswg * weff) * scale * temp_is_scale};
-            if(!(is_db > 0.0)) { is_db = diode_is * scale_diode; }
-            if(!(is_sb > 0.0)) { is_sb = diode_is * scale_diode; }
+
+            double is_db{};
+            double is_sb{};
+            if(use_js)
+            {
+                double const js_d{(m.jsd != 0.0) ? m.jsd : m.js};
+                double const js_s{(m.jss != 0.0) ? m.jss : m.js};
+                double const jsw_d{(m.jswd != 0.0) ? m.jswd : m.jsw};
+                double const jsw_s{(m.jsws != 0.0) ? m.jsws : m.jsw};
+                double const jswg_d{(m.jswgd != 0.0) ? m.jswgd : m.jswg};
+                double const jswg_s{(m.jswgs != 0.0) ? m.jswgs : m.jswg};
+
+                is_db = (js_d * m.drainArea + jsw_d * m.drainPerimeter + jswg_d * weff) * scale * temp_is_scale;
+                is_sb = (js_s * m.sourceArea + jsw_s * m.sourcePerimeter + jswg_s * weff) * scale * temp_is_scale;
+                if(!(is_db > 0.0)) { is_db = diode_is_d * scale_diode; }
+                if(!(is_sb > 0.0)) { is_sb = diode_is_s * scale_diode; }
+            }
+            else
+            {
+                // Preserve the legacy scaling behavior for Is when js/jsw/jswg are unset.
+                is_db = diode_is_d * scale_diode;
+                is_sb = diode_is_s * scale_diode;
+            }
+
+            double isr_db{};
+            double isr_sb{};
+            if(use_jsr)
+            {
+                double const jsr_d{(m.jsrd != 0.0) ? m.jsrd : m.jsr};
+                double const jsr_s{(m.jsrs != 0.0) ? m.jsrs : m.jsr};
+                double const jsrw_d{(m.jsrwd != 0.0) ? m.jsrwd : m.jsrw};
+                double const jsrw_s{(m.jsrws != 0.0) ? m.jsrws : m.jsrw};
+                double const jsrwg_d{(m.jsrwgd != 0.0) ? m.jsrwgd : m.jsrwg};
+                double const jsrwg_s{(m.jsrwgs != 0.0) ? m.jsrwgs : m.jsrwg};
+
+                isr_db = (jsr_d * m.drainArea + jsrw_d * m.drainPerimeter + jsrwg_d * weff) * scale * temp_is_scale;
+                isr_sb = (jsr_s * m.sourceArea + jsrw_s * m.sourcePerimeter + jsrwg_s * weff) * scale * temp_is_scale;
+                if(!(isr_db > 0.0)) { isr_db = diode_isr_d * scale_diode; }
+                if(!(isr_sb > 0.0)) { isr_sb = diode_isr_s * scale_diode; }
+            }
+            else
+            {
+                // Preserve the legacy scaling behavior for Isr when jsr/jsrw/jsrwg are unset.
+                isr_db = diode_isr_d * scale_diode;
+                isr_sb = diode_isr_s * scale_diode;
+            }
+
             m.diode_db.Is = is_db;
-            m.diode_db.Isr = diode_isr * scale_diode;
+            m.diode_db.Isr = isr_db;
             m.diode_db.Area = 1.0;
             m.diode_sb.Is = is_sb;
-            m.diode_sb.Isr = diode_isr * scale_diode;
+            m.diode_sb.Isr = isr_sb;
             m.diode_sb.Area = 1.0;
         }
         else
         {
             // Legacy: a single diode saturation current scaled only by m.
-            m.diode_db.Is = diode_is;
+            m.diode_db.Is = diode_is_d;
             m.diode_db.Area = scale_diode;
-            m.diode_sb.Is = diode_is;
+            m.diode_sb.Is = diode_is_s;
             m.diode_sb.Area = scale_diode;
         }
+
+        // Scale breakdown current with the same geometry/multiplier factor as Is so the fitted breakdown knee stays scale-invariant.
+        // This preserves legacy behavior when geometry scaling is not used, while keeping breakdown consistent when js/jsw/jswg scaling is enabled.
+        double const is_eff_db{m.diode_db.Is * m.diode_db.Area};
+        double const is_eff_sb{m.diode_sb.Is * m.diode_sb.Area};
+        double const ref_is_d{::std::max(diode_is_d, 1e-30)};
+        double const ref_is_s{::std::max(diode_is_s, 1e-30)};
+        m.diode_db.Ibv = (m.ibvd > 0.0) ? (m.ibvd * is_eff_db / ref_is_d) : 0.0;
+        m.diode_sb.Ibv = (m.ibvs > 0.0) ? (m.ibvs * is_eff_sb / ref_is_s) : 0.0;
 
         details::attach_body_diodes<is_pmos>(nd, ns_int, m.nbd_int ? m.nbd_int : nb, m.nbs_int ? m.nbs_int : nb, m.diode_db, m.diode_sb);
         (void)prepare_foundation_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_db);
@@ -2906,6 +3361,7 @@ namespace phy_engine::model
         double const base_temp{m.Temp_override ? m.Temp_override_value : temp};
         m.Temp = base_temp + m.dtemp;
         m.dc_bias_valid = false;
+        m.dc_bias_phys_valid = false;
         // Recompute temperature-dependent internals (including diode Is scaling) at this temperature.
         // NOTE: The engine calls load_temperature() during prepare() for every analysis type, so this is
         // the right hook to update any temperature-dependent quantities.
@@ -2951,24 +3407,51 @@ namespace phy_engine::model
         if(m.nbd_int && nb_raw) { details::stamp_resistor(mna, nb, m.nbd_int, ::std::max(rbdb_eff, 0.0)); }
         if(m.nbs_int && nb_raw) { details::stamp_resistor(mna, nb, m.nbs_int, ::std::max(rbsb_eff, 0.0)); }
 
+        // Physical-terminal controlling voltages (no D/S swapping).
+        // Apply SPICE-style limiting to improve Newton convergence for all auxiliary branches too (clean-room).
+        double const sgn{is_pmos ? -1.0 : 1.0};
+        double const Vd_p{nd->node_information.an.voltage.real()};
+        double const Vs_p{ns->node_information.an.voltage.real()};
+        double const Vg_p{ng->node_information.an.voltage.real()};
+        double const Vb_p{nb->node_information.an.voltage.real()};
+
+        double const vto_lim{details::bsim3v32_vth0_temp_mag(m.Vth0, m.Temp, m.tnom, m.kt1, m.kt2)};
+
+        double vgs_s_phys{sgn * (Vg_p - Vs_p)};
+        double vds_s_phys{sgn * (Vd_p - Vs_p)};
+        double vbs_s_phys{sgn * (Vb_p - Vs_p)};
+
+        double vgs_s_phys_eval{vgs_s_phys};
+        double vds_s_phys_eval{vds_s_phys};
+        double vbs_s_phys_eval{vbs_s_phys};
+        if(m.dc_bias_phys_valid)
+        {
+            vgs_s_phys_eval = details::bsim3v32_fetlim(vgs_s_phys_eval, m.vgs_s_phys_last, vto_lim);
+            vds_s_phys_eval = details::bsim3v32_limvds(vds_s_phys_eval, m.vds_s_phys_last);
+            vbs_s_phys_eval = details::bsim3v32_fetlim(vbs_s_phys_eval, m.vbs_s_phys_last, 0.0);
+        }
+        m.dc_bias_phys_valid = true;
+        m.vgs_s_phys_last = vgs_s_phys_eval;
+        m.vds_s_phys_last = vds_s_phys_eval;
+        m.vbs_s_phys_last = vbs_s_phys_eval;
+
+        double const Vgs_phys_eval{sgn * vgs_s_phys_eval};
+        double const Vds_phys_eval{sgn * vds_s_phys_eval};
+        double const Vbs_phys_eval{sgn * vbs_s_phys_eval};
+
+        double const vgd_s_phys_eval{vgs_s_phys_eval - vds_s_phys_eval};
+        double const vgb_s_phys_eval{vgs_s_phys_eval - vbs_s_phys_eval};
+        double const Vgd_phys_eval{sgn * vgd_s_phys_eval};
+        double const Vgb_phys_eval{sgn * vgb_s_phys_eval};
+
         // Off-state leakage currents (GIDL/GISL) between diffusion nodes and bulk.
         if((m.agidl > 0.0 && m.bgidl > 0.0) || (m.agisl > 0.0 && m.bgisl > 0.0))
         {
-            double const sgn{is_pmos ? -1.0 : 1.0};
-            double const Vd_p{nd->node_information.an.voltage.real()};
-            double const Vs_p{ns->node_information.an.voltage.real()};
-            double const Vg_p{ng->node_information.an.voltage.real()};
-            double const Vb_p{nb->node_information.an.voltage.real()};
-
-            double const vgs_s_p{sgn * (Vg_p - Vs_p)};
-            double const vds_s_p{sgn * (Vd_p - Vs_p)};
-            double const vbs_s_p{sgn * (Vb_p - Vs_p)};
-
             // Drain-to-bulk GIDL current source (D -> B).
             auto const idb_dual = details::bsim3v32_gidl_drain_s(m,
-                                                                 details::bsim3v32_dual3_vgs(vgs_s_p),
-                                                                 details::bsim3v32_dual3_vds(vds_s_p),
-                                                                 details::bsim3v32_dual3_vbs(vbs_s_p));
+                                                                 details::bsim3v32_dual3_vgs(vgs_s_phys_eval),
+                                                                 details::bsim3v32_dual3_vds(vds_s_phys_eval),
+                                                                 details::bsim3v32_dual3_vbs(vbs_s_phys_eval));
             double const Idb{sgn * idb_dual.val};
             double const gVgs_db{idb_dual.dvgs};
             double const gVds_db{idb_dual.dvds};
@@ -2979,14 +3462,14 @@ namespace phy_engine::model
             double const gVb_db{gVbs_db};
             double const gVs_db{-(gVgs_db + gVds_db + gVbs_db)};
 
-            double const Ieq_db{Idb - (gVd_db * Vd_p + gVg_db * Vg_p + gVs_db * Vs_p + gVb_db * Vb_p)};
+            double const Ieq_db{Idb - (gVgs_db * Vgs_phys_eval + gVds_db * Vds_phys_eval + gVbs_db * Vbs_phys_eval)};
             details::stamp_current_4node(mna, nd, nb, nd, ng, ns, nb, gVd_db * scale, gVg_db * scale, gVs_db * scale, gVb_db * scale, Ieq_db * scale);
 
             // Source-to-bulk GISL current source (S -> B).
             auto const isb_dual = details::bsim3v32_gidl_source_s(m,
-                                                                  details::bsim3v32_dual3_vgs(vgs_s_p),
-                                                                  details::bsim3v32_dual3_vds(vds_s_p),
-                                                                  details::bsim3v32_dual3_vbs(vbs_s_p));
+                                                                  details::bsim3v32_dual3_vgs(vgs_s_phys_eval),
+                                                                  details::bsim3v32_dual3_vds(vds_s_phys_eval),
+                                                                  details::bsim3v32_dual3_vbs(vbs_s_phys_eval));
             double const Isb{sgn * isb_dual.val};
             double const gVgs_sb{isb_dual.dvgs};
             double const gVds_sb{isb_dual.dvds};
@@ -2997,25 +3480,20 @@ namespace phy_engine::model
             double const gVb_sb{gVbs_sb};
             double const gVs_sb{-(gVgs_sb + gVds_sb + gVbs_sb)};
 
-            double const Ieq_sb{Isb - (gVd_sb * Vd_p + gVg_sb * Vg_p + gVs_sb * Vs_p + gVb_sb * Vb_p)};
+            double const Ieq_sb{Isb - (gVgs_sb * Vgs_phys_eval + gVds_sb * Vds_phys_eval + gVbs_sb * Vbs_phys_eval)};
             details::stamp_current_4node(mna, ns, nb, nd, ng, ns, nb, gVd_sb * scale, gVg_sb * scale, gVs_sb * scale, gVb_sb * scale, Ieq_sb * scale);
         }
 
         // Gate-to-bulk leakage current source (G -> B). Independent of channel mode.
         if(m.aigb > 0.0 && m.bigb > 0.0)
         {
-            double const sgn_gb{is_pmos ? -1.0 : 1.0};
-            double const Vg_p{ng->node_information.an.voltage.real()};
-            double const Vb_p{nb->node_information.an.voltage.real()};
-            double const vgb_s_p{sgn_gb * (Vg_p - Vb_p)};
-
-            auto const igb_dual = details::bsim3v32_igb_s(m, details::bsim3v32_dual3_vgs(vgb_s_p));
-            double const Ig{sgn_gb * igb_dual.val};  // current from G to B (positive means leaving gate)
+            auto const igb_dual = details::bsim3v32_igb_s(m, details::bsim3v32_dual3_vgs(vgb_s_phys_eval));
+            double const Ig{sgn * igb_dual.val};  // current from G to B (positive means leaving gate)
             double const dId_dVgb{igb_dual.dvgs};
 
             double const dId_dVg{dId_dVgb};
             double const dId_dVb{-dId_dVgb};
-            double const Ieq_gb{Ig - (dId_dVg * Vg_p + dId_dVb * Vb_p)};
+            double const Ieq_gb{Ig - dId_dVgb * Vgb_phys_eval};
             details::stamp_current_2node(mna, ng, nb, dId_dVg * scale, dId_dVb * scale, Ieq_gb * scale);
         }
 
@@ -3023,18 +3501,13 @@ namespace phy_engine::model
         // Note: when bigs is unset, bsim3v32_igs_s falls back to bigb, so we must not gate on (bigs > 0) here.
         if(m.aigs > 0.0 && ((m.bigs > 0.0) || (m.bigb > 0.0)))
         {
-            double const sgn_gs{is_pmos ? -1.0 : 1.0};
-            double const Vg_p{ng->node_information.an.voltage.real()};
-            double const Vs_p{ns->node_information.an.voltage.real()};
-            double const vgs_s_p{sgn_gs * (Vg_p - Vs_p)};
-
-            auto const igs_dual = details::bsim3v32_igs_s(m, details::bsim3v32_dual3_vgs(vgs_s_p));
-            double const Ig{sgn_gs * igs_dual.val};
+            auto const igs_dual = details::bsim3v32_igs_s(m, details::bsim3v32_dual3_vgs(vgs_s_phys_eval));
+            double const Ig{sgn * igs_dual.val};
             double const dId_dVgs{igs_dual.dvgs};
 
             double const dId_dVg{dId_dVgs};
             double const dId_dVs{-dId_dVgs};
-            double const Ieq_gs{Ig - (dId_dVg * Vg_p + dId_dVs * Vs_p)};
+            double const Ieq_gs{Ig - dId_dVgs * Vgs_phys_eval};
             details::stamp_current_2node(mna, ng, ns, dId_dVg * scale, dId_dVs * scale, Ieq_gs * scale);
         }
 
@@ -3042,24 +3515,17 @@ namespace phy_engine::model
         // Note: when bigd is unset, bsim3v32_igd_s falls back to bigb, so we must not gate on (bigd > 0) here.
         if(m.aigd > 0.0 && ((m.bigd > 0.0) || (m.bigb > 0.0)))
         {
-            double const sgn_gd{is_pmos ? -1.0 : 1.0};
-            double const Vg_p{ng->node_information.an.voltage.real()};
-            double const Vd_p{nd->node_information.an.voltage.real()};
-            double const vgd_s_p{sgn_gd * (Vg_p - Vd_p)};
-
-            auto const igd_dual = details::bsim3v32_igd_s(m, details::bsim3v32_dual3_vgs(vgd_s_p));
-            double const Ig{sgn_gd * igd_dual.val};
+            auto const igd_dual = details::bsim3v32_igd_s(m, details::bsim3v32_dual3_vgs(vgd_s_phys_eval));
+            double const Ig{sgn * igd_dual.val};
             double const dId_dVgd{igd_dual.dvgs};
 
             double const dId_dVg{dId_dVgd};
             double const dId_dVd{-dId_dVgd};
-            double const Ieq_gd{Ig - (dId_dVg * Vg_p + dId_dVd * Vd_p)};
+            double const Ieq_gd{Ig - dId_dVgd * Vgd_phys_eval};
             details::stamp_current_2node(mna, ng, nd, dId_dVg * scale, dId_dVd * scale, Ieq_gd * scale);
         }
 
         // Channel mode selection (SPICE-style): swap D/S for the intrinsic channel if needed.
-        double const sgn{is_pmos ? -1.0 : 1.0};
-
         auto* nd_ch = nd;
         auto* ns_ch = ns;
         double Vd_ch = nd_ch->node_information.an.voltage.real();
@@ -3379,7 +3845,8 @@ namespace phy_engine::model
             (void)iterate_ac_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb, mna, omega);
 
             // optional depletion caps across the same junctions
-            if(m.cj != 0.0 || m.cjsw != 0.0 || m.cjswg != 0.0)
+            if(m.cj != 0.0 || m.cjd != 0.0 || m.cjs != 0.0 || m.cjsw != 0.0 || m.cjswd != 0.0 || m.cjsws != 0.0 || m.cjswg != 0.0 || m.cjswgd != 0.0 ||
+               m.cjswgs != 0.0)
             {
                 auto* db_a = m.diode_db.pins[0].nodes;
                 auto* db_b = m.diode_db.pins[1].nodes;
@@ -3508,7 +3975,8 @@ namespace phy_engine::model
             (void)step_changed_tr_define(::phy_engine::model::model_reserve_type<PN_junction>, m.diode_sb, nlaststep, nstep);
 
             // optional depletion caps across the same junctions (linearized per step at previous bias)
-            if(m.cj != 0.0 || m.cjsw != 0.0 || m.cjswg != 0.0)
+            if(m.cj != 0.0 || m.cjd != 0.0 || m.cjs != 0.0 || m.cjsw != 0.0 || m.cjswd != 0.0 || m.cjsws != 0.0 || m.cjswg != 0.0 || m.cjswgd != 0.0 ||
+               m.cjswgs != 0.0)
             {
                 auto* db_a = m.diode_db.pins[0].nodes;
                 auto* db_b = m.diode_db.pins[1].nodes;
@@ -3519,30 +3987,58 @@ namespace phy_engine::model
                     double const vbd = db_a->node_information.an.voltage.real() - db_b->node_information.an.voltage.real();
                     double const vbs = sb_a->node_information.an.voltage.real() - sb_b->node_information.an.voltage.real();
 
-                    double const cj_eff = details::bsim3v32_temp_linear_scale_clamped(m.cj, m.tcj, m.Temp, m.tnom, 0.0);
-                    double const cjsw_eff = details::bsim3v32_temp_linear_scale_clamped(m.cjsw, m.tcjsw, m.Temp, m.tnom, 0.0);
-                    double const cjswg_eff = details::bsim3v32_temp_linear_scale_clamped(m.cjswg, m.tcjswg, m.Temp, m.tnom, 0.0);
-                    double const pb_eff = details::bsim3v32_temp_linear_scale_clamped(m.pb, m.tpb, m.Temp, m.tnom, 1e-12);
-                    double const pbsw0 = (m.pbsw > 0.0) ? m.pbsw : m.pb;
-                    double const tpbsw0 = (m.pbsw > 0.0) ? m.tpbsw : m.tpb;
-                    double const pbsw_eff = details::bsim3v32_temp_linear_scale_clamped(pbsw0, tpbsw0, m.Temp, m.tnom, 1e-12);
-                    double const pbswg0 = (m.pbswg > 0.0) ? m.pbswg : pbsw0;
-                    double const tpbswg0 = (m.pbswg > 0.0) ? m.tpbswg : tpbsw0;
-                    double const pbswg_eff = details::bsim3v32_temp_linear_scale_clamped(pbswg0, tpbswg0, m.Temp, m.tnom, 1e-12);
+                    double const cjd0 = (m.cjd != 0.0) ? m.cjd : m.cj;
+                    double const cjs0 = (m.cjs != 0.0) ? m.cjs : m.cj;
+                    double const cj_d_eff = details::bsim3v32_temp_linear_scale_clamped(cjd0, m.tcj, m.Temp, m.tnom, 0.0);
+                    double const cj_s_eff = details::bsim3v32_temp_linear_scale_clamped(cjs0, m.tcj, m.Temp, m.tnom, 0.0);
+                    double const cjswd0 = (m.cjswd != 0.0) ? m.cjswd : m.cjsw;
+                    double const cjsws0 = (m.cjsws != 0.0) ? m.cjsws : m.cjsw;
+                    double const cjswgd0 = (m.cjswgd != 0.0) ? m.cjswgd : m.cjswg;
+                    double const cjswgs0 = (m.cjswgs != 0.0) ? m.cjswgs : m.cjswg;
+                    double const cjsw_d_eff = details::bsim3v32_temp_linear_scale_clamped(cjswd0, m.tcjsw, m.Temp, m.tnom, 0.0);
+                    double const cjsw_s_eff = details::bsim3v32_temp_linear_scale_clamped(cjsws0, m.tcjsw, m.Temp, m.tnom, 0.0);
+                    double const cjswg_d_eff = details::bsim3v32_temp_linear_scale_clamped(cjswgd0, m.tcjswg, m.Temp, m.tnom, 0.0);
+                    double const cjswg_s_eff = details::bsim3v32_temp_linear_scale_clamped(cjswgs0, m.tcjswg, m.Temp, m.tnom, 0.0);
+                    double const pbd0 = (m.pbd > 0.0) ? m.pbd : m.pb;
+                    double const pbs0 = (m.pbs > 0.0) ? m.pbs : m.pb;
+                    double const pb_d_eff = details::bsim3v32_temp_linear_scale_clamped(pbd0, m.tpb, m.Temp, m.tnom, 1e-12);
+                    double const pb_s_eff = details::bsim3v32_temp_linear_scale_clamped(pbs0, m.tpb, m.Temp, m.tnom, 1e-12);
+                    double const pbsw_d0 = (m.pbswd > 0.0) ? m.pbswd : ((m.pbsw > 0.0) ? m.pbsw : m.pb);
+                    double const pbsw_s0 = (m.pbsws > 0.0) ? m.pbsws : ((m.pbsw > 0.0) ? m.pbsw : m.pb);
+                    double const tpbsw_d0 = ((m.pbswd > 0.0) || (m.pbsw > 0.0)) ? m.tpbsw : m.tpb;
+                    double const tpbsw_s0 = ((m.pbsws > 0.0) || (m.pbsw > 0.0)) ? m.tpbsw : m.tpb;
+                    double const pbsw_d_eff = details::bsim3v32_temp_linear_scale_clamped(pbsw_d0, tpbsw_d0, m.Temp, m.tnom, 1e-12);
+                    double const pbsw_s_eff = details::bsim3v32_temp_linear_scale_clamped(pbsw_s0, tpbsw_s0, m.Temp, m.tnom, 1e-12);
 
-                    double const cbd_bottom0 = cj_eff * m.drainArea;
-                    double const cbs_bottom0 = cj_eff * m.sourceArea;
-                    double const cbd_side0 = cjsw_eff * m.drainPerimeter;
-                    double const cbs_side0 = cjsw_eff * m.sourcePerimeter;
-                    double const cbd_gate0 = cjswg_eff * weff;
-                    double const cbs_gate0 = cjswg_eff * weff;
+                    double const pbswg_d0 = (m.pbswgd > 0.0) ? m.pbswgd : ((m.pbswg > 0.0) ? m.pbswg : pbsw_d0);
+                    double const pbswg_s0 = (m.pbswgs > 0.0) ? m.pbswgs : ((m.pbswg > 0.0) ? m.pbswg : pbsw_s0);
+                    double const tpbswg_d0 = ((m.pbswgd > 0.0) || (m.pbswg > 0.0)) ? m.tpbswg : tpbsw_d0;
+                    double const tpbswg_s0 = ((m.pbswgs > 0.0) || (m.pbswg > 0.0)) ? m.tpbswg : tpbsw_s0;
+                    double const pbswg_d_eff = details::bsim3v32_temp_linear_scale_clamped(pbswg_d0, tpbswg_d0, m.Temp, m.tnom, 1e-12);
+                    double const pbswg_s_eff = details::bsim3v32_temp_linear_scale_clamped(pbswg_s0, tpbswg_s0, m.Temp, m.tnom, 1e-12);
 
-                    double const cbd = details::bsim3v32_junction_cap(cbd_bottom0, vbd, pb_eff, m.mj, m.fc) +
-                                       details::bsim3v32_junction_cap(cbd_side0, vbd, pbsw_eff, m.mjsw, m.fc) +
-                                       details::bsim3v32_junction_cap(cbd_gate0, vbd, pbswg_eff, m.mjswg, m.fc);
-                    double const cbs = details::bsim3v32_junction_cap(cbs_bottom0, vbs, pb_eff, m.mj, m.fc) +
-                                       details::bsim3v32_junction_cap(cbs_side0, vbs, pbsw_eff, m.mjsw, m.fc) +
-                                       details::bsim3v32_junction_cap(cbs_gate0, vbs, pbswg_eff, m.mjswg, m.fc);
+                    double const cbd_bottom0 = cj_d_eff * m.drainArea;
+                    double const cbs_bottom0 = cj_s_eff * m.sourceArea;
+                    double const cbd_side0 = cjsw_d_eff * m.drainPerimeter;
+                    double const cbs_side0 = cjsw_s_eff * m.sourcePerimeter;
+                    double const cbd_gate0 = cjswg_d_eff * weff;
+                    double const cbs_gate0 = cjswg_s_eff * weff;
+
+                    double const mj_d{::std::max((m.mjd >= 0.0) ? m.mjd : m.mj, 0.0)};
+                    double const mj_s{::std::max((m.mjs >= 0.0) ? m.mjs : m.mj, 0.0)};
+                    double const mjsw_d{::std::max((m.mjswd >= 0.0) ? m.mjswd : m.mjsw, 0.0)};
+                    double const mjsw_s{::std::max((m.mjsws >= 0.0) ? m.mjsws : m.mjsw, 0.0)};
+                    double const mjswg_d{::std::max((m.mjswgd >= 0.0) ? m.mjswgd : m.mjswg, 0.0)};
+                    double const mjswg_s{::std::max((m.mjswgs >= 0.0) ? m.mjswgs : m.mjswg, 0.0)};
+
+                    double const fc_d{(m.fcd >= 0.0) ? m.fcd : m.fc};
+                    double const fc_s{(m.fcs >= 0.0) ? m.fcs : m.fc};
+                    double const cbd = details::bsim3v32_junction_cap(cbd_bottom0, vbd, pb_d_eff, mj_d, fc_d) +
+                                       details::bsim3v32_junction_cap(cbd_side0, vbd, pbsw_d_eff, mjsw_d, fc_d) +
+                                       details::bsim3v32_junction_cap(cbd_gate0, vbd, pbswg_d_eff, mjswg_d, fc_d);
+                    double const cbs = details::bsim3v32_junction_cap(cbs_bottom0, vbs, pb_s_eff, mj_s, fc_s) +
+                                       details::bsim3v32_junction_cap(cbs_side0, vbs, pbsw_s_eff, mjsw_s, fc_s) +
+                                       details::bsim3v32_junction_cap(cbs_gate0, vbs, pbswg_s_eff, mjswg_s, fc_s);
 
                     details::step_cap_tr(m.capbd_state, db_a, db_b, cbd * scale, nstep);
                     details::step_cap_tr(m.capbs_state, sb_a, sb_b, cbs * scale, nstep);
@@ -3672,7 +4168,8 @@ namespace phy_engine::model
         // Depletion caps at the diode biases (real OP). Uses the same diode node attachments.
         m.cbd_ac = 0.0;
         m.cbs_ac = 0.0;
-        if(m.cj != 0.0 || m.cjsw != 0.0 || m.cjswg != 0.0)
+        if(m.cj != 0.0 || m.cjd != 0.0 || m.cjs != 0.0 || m.cjsw != 0.0 || m.cjswd != 0.0 || m.cjsws != 0.0 || m.cjswg != 0.0 || m.cjswgd != 0.0 ||
+           m.cjswgs != 0.0)
         {
             details::attach_body_diodes<is_pmos>(nd, ns, m.nbd_int ? m.nbd_int : nb, m.nbs_int ? m.nbs_int : nb, m.diode_db, m.diode_sb);
             auto* db_a = m.diode_db.pins[0].nodes;
@@ -3684,31 +4181,60 @@ namespace phy_engine::model
                 double const vbd = db_a->node_information.an.voltage.real() - db_b->node_information.an.voltage.real();
                 double const vbs = sb_a->node_information.an.voltage.real() - sb_b->node_information.an.voltage.real();
 
-                double const cj_eff = details::bsim3v32_temp_linear_scale_clamped(m.cj, m.tcj, m.Temp, m.tnom, 0.0);
-                double const cjsw_eff = details::bsim3v32_temp_linear_scale_clamped(m.cjsw, m.tcjsw, m.Temp, m.tnom, 0.0);
-                double const cjswg_eff = details::bsim3v32_temp_linear_scale_clamped(m.cjswg, m.tcjswg, m.Temp, m.tnom, 0.0);
-                double const pb_eff = details::bsim3v32_temp_linear_scale_clamped(m.pb, m.tpb, m.Temp, m.tnom, 1e-12);
-                double const pbsw0 = (m.pbsw > 0.0) ? m.pbsw : m.pb;
-                double const tpbsw0 = (m.pbsw > 0.0) ? m.tpbsw : m.tpb;
-                double const pbsw_eff = details::bsim3v32_temp_linear_scale_clamped(pbsw0, tpbsw0, m.Temp, m.tnom, 1e-12);
-                double const pbswg0 = (m.pbswg > 0.0) ? m.pbswg : pbsw0;
-                double const tpbswg0 = (m.pbswg > 0.0) ? m.tpbswg : tpbsw0;
-                double const pbswg_eff = details::bsim3v32_temp_linear_scale_clamped(pbswg0, tpbswg0, m.Temp, m.tnom, 1e-12);
+                double const cjd0 = (m.cjd != 0.0) ? m.cjd : m.cj;
+                double const cjs0 = (m.cjs != 0.0) ? m.cjs : m.cj;
+                double const cj_d_eff = details::bsim3v32_temp_linear_scale_clamped(cjd0, m.tcj, m.Temp, m.tnom, 0.0);
+                double const cj_s_eff = details::bsim3v32_temp_linear_scale_clamped(cjs0, m.tcj, m.Temp, m.tnom, 0.0);
+                double const cjswd0 = (m.cjswd != 0.0) ? m.cjswd : m.cjsw;
+                double const cjsws0 = (m.cjsws != 0.0) ? m.cjsws : m.cjsw;
+                double const cjswgd0 = (m.cjswgd != 0.0) ? m.cjswgd : m.cjswg;
+                double const cjswgs0 = (m.cjswgs != 0.0) ? m.cjswgs : m.cjswg;
+                double const cjsw_d_eff = details::bsim3v32_temp_linear_scale_clamped(cjswd0, m.tcjsw, m.Temp, m.tnom, 0.0);
+                double const cjsw_s_eff = details::bsim3v32_temp_linear_scale_clamped(cjsws0, m.tcjsw, m.Temp, m.tnom, 0.0);
+                double const cjswg_d_eff = details::bsim3v32_temp_linear_scale_clamped(cjswgd0, m.tcjswg, m.Temp, m.tnom, 0.0);
+                double const cjswg_s_eff = details::bsim3v32_temp_linear_scale_clamped(cjswgs0, m.tcjswg, m.Temp, m.tnom, 0.0);
+                double const pbd0 = (m.pbd > 0.0) ? m.pbd : m.pb;
+                double const pbs0 = (m.pbs > 0.0) ? m.pbs : m.pb;
+                double const pb_d_eff = details::bsim3v32_temp_linear_scale_clamped(pbd0, m.tpb, m.Temp, m.tnom, 1e-12);
+                double const pb_s_eff = details::bsim3v32_temp_linear_scale_clamped(pbs0, m.tpb, m.Temp, m.tnom, 1e-12);
+                double const pbsw_d0 = (m.pbswd > 0.0) ? m.pbswd : ((m.pbsw > 0.0) ? m.pbsw : m.pb);
+                double const pbsw_s0 = (m.pbsws > 0.0) ? m.pbsws : ((m.pbsw > 0.0) ? m.pbsw : m.pb);
+                double const tpbsw_d0 = ((m.pbswd > 0.0) || (m.pbsw > 0.0)) ? m.tpbsw : m.tpb;
+                double const tpbsw_s0 = ((m.pbsws > 0.0) || (m.pbsw > 0.0)) ? m.tpbsw : m.tpb;
+                double const pbsw_d_eff = details::bsim3v32_temp_linear_scale_clamped(pbsw_d0, tpbsw_d0, m.Temp, m.tnom, 1e-12);
+                double const pbsw_s_eff = details::bsim3v32_temp_linear_scale_clamped(pbsw_s0, tpbsw_s0, m.Temp, m.tnom, 1e-12);
+
+                double const pbswg_d0 = (m.pbswgd > 0.0) ? m.pbswgd : ((m.pbswg > 0.0) ? m.pbswg : pbsw_d0);
+                double const pbswg_s0 = (m.pbswgs > 0.0) ? m.pbswgs : ((m.pbswg > 0.0) ? m.pbswg : pbsw_s0);
+                double const tpbswg_d0 = ((m.pbswgd > 0.0) || (m.pbswg > 0.0)) ? m.tpbswg : tpbsw_d0;
+                double const tpbswg_s0 = ((m.pbswgs > 0.0) || (m.pbswg > 0.0)) ? m.tpbswg : tpbsw_s0;
+                double const pbswg_d_eff = details::bsim3v32_temp_linear_scale_clamped(pbswg_d0, tpbswg_d0, m.Temp, m.tnom, 1e-12);
+                double const pbswg_s_eff = details::bsim3v32_temp_linear_scale_clamped(pbswg_s0, tpbswg_s0, m.Temp, m.tnom, 1e-12);
 
                 double const weff{::std::max(m.W - 2.0 * ::std::max(m.dwc, 0.0), 0.0)};
-                double const cbd_bottom0 = cj_eff * m.drainArea;
-                double const cbs_bottom0 = cj_eff * m.sourceArea;
-                double const cbd_side0 = cjsw_eff * m.drainPerimeter;
-                double const cbs_side0 = cjsw_eff * m.sourcePerimeter;
-                double const cbd_gate0 = cjswg_eff * weff;
-                double const cbs_gate0 = cjswg_eff * weff;
+                double const cbd_bottom0 = cj_d_eff * m.drainArea;
+                double const cbs_bottom0 = cj_s_eff * m.sourceArea;
+                double const cbd_side0 = cjsw_d_eff * m.drainPerimeter;
+                double const cbs_side0 = cjsw_s_eff * m.sourcePerimeter;
+                double const cbd_gate0 = cjswg_d_eff * weff;
+                double const cbs_gate0 = cjswg_s_eff * weff;
 
-                m.cbd_ac = details::bsim3v32_junction_cap(cbd_bottom0, vbd, pb_eff, m.mj, m.fc) +
-                           details::bsim3v32_junction_cap(cbd_side0, vbd, pbsw_eff, m.mjsw, m.fc) +
-                           details::bsim3v32_junction_cap(cbd_gate0, vbd, pbswg_eff, m.mjswg, m.fc);
-                m.cbs_ac = details::bsim3v32_junction_cap(cbs_bottom0, vbs, pb_eff, m.mj, m.fc) +
-                           details::bsim3v32_junction_cap(cbs_side0, vbs, pbsw_eff, m.mjsw, m.fc) +
-                           details::bsim3v32_junction_cap(cbs_gate0, vbs, pbswg_eff, m.mjswg, m.fc);
+                double const mj_d{::std::max((m.mjd >= 0.0) ? m.mjd : m.mj, 0.0)};
+                double const mj_s{::std::max((m.mjs >= 0.0) ? m.mjs : m.mj, 0.0)};
+                double const mjsw_d{::std::max((m.mjswd >= 0.0) ? m.mjswd : m.mjsw, 0.0)};
+                double const mjsw_s{::std::max((m.mjsws >= 0.0) ? m.mjsws : m.mjsw, 0.0)};
+                double const mjswg_d{::std::max((m.mjswgd >= 0.0) ? m.mjswgd : m.mjswg, 0.0)};
+                double const mjswg_s{::std::max((m.mjswgs >= 0.0) ? m.mjswgs : m.mjswg, 0.0)};
+
+                double const fc_d{(m.fcd >= 0.0) ? m.fcd : m.fc};
+                double const fc_s{(m.fcs >= 0.0) ? m.fcs : m.fc};
+
+                m.cbd_ac = details::bsim3v32_junction_cap(cbd_bottom0, vbd, pb_d_eff, mj_d, fc_d) +
+                           details::bsim3v32_junction_cap(cbd_side0, vbd, pbsw_d_eff, mjsw_d, fc_d) +
+                           details::bsim3v32_junction_cap(cbd_gate0, vbd, pbswg_d_eff, mjswg_d, fc_d);
+                m.cbs_ac = details::bsim3v32_junction_cap(cbs_bottom0, vbs, pb_s_eff, mj_s, fc_s) +
+                           details::bsim3v32_junction_cap(cbs_side0, vbs, pbsw_s_eff, mjsw_s, fc_s) +
+                           details::bsim3v32_junction_cap(cbs_gate0, vbs, pbswg_s_eff, mjswg_s, fc_s);
             }
         }
 
@@ -3744,11 +4270,12 @@ namespace phy_engine::model
         ::std::size_t cnt{};
         if(rd_total > 0.0) { m.nd_int = __builtin_addressof(m.internal_nodes[cnt++]); }
         if(rs_total > 0.0) { m.ns_int = __builtin_addressof(m.internal_nodes[cnt++]); }
-        if(m.rg > 0.0) { m.ng_int = __builtin_addressof(m.internal_nodes[cnt++]); }
+        if(m.rgateMod != 0.0 && m.rg > 0.0) { m.ng_int = __builtin_addressof(m.internal_nodes[cnt++]); }
         bool const bulk_connected{m.pins[3].nodes != nullptr};
         if(bulk_connected && m.Rb > 0.0) { m.nb_int = __builtin_addressof(m.internal_nodes[cnt++]); }
-        if(bulk_connected && m.rbdb > 0.0) { m.nbd_int = __builtin_addressof(m.internal_nodes[cnt++]); }
-        if(bulk_connected && m.rbsb > 0.0) { m.nbs_int = __builtin_addressof(m.internal_nodes[cnt++]); }
+        bool const rbody_enabled{m.rbodyMod != 0.0};
+        if(bulk_connected && rbody_enabled && m.rbdb > 0.0) { m.nbd_int = __builtin_addressof(m.internal_nodes[cnt++]); }
+        if(bulk_connected && rbody_enabled && m.rbsb > 0.0) { m.nbs_int = __builtin_addressof(m.internal_nodes[cnt++]); }
         if(cnt != 0) { return {m.internal_nodes, cnt}; }
         return {};
     }
