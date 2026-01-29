@@ -1,5 +1,6 @@
 ﻿#include <phy_engine/phy_engine.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -31,6 +32,135 @@
 #include <phy_engine/model/models/digital/verilog_ports.h>
 
 #include <phy_engine/verilog/digital/pe_synth.h>
+
+namespace
+{
+constexpr std::uint32_t VERILOG_SYNTH_FLAG_ALLOW_INOUT = 1u << 0;
+constexpr std::uint32_t VERILOG_SYNTH_FLAG_ALLOW_MULTI_DRIVER = 1u << 1;
+constexpr std::uint32_t VERILOG_SYNTH_FLAG_ASSUME_BINARY_INPUTS = 1u << 2;
+constexpr std::uint32_t VERILOG_SYNTH_FLAG_OPT_WIRES = 1u << 3;
+constexpr std::uint32_t VERILOG_SYNTH_FLAG_OPT_MUL2 = 1u << 4;
+constexpr std::uint32_t VERILOG_SYNTH_FLAG_OPT_ADDERS = 1u << 5;
+
+static ::std::atomic_uint8_t g_verilog_synth_opt_level{0};
+static ::std::atomic_uint32_t g_verilog_synth_flags{VERILOG_SYNTH_FLAG_ALLOW_INOUT | VERILOG_SYNTH_FLAG_ALLOW_MULTI_DRIVER |
+                                                    VERILOG_SYNTH_FLAG_OPT_WIRES | VERILOG_SYNTH_FLAG_OPT_MUL2 | VERILOG_SYNTH_FLAG_OPT_ADDERS};
+static ::std::atomic_size_t g_verilog_synth_loop_unroll_limit{64};
+
+[[nodiscard]] inline ::phy_engine::verilog::digital::pe_synth_options verilog_synth_options_snapshot() noexcept
+{
+    ::phy_engine::verilog::digital::pe_synth_options opt{};
+    auto const lvl = g_verilog_synth_opt_level.load(::std::memory_order_relaxed);
+    auto const flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    opt.allow_inout = (flags & VERILOG_SYNTH_FLAG_ALLOW_INOUT) != 0;
+    opt.allow_multi_driver = (flags & VERILOG_SYNTH_FLAG_ALLOW_MULTI_DRIVER) != 0;
+    opt.assume_binary_inputs = (flags & VERILOG_SYNTH_FLAG_ASSUME_BINARY_INPUTS) != 0;
+    opt.opt_level = lvl;
+    opt.optimize_wires = (flags & VERILOG_SYNTH_FLAG_OPT_WIRES) != 0;
+    opt.optimize_mul2 = (flags & VERILOG_SYNTH_FLAG_OPT_MUL2) != 0;
+    opt.optimize_adders = (flags & VERILOG_SYNTH_FLAG_OPT_ADDERS) != 0;
+    opt.loop_unroll_limit = g_verilog_synth_loop_unroll_limit.load(::std::memory_order_relaxed);
+    return opt;
+}
+}  // namespace
+
+extern "C" void verilog_synth_set_opt_level(::std::uint8_t level)
+{
+    g_verilog_synth_opt_level.store(level, ::std::memory_order_relaxed);
+}
+
+extern "C" ::std::uint8_t verilog_synth_get_opt_level()
+{
+    return g_verilog_synth_opt_level.load(::std::memory_order_relaxed);
+}
+
+extern "C" void verilog_synth_set_assume_binary_inputs(bool v)
+{
+    auto flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    if(v) { flags |= VERILOG_SYNTH_FLAG_ASSUME_BINARY_INPUTS; }
+    else { flags &= ~VERILOG_SYNTH_FLAG_ASSUME_BINARY_INPUTS; }
+    g_verilog_synth_flags.store(flags, ::std::memory_order_relaxed);
+}
+
+extern "C" bool verilog_synth_get_assume_binary_inputs()
+{
+    return (g_verilog_synth_flags.load(::std::memory_order_relaxed) & VERILOG_SYNTH_FLAG_ASSUME_BINARY_INPUTS) != 0;
+}
+
+extern "C" void verilog_synth_set_allow_inout(bool v)
+{
+    auto flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    if(v) { flags |= VERILOG_SYNTH_FLAG_ALLOW_INOUT; }
+    else { flags &= ~VERILOG_SYNTH_FLAG_ALLOW_INOUT; }
+    g_verilog_synth_flags.store(flags, ::std::memory_order_relaxed);
+}
+
+extern "C" bool verilog_synth_get_allow_inout()
+{
+    return (g_verilog_synth_flags.load(::std::memory_order_relaxed) & VERILOG_SYNTH_FLAG_ALLOW_INOUT) != 0;
+}
+
+extern "C" void verilog_synth_set_allow_multi_driver(bool v)
+{
+    auto flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    if(v) { flags |= VERILOG_SYNTH_FLAG_ALLOW_MULTI_DRIVER; }
+    else { flags &= ~VERILOG_SYNTH_FLAG_ALLOW_MULTI_DRIVER; }
+    g_verilog_synth_flags.store(flags, ::std::memory_order_relaxed);
+}
+
+extern "C" bool verilog_synth_get_allow_multi_driver()
+{
+    return (g_verilog_synth_flags.load(::std::memory_order_relaxed) & VERILOG_SYNTH_FLAG_ALLOW_MULTI_DRIVER) != 0;
+}
+
+extern "C" void verilog_synth_set_optimize_wires(bool v)
+{
+    auto flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    if(v) { flags |= VERILOG_SYNTH_FLAG_OPT_WIRES; }
+    else { flags &= ~VERILOG_SYNTH_FLAG_OPT_WIRES; }
+    g_verilog_synth_flags.store(flags, ::std::memory_order_relaxed);
+}
+
+extern "C" bool verilog_synth_get_optimize_wires()
+{
+    return (g_verilog_synth_flags.load(::std::memory_order_relaxed) & VERILOG_SYNTH_FLAG_OPT_WIRES) != 0;
+}
+
+extern "C" void verilog_synth_set_optimize_mul2(bool v)
+{
+    auto flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    if(v) { flags |= VERILOG_SYNTH_FLAG_OPT_MUL2; }
+    else { flags &= ~VERILOG_SYNTH_FLAG_OPT_MUL2; }
+    g_verilog_synth_flags.store(flags, ::std::memory_order_relaxed);
+}
+
+extern "C" bool verilog_synth_get_optimize_mul2()
+{
+    return (g_verilog_synth_flags.load(::std::memory_order_relaxed) & VERILOG_SYNTH_FLAG_OPT_MUL2) != 0;
+}
+
+extern "C" void verilog_synth_set_optimize_adders(bool v)
+{
+    auto flags = g_verilog_synth_flags.load(::std::memory_order_relaxed);
+    if(v) { flags |= VERILOG_SYNTH_FLAG_OPT_ADDERS; }
+    else { flags &= ~VERILOG_SYNTH_FLAG_OPT_ADDERS; }
+    g_verilog_synth_flags.store(flags, ::std::memory_order_relaxed);
+}
+
+extern "C" bool verilog_synth_get_optimize_adders()
+{
+    return (g_verilog_synth_flags.load(::std::memory_order_relaxed) & VERILOG_SYNTH_FLAG_OPT_ADDERS) != 0;
+}
+
+extern "C" void verilog_synth_set_loop_unroll_limit(::std::size_t n)
+{
+    g_verilog_synth_loop_unroll_limit.store(n, ::std::memory_order_relaxed);
+}
+
+extern "C" ::std::size_t verilog_synth_get_loop_unroll_limit()
+{
+    return g_verilog_synth_loop_unroll_limit.load(::std::memory_order_relaxed);
+}
 
 // Union-Find find function
 static int uf_find(int x, int* parent, int* visited)
@@ -1198,8 +1328,8 @@ extern "C" void* create_circuit_ex(int* elements,
     if(wires != nullptr && wire_count > 0) { build_netlist_from_wires(nl, elements, static_cast<int>(ele_size), wires, wire_count, model_pos_arr); }
 
     // Expand synthesized Verilog modules into PE digital primitives and wire them to the already-connected port stub pins.
-    for(auto& job: verilog_jobs)
-    {
+	    for(auto& job: verilog_jobs)
+	    {
         auto* stub = ::phy_engine::netlist::get_model(nl, job.stub_pos);
         if(stub == nullptr || stub->ptr == nullptr)
         {
@@ -1232,18 +1362,12 @@ extern "C" void* create_circuit_ex(int* elements,
             port_nodes.push_back(n);
         }
 
-        ::phy_engine::verilog::digital::pe_synth_error syn_err{};
-        ::phy_engine::verilog::digital::pe_synth_options syn_opt{
-            .allow_inout = true,
-            .allow_multi_driver = true,
-            .optimize_wires = true,
-            .optimize_mul2 = true,
-            .optimize_adders = true,
-        };
-        if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err, syn_opt))
-        {
-            ::std::free(model_pos_arr);
-            destroy_circuit(c, *vec_pos, *chunk_pos);
+	        ::phy_engine::verilog::digital::pe_synth_error syn_err{};
+	        auto const syn_opt = verilog_synth_options_snapshot();
+	        if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err, syn_opt))
+	        {
+	            ::std::free(model_pos_arr);
+	            destroy_circuit(c, *vec_pos, *chunk_pos);
             *vec_pos = nullptr;
             *chunk_pos = nullptr;
             return nullptr;

@@ -1,5 +1,6 @@
 #include <phy_engine/phy_engine.h>
 #include <phy_engine/verilog/digital/digital.h>
+#include <phy_engine/verilog/digital/pe_synth.h>
 
 #include <phy_engine/model/models/digital/logical/input.h>
 #include <phy_engine/model/models/digital/logical/output.h>
@@ -73,6 +74,16 @@ static void usage(char const* argv0)
                         "  --layout file|dir                         Output layout (default: file)\n"
                         "  --mode full|structure|checkpoint          Export mode (default: full)\n"
                         "  --no-io                                  Do not generate INPUT/OUTPUT models\n"
+                        "  --synth                                  Synthesize to PE primitives (no VERILOG_MODULE)\n"
+                        "  -O0|-O1|-O2|-O3                           PE synth optimization level (default: O0)\n"
+                        "  --opt-level N                             PE synth optimization level (0..3)\n"
+                        "  --assume-binary-inputs                    Treat X/Z as absent in synth (default: off)\n"
+                        "  --no-assume-binary-inputs                 Preserve X-propagation logic\n"
+                        "  --opt-wires|--no-opt-wires                Enable/disable YES buffer elimination (default: on)\n"
+                        "  --opt-mul2|--no-opt-mul2                  Enable/disable MUL2 macro recognition (default: on)\n"
+                        "  --opt-adders|--no-opt-adders              Enable/disable adder macro recognition (default: on)\n"
+                        "  --allow-inout                             Allow inout ports (requires --no-io)\n"
+                        "  --allow-multi-driver                      Allow multi-driver digital nets\n"
                         "  --overwrite                              Overwrite existing output\n");
 }
 
@@ -92,6 +103,53 @@ static bool has_flag(int argc, char** argv, std::string_view flag)
         if(std::string_view(argv[i]) == flag) { return true; }
     }
     return false;
+}
+
+static std::optional<std::size_t> parse_size(std::string const& s)
+{
+    try
+    {
+        std::size_t idx{};
+        auto v = std::stoull(s, &idx, 10);
+        if(idx != s.size()) { return std::nullopt; }
+        return static_cast<std::size_t>(v);
+    }
+    catch(...)
+    {
+        return std::nullopt;
+    }
+}
+
+static std::optional<bool> parse_toggle(int argc, char** argv, std::string_view on_flag, std::string_view off_flag)
+{
+    std::optional<bool> v{};
+    for(int i = 1; i < argc; ++i)
+    {
+        auto const a = std::string_view(argv[i]);
+        if(a == on_flag) { v = true; }
+        else if(a == off_flag) { v = false; }
+    }
+    return v;
+}
+
+static std::optional<std::uint8_t> parse_opt_level(int argc, char** argv)
+{
+    std::optional<std::uint8_t> lvl{};
+    for(int i = 1; i < argc; ++i)
+    {
+        auto const a = std::string_view(argv[i]);
+        if(a.size() == 3 && a[0] == '-' && a[1] == 'O')
+        {
+            char const d = a[2];
+            if(d >= '0' && d <= '3') { lvl = static_cast<std::uint8_t>(d - '0'); }
+        }
+    }
+    if(auto s = arg_after(argc, argv, "--opt-level"))
+    {
+        if(auto n = parse_size(*s); n && *n <= 3u) { lvl = static_cast<std::uint8_t>(*n); }
+        else { return std::nullopt; }
+    }
+    return lvl ? lvl : std::optional<std::uint8_t>{static_cast<std::uint8_t>(0)};
 }
 
 static std::optional<::phy_engine::pe_nl_fileformat::storage_layout> parse_layout(std::optional<std::string> const& s)
@@ -195,6 +253,30 @@ int main(int argc, char** argv)
 
         bool const gen_io = !has_flag(argc, argv, "--no-io");
         bool const overwrite = has_flag(argc, argv, "--overwrite");
+        bool const synth = has_flag(argc, argv, "--synth") || has_flag(argc, argv, "--synthesize");
+
+        auto const opt_level = parse_opt_level(argc, argv);
+        if(!opt_level)
+        {
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid -O* / --opt-level\n");
+            return 12;
+        }
+
+        bool assume_binary_inputs = false;
+        bool opt_wires = true;
+        bool opt_mul2 = true;
+        bool opt_adders = true;
+        if(auto v = parse_toggle(argc, argv, "--assume-binary-inputs", "--no-assume-binary-inputs")) { assume_binary_inputs = *v; }
+        if(auto v = parse_toggle(argc, argv, "--opt-wires", "--no-opt-wires")) { opt_wires = *v; }
+        if(auto v = parse_toggle(argc, argv, "--opt-mul2", "--no-opt-mul2")) { opt_mul2 = *v; }
+        if(auto v = parse_toggle(argc, argv, "--opt-adders", "--no-opt-adders")) { opt_adders = *v; }
+        bool const allow_inout = has_flag(argc, argv, "--allow-inout");
+        bool const allow_multi_driver = has_flag(argc, argv, "--allow-multi-driver");
+        if(allow_inout && gen_io)
+        {
+            ::fast_io::io::perr(::fast_io::err(), "error: --allow-inout requires --no-io\n");
+            return 13;
+        }
 
         using namespace ::phy_engine;
         using namespace ::phy_engine::verilog::digital;
@@ -295,35 +377,61 @@ int main(int argc, char** argv)
             }
         }
 
-        // Add the VERILOG_MODULE model (preserves source + supports checkpointing).
-        ::phy_engine::model::VERILOG_MODULE vm{};
-        vm.source = ::fast_io::u8string{src};
-        vm.top = top_mod->name;
-        vm.design = std::move(design);
-        vm.top_instance = std::move(top_inst);
-
-        vm.pin_name_storage.clear();
-        vm.pins.clear();
-        vm.pin_name_storage.reserve(vm.top_instance.mod->ports.size());
-        vm.pins.reserve(vm.top_instance.mod->ports.size());
-        for(auto const& p : vm.top_instance.mod->ports)
+        if(synth)
         {
-            vm.pin_name_storage.push_back(p.name);
-            auto const& name = vm.pin_name_storage.back_unchecked();
-            vm.pins.push_back({::fast_io::u8string_view{name.data(), name.size()}, nullptr, nullptr});
+            ::phy_engine::verilog::digital::pe_synth_error err{};
+            ::phy_engine::verilog::digital::pe_synth_options opt{
+                .allow_inout = allow_inout,
+                .allow_multi_driver = allow_multi_driver,
+                .assume_binary_inputs = assume_binary_inputs,
+                .opt_level = *opt_level,
+                .optimize_wires = opt_wires,
+                .optimize_mul2 = opt_mul2,
+                .optimize_adders = opt_adders,
+            };
+
+            ::fast_io::io::perr(::fast_io::err(), "[verilog2penl] synthesize_to_pe_netlist\n");
+            if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, port_nodes, &err, opt))
+            {
+                ::fast_io::io::perr(::fast_io::u8err(),
+                                    u8"error: synthesize_to_pe_netlist failed: ",
+                                    u8sv{err.message.data(), err.message.size()},
+                                    u8"\n");
+                return 14;
+            }
         }
-
-        auto added = ::phy_engine::netlist::add_model(nl, ::std::move(vm));
-        if(added.mod == nullptr || added.mod->ptr == nullptr) { return 12; }
-        added.mod->name = top_mod->name;
+        else
         {
-            auto const p = in_path.filename().string();
-            added.mod->describe = ::fast_io::u8string{u8sv{reinterpret_cast<char8_t const*>(p.data()), p.size()}};
-        }
+            // Add the VERILOG_MODULE model (preserves source + supports checkpointing).
+            ::phy_engine::model::VERILOG_MODULE vm{};
+            vm.source = ::fast_io::u8string{src};
+            vm.top = top_mod->name;
+            vm.design = std::move(design);
+            vm.top_instance = std::move(top_inst);
 
-        for(std::size_t pi{}; pi < port_nodes.size(); ++pi)
-        {
-            if(!::phy_engine::netlist::add_to_node(nl, added.mod_pos, pi, *port_nodes[pi])) { return 13; }
+            vm.pin_name_storage.clear();
+            vm.pins.clear();
+            vm.pin_name_storage.reserve(vm.top_instance.mod->ports.size());
+            vm.pins.reserve(vm.top_instance.mod->ports.size());
+            for(auto const& p : vm.top_instance.mod->ports)
+            {
+                vm.pin_name_storage.push_back(p.name);
+                auto const& name = vm.pin_name_storage.back_unchecked();
+                vm.pins.push_back({::fast_io::u8string_view{name.data(), name.size()}, nullptr, nullptr});
+            }
+
+            auto added = ::phy_engine::netlist::add_model(nl, ::std::move(vm));
+            if(added.mod == nullptr || added.mod->ptr == nullptr) { return 15; }
+            added.mod->name = top_mod->name;
+            {
+                auto const p = in_path.filename().string();
+                added.mod->describe = ::fast_io::u8string{u8sv{reinterpret_cast<char8_t const*>(p.data()), p.size()}};
+            }
+
+            for(std::size_t pi{}; pi < port_nodes.size(); ++pi)
+            {
+                if(!::phy_engine::netlist::add_to_node(nl, added.mod_pos, pi, *port_nodes[pi])) { return 16; }
+            }
         }
 
         ::phy_engine::pe_nl_fileformat::save_options sopt{};

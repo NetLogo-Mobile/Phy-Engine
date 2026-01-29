@@ -1,0 +1,254 @@
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
+
+#include <phy_engine/phy_engine.h>
+#include <phy_engine/verilog/digital/digital.h>
+#include <phy_engine/verilog/digital/pe_synth.h>
+
+namespace
+{
+inline ::phy_engine::model::variant dv(::phy_engine::model::digital_node_statement_t v) noexcept
+{
+    ::phy_engine::model::variant vi{};
+    vi.digital = v;
+    vi.type = ::phy_engine::model::variant_type::digital;
+    return vi;
+}
+
+struct run_result
+{
+    std::size_t gate_count{};
+    std::size_t xor_count{};
+    std::size_t xnor_count{};
+    std::size_t yes_count{};
+};
+
+run_result summarize(::phy_engine::netlist::netlist const& nl) noexcept
+{
+    run_result r{};
+    for(auto const& blk : nl.models)
+    {
+        for(auto const* m = blk.begin; m != blk.curr; ++m)
+        {
+            if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+            auto const n = m->ptr->get_model_name();
+            if(n == u8"XOR") { ++r.xor_count; }
+            if(n == u8"XNOR") { ++r.xnor_count; }
+            if(n == u8"YES") { ++r.yes_count; }
+            if(n == u8"AND" || n == u8"OR" || n == u8"XOR" || n == u8"XNOR" || n == u8"NOT" || n == u8"NAND" || n == u8"NOR" || n == u8"YES")
+            {
+                ++r.gate_count;
+            }
+        }
+    }
+    return r;
+}
+
+std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t opt_level) noexcept
+{
+    using namespace phy_engine;
+    using namespace phy_engine::verilog::digital;
+
+    ::phy_engine::circult c{};
+    c.set_analyze_type(::phy_engine::analyze_type::TR);
+    auto& setting = c.get_analyze_setting();
+    setting.tr.t_step = 1e-9;
+    setting.tr.t_stop = 1e-9;
+    auto& nl = c.get_netlist();
+
+    auto cr = ::phy_engine::verilog::digital::compile(src);
+    if(!cr.errors.empty() || cr.modules.empty()) { return std::nullopt; }
+    auto design = ::phy_engine::verilog::digital::build_design(::std::move(cr));
+    auto const* mod = ::phy_engine::verilog::digital::find_module(design, u8"top");
+    if(mod == nullptr) { return std::nullopt; }
+    auto top_inst = ::phy_engine::verilog::digital::elaborate(design, *mod);
+    if(top_inst.mod == nullptr) { return std::nullopt; }
+
+    ::std::vector<::phy_engine::model::node_t*> ports{};
+    ports.reserve(top_inst.mod->ports.size());
+    for(::std::size_t i{}; i < top_inst.mod->ports.size(); ++i)
+    {
+        auto& n = ::phy_engine::netlist::create_node(nl);
+        ports.push_back(__builtin_addressof(n));
+    }
+
+    for(std::size_t pi{}; pi < top_inst.mod->ports.size(); ++pi)
+    {
+        auto const& p = top_inst.mod->ports.index_unchecked(pi);
+        if(p.dir == port_dir::input)
+        {
+            auto [m, pos] =
+                ::phy_engine::netlist::add_model(nl, ::phy_engine::model::INPUT{.outputA = ::phy_engine::model::digital_node_statement_t::false_state});
+            (void)pos;
+            if(m == nullptr || m->ptr == nullptr) { return std::nullopt; }
+            m->name = p.name;
+            if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *ports[pi])) { return std::nullopt; }
+        }
+        else if(p.dir == port_dir::output)
+        {
+            auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OUTPUT{});
+            (void)pos;
+            if(m == nullptr || m->ptr == nullptr) { return std::nullopt; }
+            m->name = p.name;
+            if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *ports[pi])) { return std::nullopt; }
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+
+    ::phy_engine::verilog::digital::pe_synth_error err{};
+    ::phy_engine::verilog::digital::pe_synth_options opt{
+        .allow_inout = false,
+        .allow_multi_driver = false,
+        .opt_level = opt_level,
+    };
+
+    if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt))
+    {
+        std::fprintf(stderr,
+                     "pe_synth failed (O%u): %.*s\n",
+                     static_cast<unsigned>(opt_level),
+                     static_cast<int>(err.message.size()),
+                     reinterpret_cast<char const*>(err.message.data()));
+        return std::nullopt;
+    }
+
+    if(!c.analyze()) { return std::nullopt; }
+
+    auto port_index = [&](::fast_io::u8string_view name) noexcept -> std::optional<std::size_t>
+    {
+        for(std::size_t i{}; i < top_inst.mod->ports.size(); ++i)
+        {
+            auto const& p = top_inst.mod->ports.index_unchecked(i);
+            if(p.name == name) { return i; }
+        }
+        return std::nullopt;
+    };
+
+    auto idx_a = port_index(u8"a");
+    auto idx_b = port_index(u8"b");
+    auto idx_c = port_index(u8"c");
+    auto idx_yxor = port_index(u8"yxor");
+    auto idx_yxnor = port_index(u8"yxnor");
+    auto idx_ydn = port_index(u8"ydn");
+    if(!idx_a || !idx_b || !idx_c || !idx_yxor || !idx_yxnor || !idx_ydn) { return std::nullopt; }
+
+    auto set_in = [&](::fast_io::u8string_view nm, bool v) noexcept
+    {
+        for(auto const& blk : nl.models)
+        {
+            for(auto* m = blk.begin; m != blk.curr; ++m)
+            {
+                if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                if(m->ptr->get_model_name() != u8"INPUT") { continue; }
+                if(m->name != nm) { continue; }
+                (void)m->ptr->set_attribute(0, dv(v ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                   : ::phy_engine::model::digital_node_statement_t::false_state));
+                return;
+            }
+        }
+    };
+
+    auto settle = [&]() noexcept
+    {
+        for(std::size_t i{}; i < 4u; ++i) { c.digital_clk(); }
+    };
+
+    auto read_out = [&](std::size_t idx) noexcept -> std::optional<bool>
+    {
+        auto const s = ports[idx]->node_information.dn.state;
+        if(s == ::phy_engine::model::digital_node_statement_t::true_state) { return true; }
+        if(s == ::phy_engine::model::digital_node_statement_t::false_state) { return false; }
+        return std::nullopt;
+    };
+
+    for(std::uint32_t mask{}; mask < 8u; ++mask)
+    {
+        bool const a = (mask & 0x01u) != 0;
+        bool const b = (mask & 0x02u) != 0;
+        bool const c_in = (mask & 0x04u) != 0;
+
+        set_in(u8"a", a);
+        set_in(u8"b", b);
+        set_in(u8"c", c_in);
+        settle();
+
+        auto const yxor = read_out(*idx_yxor);
+        auto const yxnor = read_out(*idx_yxnor);
+        auto const ydn = read_out(*idx_ydn);
+        if(!yxor || !yxnor || !ydn)
+        {
+            std::fprintf(stderr, "non-binary output at O%u (mask=%u)\n", static_cast<unsigned>(opt_level), mask);
+            return std::nullopt;
+        }
+
+        bool const exp_xor = (a != b);
+        bool const exp_xnor = (a == b);
+        bool const exp_dn = c_in;
+        if(*yxor != exp_xor || *yxnor != exp_xnor || *ydn != exp_dn)
+        {
+            std::fprintf(stderr,
+                         "mismatch at O%u (mask=%u): got yxor=%d yxnor=%d ydn=%d, expected yxor=%d yxnor=%d ydn=%d\n",
+                         static_cast<unsigned>(opt_level),
+                         mask,
+                         *yxor ? 1 : 0,
+                         *yxnor ? 1 : 0,
+                         *ydn ? 1 : 0,
+                         exp_xor ? 1 : 0,
+                         exp_xnor ? 1 : 0,
+                         exp_dn ? 1 : 0);
+            return std::nullopt;
+        }
+    }
+
+    return summarize(nl);
+}
+}  // namespace
+
+int main()
+{
+    constexpr ::fast_io::u8string_view src = u8R"(
+module top(
+  input a,
+  input b,
+  input c,
+  output yxor,
+  output yxnor,
+  output ydn
+);
+  assign yxor = (a & ~b) | (~a & b);
+  assign yxnor = (a & b) | (~a & ~b);
+  assign ydn = ~~c;
+endmodule
+)";
+
+    auto const r0 = run_once(src, 0);
+    auto const r1 = run_once(src, 1);
+    auto const r2 = run_once(src, 2);
+    if(!r0 || !r1 || !r2) { return 1; }
+
+    if(r2->gate_count >= r0->gate_count)
+    {
+        std::fprintf(stderr, "expected O2 gate_count < O0 (O0=%zu O2=%zu)\n", r0->gate_count, r2->gate_count);
+        return 2;
+    }
+
+    if(r2->xor_count == 0 || r2->xnor_count == 0)
+    {
+        std::fprintf(stderr, "expected XOR+XNOR present at O2 (xor=%zu xnor=%zu)\n", r2->xor_count, r2->xnor_count);
+        return 3;
+    }
+
+    // O1 should at least collapse ~~c into a single driver (YES) on the protected output.
+    if(r1->yes_count == 0)
+    {
+        std::fprintf(stderr, "expected at least one YES at O1 (yes=%zu)\n", r1->yes_count);
+        return 4;
+    }
+
+    return 0;
+}

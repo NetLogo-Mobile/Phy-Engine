@@ -334,6 +334,13 @@ static void usage(char const* argv0)
                         "  - Compiles Verilog (subset), synthesizes to PE netlist with optimizations,\n"
                         "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
                         "options:\n"
+                        "  -O0|-O1|-O2|-O3                           PE synth optimization level (default: O0)\n"
+                        "  --opt-level N                             PE synth optimization level (0..3)\n"
+                        "  --assume-binary-inputs                    Treat X/Z as absent in synth (default: on)\n"
+                        "  --no-assume-binary-inputs                 Preserve X-propagation logic\n"
+                        "  --opt-wires|--no-opt-wires                Enable/disable YES buffer elimination (default: on)\n"
+                        "  --opt-mul2|--no-opt-mul2                  Enable/disable MUL2 macro recognition (default: on)\n"
+                        "  --opt-adders|--no-opt-adders              Enable/disable adder macro recognition (default: on)\n"
                         "  --layout fast|cluster|spectral|hier|force   Layout algorithm (default: fast)\n"
                         "  --layout3d xy|hier|force|pack               Use 3D layout variant (z step is fixed at 0.02)\n"
                         "  --layout3d-z-base Z                         3D layout base Z (default: 0; b/c start at 0.02)\n"
@@ -362,6 +369,42 @@ static bool has_flag(int argc, char** argv, std::string_view flag)
         if(std::string_view(argv[i]) == flag) { return true; }
     }
     return false;
+}
+
+static std::optional<std::size_t> parse_size(std::string const& s);
+
+static std::optional<bool> parse_toggle(int argc, char** argv, std::string_view on_flag, std::string_view off_flag)
+{
+    std::optional<bool> v{};
+    for(int i = 1; i < argc; ++i)
+    {
+        auto const a = std::string_view(argv[i]);
+        if(a == on_flag) { v = true; }
+        else if(a == off_flag) { v = false; }
+    }
+    return v;
+}
+
+static std::optional<std::uint8_t> parse_opt_level(int argc, char** argv)
+{
+    std::optional<std::uint8_t> lvl{};
+    // -O0 .. -O3
+    for(int i = 1; i < argc; ++i)
+    {
+        auto const a = std::string_view(argv[i]);
+        if(a.size() == 3 && a[0] == '-' && a[1] == 'O')
+        {
+            char const d = a[2];
+            if(d >= '0' && d <= '3') { lvl = static_cast<std::uint8_t>(d - '0'); }
+        }
+    }
+    // --opt-level N (overrides if present later)
+    if(auto s = arg_after(argc, argv, "--opt-level"))
+    {
+        if(auto n = parse_size(*s); n && *n <= 3u) { lvl = static_cast<std::uint8_t>(*n); }
+        else { return std::nullopt; }
+    }
+    return lvl ? lvl : std::optional<std::uint8_t>{static_cast<std::uint8_t>(0)};
 }
 
 static std::optional<double> parse_double(std::string const& s)
@@ -508,6 +551,21 @@ int main(int argc, char** argv)
     auto out_path = std::filesystem::path(argv[1]);
     auto in_path = std::filesystem::path(argv[2]);
     auto top_override = arg_after(argc, argv, "--top");
+
+    auto const opt_level = parse_opt_level(argc, argv);
+    if(!opt_level)
+    {
+        ::fast_io::io::perr(::fast_io::err(), "error: invalid -O* / --opt-level\n");
+        return 10;
+    }
+    bool assume_binary_inputs = true;
+    bool opt_wires = true;
+    bool opt_mul2 = true;
+    bool opt_adders = true;
+    if(auto v = parse_toggle(argc, argv, "--assume-binary-inputs", "--no-assume-binary-inputs")) { assume_binary_inputs = *v; }
+    if(auto v = parse_toggle(argc, argv, "--opt-wires", "--no-opt-wires")) { opt_wires = *v; }
+    if(auto v = parse_toggle(argc, argv, "--opt-mul2", "--no-opt-mul2")) { opt_mul2 = *v; }
+    if(auto v = parse_toggle(argc, argv, "--opt-adders", "--no-opt-adders")) { opt_adders = *v; }
     auto layout_mode_arg = arg_after(argc, argv, "--layout");
     auto layout_mode = parse_layout_mode(layout_mode_arg);
     if(!layout_mode)
@@ -699,10 +757,11 @@ int main(int argc, char** argv)
     ::phy_engine::verilog::digital::pe_synth_options opt{
         .allow_inout = false,
         .allow_multi_driver = false,
-        .assume_binary_inputs = true,
-        .optimize_wires = true,
-        .optimize_mul2 = true,
-        .optimize_adders = true,
+        .assume_binary_inputs = assume_binary_inputs,
+        .opt_level = *opt_level,
+        .optimize_wires = opt_wires,
+        .optimize_mul2 = opt_mul2,
+        .optimize_adders = opt_adders,
     };
 
     ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] synthesize_to_pe_netlist\n");

@@ -75,3 +75,56 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 
 - This implementation is meant to be “good enough” for embedded digital behavior in circuits, not a full HDL toolchain.
 - If you add features, prefer adding a focused test under `test/0007.verilog/` that demonstrates the expected behavior.
+
+## PE Synthesis Optimizations (`pe_synth.h`) — Roadmap / TODO
+
+This project also contains a Verilog→PE netlist synthesizer with **gate-count driven** post-synthesis optimizations.
+The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::opt_level`:
+- `O0`: no extra gate-count passes (baseline; only enabled flags run)
+- `O1`: “cheap & safe” local/structural passes
+- `O2`: stronger multi-level rewrites + mapping-like passes
+- `O3`: iterative pipeline + bounded two-level minimization on small cones
+
+### Implemented (current)
+- [x] Structural hashing / strash (AND/OR/XOR/XNOR/NAND/NOR/NOT, plus IMP/NIMP)
+- [x] Dead code elimination (unused subgraphs)
+- [x] Inverter optimization (double-NOT, inverter fusion into NAND/NOR/XNOR/…)
+- [x] Input inverter push / “primitive selection” mapping (IMP/NIMP/NAND/NOR/XNOR, etc.)
+- [x] Constant propagation (safe 4-valued identities; `assume_binary_inputs` enables extra identities)
+- [x] Multi-term factoring on OR-trees-of-ANDs and AND-trees-of-ORs
+- [x] Absorption / redundant-level elimination (`a&(a|b)->a`, `a|(a&b)->a`, etc.)
+- [x] Local XOR/XNOR rewriting from SOP patterns
+- [x] Bounded Quine–McCluskey-style two-level minimization on small, exclusive cones (exact on very small vars; greedy cover on moderate vars)
+- [x] Tests validating correctness + gate-count improvement under `test/0015.verilog_compile/`
+
+### TODO (not yet implemented)
+#### Two-level minimization (Espresso / full cover)
+- [ ] Espresso-style heuristic minimization (expand/reduce/irredundant) with ON/DC/OFF sets
+- [ ] Better prime implicant selection (e.g. Petrick/exact cover for larger-but-bounded cases)
+- [ ] Multi-output sharing (shared product terms across multiple outputs), not “per-output cone” only
+- [ ] Stronger cost model (literal count vs gate count; optional weights per primitive)
+
+#### Don’t-care (DC-set) inference & exploitation
+- [ ] Derive DC from X/Z semantics and `assume_binary_inputs` (explicit, verifiable DC-set plumbing)
+- [ ] Observability DC / controllability DC (ODC/CDC) propagation (bounded window)
+- [ ] FSM unreachable state detection (when sequential elements are present) → DC constraints
+- [ ] Mutual-exclusion / predicate-based DC inference from conditionals (e.g. `if/else` structure)
+
+#### AIG-style rewriting / resubstitution (beyond local patterns)
+- [ ] More rewrite templates (AOI/OAI-like decompositions using existing primitive library)
+- [ ] Resubstitution using existing nodes in the DAG (replace a node with a cheaper function of existing signals)
+- [ ] Sweeping / redundancy removal beyond DCE (SAT-free local equivalence checks, bounded)
+- [ ] Iterative “area recovery” scheduling (interleave rewrite/strash/sweep to reach better fixpoints)
+
+#### Technology mapping (general)
+- [ ] Cost-driven DAG covering (“subject graph” → library patterns) for minimum gate count
+- [ ] Cut-based DP mapper (bounded cut size) with area recovery
+- [ ] Optional support for a richer primitive library (AOI/OAI/etc.) and mapping into it
+
+#### Functional decomposition (large functions)
+- [ ] Decompose large cones into smaller sub-functions (BDD/cut-based) to reduce total gates
+- [ ] Heuristics to decide when to decompose vs keep SOP/AIG form
+
+#### Engineering / UX
+- [ ] More regression tests targeting each pass + cross-pass interactions (especially `optimize_adders` vs mapping)
+- [ ] Better reporting (per-pass gate count deltas, optional debug dumps)
