@@ -1914,10 +1914,8 @@ namespace phy_engine::verilog::digital
                                                                       ::std::uint64_t const* off_blocks,
                                                                       ::std::uint32_t off_words) noexcept;
         extern "C" void phy_engine_pe_synth_cuda_espresso_off_destroy(void* handle) noexcept;
-        extern "C" bool phy_engine_pe_synth_cuda_espresso_off_hits(void* handle,
-                                                                   cuda_cube_desc const* cubes,
-                                                                   ::std::size_t cube_count,
-                                                                   ::std::uint8_t* out_hits) noexcept;
+        extern "C" bool
+            phy_engine_pe_synth_cuda_espresso_off_hits(void* handle, cuda_cube_desc const* cubes, ::std::size_t cube_count, ::std::uint8_t* out_hits) noexcept;
 #endif
 
         [[nodiscard]] inline bool
@@ -2144,14 +2142,15 @@ namespace phy_engine::verilog::digital
 
             cuda_espresso_off_raii() noexcept = default;
             cuda_espresso_off_raii(cuda_espresso_off_raii const&) = delete;
-            cuda_espresso_off_raii& operator=(cuda_espresso_off_raii const&) = delete;
+            cuda_espresso_off_raii& operator= (cuda_espresso_off_raii const&) = delete;
 
             cuda_espresso_off_raii(cuda_espresso_off_raii&& o) noexcept : handle(o.handle), off_words(o.off_words)
             {
                 o.handle = nullptr;
                 o.off_words = 0u;
             }
-            cuda_espresso_off_raii& operator=(cuda_espresso_off_raii&& o) noexcept
+
+            cuda_espresso_off_raii& operator= (cuda_espresso_off_raii&& o) noexcept
             {
                 if(this == &o) { return *this; }
                 reset();
@@ -2187,13 +2186,7 @@ namespace phy_engine::verilog::digital
             r.handle = phy_engine_pe_synth_cuda_espresso_off_create(device_mask, var_count, off_blocks, off_words);
             auto const us =
                 static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
-            cuda_trace_add(u8"espresso_off_create",
-                           0u,
-                           off_words,
-                           static_cast<std::size_t>(off_words) * sizeof(::std::uint64_t),
-                           0u,
-                           us,
-                           r.handle != nullptr);
+            cuda_trace_add(u8"espresso_off_create", 0u, off_words, static_cast<std::size_t>(off_words) * sizeof(::std::uint64_t), 0u, us, r.handle != nullptr);
 #else
             (void)device_mask;
             (void)var_count;
@@ -2204,10 +2197,8 @@ namespace phy_engine::verilog::digital
             return r;
         }
 
-        [[nodiscard]] inline bool cuda_espresso_off_hits(cuda_espresso_off_raii const& off,
-                                                         cuda_cube_desc const* cubes,
-                                                         ::std::size_t cube_count,
-                                                         ::std::uint8_t* out_hits) noexcept
+        [[nodiscard]] inline bool
+            cuda_espresso_off_hits(cuda_espresso_off_raii const& off, cuda_cube_desc const* cubes, ::std::size_t cube_count, ::std::uint8_t* out_hits) noexcept
         {
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
             if(off.handle == nullptr || cubes == nullptr || out_hits == nullptr || cube_count == 0u) { return false; }
@@ -2216,13 +2207,7 @@ namespace phy_engine::verilog::digital
             auto const us =
                 static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
             // OFF-set already resident, so H2D is just the cubes; D2H is the hits vector.
-            cuda_trace_add(u8"espresso_hits_off",
-                           cube_count,
-                           off.off_words,
-                           cube_count * sizeof(cuda_cube_desc),
-                           cube_count * sizeof(::std::uint8_t),
-                           us,
-                           ok);
+            cuda_trace_add(u8"espresso_hits_off", cube_count, off.off_words, cube_count * sizeof(cuda_cube_desc), cube_count * sizeof(::std::uint8_t), us, ok);
             return ok;
 #else
             (void)off;
@@ -10616,7 +10601,10 @@ namespace phy_engine::verilog::digital
             bool use_off_gpu{};
             if(opt.cuda_enable && blocksU != 0u && var_count <= 16u)
             {
-                off_gpu = cuda_espresso_off_create(opt.cuda_device_mask, static_cast<::std::uint32_t>(var_count), off_bits.data(), static_cast<::std::uint32_t>(blocksU));
+                off_gpu = cuda_espresso_off_create(opt.cuda_device_mask,
+                                                   static_cast<::std::uint32_t>(var_count),
+                                                   off_bits.data(),
+                                                   static_cast<::std::uint32_t>(blocksU));
                 use_off_gpu = (off_gpu.handle != nullptr);
             }
 
@@ -10638,10 +10626,7 @@ namespace phy_engine::verilog::digital
                             desc[i].value = cubes[i].value;
                             desc[i].mask = cubes[i].mask;
                         }
-                        if(use_off_gpu)
-                        {
-                            used_cuda = cuda_espresso_off_hits(off_gpu, desc.data(), desc.size(), out_hits.data());
-                        }
+                        if(use_off_gpu) { used_cuda = cuda_espresso_off_hits(off_gpu, desc.data(), desc.size(), out_hits.data()); }
                         else
                         {
                             used_cuda = cuda_espresso_cube_hits_off(opt.cuda_device_mask,
@@ -10736,7 +10721,7 @@ namespace phy_engine::verilog::digital
                         }
                         if(bits.empty()) { continue; }
 
-                        for(auto const b1 : bits)
+                        for(auto const b1: bits)
                         {
                             qm_implicant cand = c0;
                             cand.mask = static_cast<::std::uint16_t>(cand.mask | b1);
@@ -16011,7 +15996,9 @@ namespace phy_engine::verilog::digital
         bool const do_strash = (lvl >= 1);
         bool const do_dce = (lvl >= 1);
         bool const do_factoring = (lvl >= 2);
-        bool const do_qm = (lvl >= 4);
+        // O3 should be meaningfully stronger than O2, but still "fast tier".
+        // Enable a bounded 2-level minimization starting at O3 (with O3-specific caps applied below).
+        bool const do_qm = (lvl >= 3) && opt.assume_binary_inputs;
         bool const do_input_inv_map = (lvl >= 2);
         bool const do_xor_rewrite = (lvl >= 2);
         bool const do_double_not = (lvl >= 1);
@@ -16025,7 +16012,9 @@ namespace phy_engine::verilog::digital
         bool const do_resub = (lvl >= 3) && opt.assume_binary_inputs;
         bool const do_sweep = (lvl >= 3) && opt.assume_binary_inputs;
         bool const do_techmap = (lvl >= 4) && opt.assume_binary_inputs && opt.techmap_enable;
-        bool const do_decompose = (lvl >= 4) && opt.assume_binary_inputs && opt.decompose_large_functions;
+        // Allow limited BDD decomposition starting at O3; it is one of the few "structural" transforms
+        // that can materially change the optimization landscape without full O4 fixpoints.
+        bool const do_decompose = (lvl >= 3) && opt.assume_binary_inputs && opt.decompose_large_functions;
 
         auto run_once = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept -> void
         {
@@ -16135,6 +16124,17 @@ namespace phy_engine::verilog::digital
         {
             // AIG rewrite can be the most expensive "fast tier" pass; cap it by default unless user already did.
             if(tuned_opt.rewrite_max_candidates == 0u) { tuned_opt.rewrite_max_candidates = 4096u; }
+
+            // Keep O3 predictably fast: cap the "structural" heavy hitters while still enabling them.
+            // Users who want deeper search should use O4/O5 and/or explicit knobs.
+            // Heuristic: only auto-cap when the user appears to be using defaults; if they changed the knob, respect it.
+            if(opt.qm_max_vars == 10u && tuned_opt.qm_max_vars > 8u) { tuned_opt.qm_max_vars = 8u; }
+            if(opt.qm_max_primes == 4096u && tuned_opt.qm_max_primes > 2048u) { tuned_opt.qm_max_primes = 2048u; }
+            if(opt.qm_max_gates == 64u && tuned_opt.qm_max_gates > 64u) { tuned_opt.qm_max_gates = 64u; }
+
+            if(opt.decomp_min_vars == 11u && tuned_opt.decomp_min_vars < 13u) { tuned_opt.decomp_min_vars = 13u; }
+            if(opt.decomp_max_vars == 16u && tuned_opt.decomp_max_vars > 12u) { tuned_opt.decomp_max_vars = 12u; }
+            if(opt.decomp_bdd_node_limit == 4096u && tuned_opt.decomp_bdd_node_limit > 2048u) { tuned_opt.decomp_bdd_node_limit = 2048u; }
         }
 
         if(!is_omax) { run_o34_fixpoint(nl, tuned_opt, rep); }
