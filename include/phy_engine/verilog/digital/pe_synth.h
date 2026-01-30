@@ -4874,6 +4874,25 @@ namespace phy_engine::verilog::digital
 
             auto step_expand = [&]() noexcept -> void
             {
+                // Heuristic ordering: expand cubes that already cover more ON minterms first.
+                ::std::vector<::std::pair<std::size_t, qm_implicant>> ranked{};
+                ranked.reserve(cover.size());
+                for(auto const& c : cover)
+                {
+                    std::size_t cnt{};
+                    for(auto const m : on)
+                    {
+                        if(implicant_covers(c, m)) { ++cnt; }
+                    }
+                    ranked.push_back({cnt, c});
+                }
+                ::std::sort(ranked.begin(),
+                            ranked.end(),
+                            [](auto const& a, auto const& b) noexcept { return a.first > b.first; });
+                cover.clear();
+                cover.reserve(ranked.size());
+                for(auto& rc : ranked) { cover.push_back(rc.second); }
+
                 for(auto& c : cover) { c = expand_one(c); }
                 dedupe();
                 (void)irredundant();
@@ -5951,6 +5970,98 @@ namespace phy_engine::verilog::digital
                         chosen_cost = mo.cost;
                     }
 
+                    // Partial sharing beyond identical cubes: extract the best shared literal-pair across distinct cubes.
+                    struct lit
+                    {
+                        std::size_t v{};
+                        bool neg{};
+                    };
+                    struct pair_key
+                    {
+                        lit a{};
+                        lit b{};
+                    };
+                    struct pair_hash
+                    {
+                        std::size_t operator()(pair_key const& p) const noexcept
+                        {
+                            auto h = static_cast<std::size_t>(p.a.v) ^ (static_cast<std::size_t>(p.a.neg) << 8);
+                            h ^= (static_cast<std::size_t>(p.b.v) << 16) ^ (static_cast<std::size_t>(p.b.neg) << 24);
+                            return h;
+                        }
+                    };
+                    struct pair_eq
+                    {
+                        bool operator()(pair_key const& x, pair_key const& y) const noexcept
+                        {
+                            return x.a.v == y.a.v && x.a.neg == y.a.neg && x.b.v == y.b.v && x.b.neg == y.b.neg;
+                        }
+                    };
+
+                    auto canon_pair = [&](lit a, lit b) noexcept -> pair_key
+                    {
+                        if(a.v > b.v || (a.v == b.v && a.neg > b.neg)) { ::std::swap(a, b); }
+                        return pair_key{a, b};
+                    };
+
+                    auto cube_lits = [&](qm_implicant const& imp) noexcept -> ::std::vector<lit>
+                    {
+                        ::std::vector<lit> lits{};
+                        for(std::size_t v{}; v < var_count; ++v)
+                        {
+                            if((imp.mask >> v) & 1u) { continue; }
+                            bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
+                            lits.push_back(lit{v, !bit_is_1});
+                        }
+                        return lits;
+                    };
+
+                    ::std::unordered_map<cube_key, qm_implicant, cube_key_hash, cube_key_eq> uniq_cubes{};
+                    uniq_cubes.reserve(256);
+                    for(auto const& cv : chosen)
+                    {
+                        for(auto const& imp : cv)
+                        {
+                            (void)uniq_cubes.emplace(to_cube_key(imp), imp);
+                        }
+                    }
+
+                    ::std::unordered_map<pair_key, std::size_t, pair_hash, pair_eq> pair_count{};
+                    pair_count.reserve(256);
+                    for(auto const& kv : uniq_cubes)
+                    {
+                        auto const& imp = kv.second;
+                        auto lits = cube_lits(imp);
+                        if(lits.size() < 2u) { continue; }
+                        for(std::size_t i{}; i + 1 < lits.size(); ++i)
+                        {
+                            for(std::size_t j{i + 1}; j < lits.size(); ++j)
+                            {
+                                auto const pk = canon_pair(lits[i], lits[j]);
+                                ++pair_count[pk];
+                            }
+                        }
+                    }
+
+                    pair_key best_pair{};
+                    std::size_t best_pair_cnt{};
+                    for(auto const& kv : pair_count)
+                    {
+                        if(kv.second > best_pair_cnt)
+                        {
+                            best_pair_cnt = kv.second;
+                            best_pair = kv.first;
+                        }
+                    }
+
+                    bool use_pair_sharing = (best_pair_cnt >= 2u);
+                    // Savings estimate: each cube containing the pair saves 1 AND; shared pair costs 1 AND.
+                    std::size_t pair_gain = (best_pair_cnt >= 1u) ? (best_pair_cnt - 1u) : 0u;
+                    if(use_pair_sharing && pair_gain > 0u)
+                    {
+                        chosen_cost = (chosen_cost > pair_gain) ? (chosen_cost - pair_gain) : 0u;
+                    }
+
                     // Include the required YES buffers for protected roots in the improvement check.
                     std::size_t old_models{};
                     for(auto const& c : grp.cones) { old_models += c.to_delete.size(); }
@@ -5973,12 +6084,45 @@ namespace phy_engine::verilog::digital
                     ::std::unordered_map<cube_key, ::phy_engine::model::node_t*, cube_key_hash, cube_key_eq> term_cache{};
                     term_cache.reserve(256);
 
+                    ::std::unordered_map<pair_key, ::phy_engine::model::node_t*, pair_hash, pair_eq> pair_cache{};
+                    pair_cache.reserve(8);
+
                     auto ensure_neg = [&](std::size_t v) noexcept -> ::phy_engine::model::node_t*
                     {
                         if(v >= var_count) { return nullptr; }
                         if(neg[v] != nullptr) { return neg[v]; }
                         neg[v] = make_not(grp.leaves[v]);
                         return neg[v];
+                    };
+
+                    auto lit_node = [&](lit l) noexcept -> ::phy_engine::model::node_t*
+                    {
+                        return l.neg ? ensure_neg(l.v) : grp.leaves[l.v];
+                    };
+
+                    auto pair_in_cube = [&](qm_implicant const& imp) noexcept -> bool
+                    {
+                        if(!use_pair_sharing) { return false; }
+                        auto const a_mask = static_cast<std::uint16_t>(1u << best_pair.a.v);
+                        auto const b_mask = static_cast<std::uint16_t>(1u << best_pair.b.v);
+                        if((imp.mask & a_mask) || (imp.mask & b_mask)) { return false; }
+                        bool const abit1 = ((imp.value >> best_pair.a.v) & 1u) != 0;
+                        bool const bbit1 = ((imp.value >> best_pair.b.v) & 1u) != 0;
+                        if(abit1 == best_pair.a.neg) { return false; }
+                        if(bbit1 == best_pair.b.neg) { return false; }
+                        return true;
+                    };
+
+                    auto build_pair_node = [&](pair_key const& pk) noexcept -> ::phy_engine::model::node_t*
+                    {
+                        if(auto it = pair_cache.find(pk); it != pair_cache.end()) { return it->second; }
+                        auto* la = lit_node(pk.a);
+                        auto* lb = lit_node(pk.b);
+                        if(la == nullptr || lb == nullptr) { return nullptr; }
+                        auto* out = make_and(la, lb);
+                        if(out == nullptr) { return nullptr; }
+                        pair_cache.emplace(pk, out);
+                        return out;
                     };
 
                     auto build_term = [&](qm_implicant const& imp) noexcept -> ::phy_engine::model::node_t*
@@ -5988,9 +6132,17 @@ namespace phy_engine::verilog::digital
 
                         ::phy_engine::model::node_t* term = nullptr;
                         std::size_t lits{};
+                        bool used_pair{};
+                        if(pair_in_cube(imp))
+                        {
+                            term = build_pair_node(best_pair);
+                            if(term == nullptr) { return nullptr; }
+                            used_pair = true;
+                        }
                         for(std::size_t v{}; v < var_count; ++v)
                         {
                             if((imp.mask >> v) & 1u) { continue; }
+                            if(used_pair && (v == best_pair.a.v || v == best_pair.b.v)) { continue; }
                             bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
                             auto* lit = bit_is_1 ? grp.leaves[v] : ensure_neg(v);
                             if(lit == nullptr) { return nullptr; }
@@ -5999,7 +6151,7 @@ namespace phy_engine::verilog::digital
                             else { term = make_and(term, lit); }
                             if(term == nullptr) { return nullptr; }
                         }
-                        if(lits == 0) { term = const1; }
+                        if(lits == 0 && !used_pair) { term = const1; }
                         if(term == nullptr) { return nullptr; }
                         term_cache.emplace(key, term);
                         return term;
