@@ -22,12 +22,15 @@ bool cover_covers_minterm(::std::vector<::phy_engine::verilog::digital::details:
 
 int main()
 {
+    ::phy_engine::verilog::digital::pe_synth_options opt{};
+    opt.assume_binary_inputs = true;
+
     // Case 1: f = ~x2 on 4 vars. ON-set = all minterms with bit2=0.
     {
         std::vector<std::uint16_t> on{0, 1, 2, 3, 8, 9, 10, 11};
         std::vector<std::uint16_t> dc{};
 
-        auto sol = espresso_two_level_minimize(on, dc, 4);
+        auto sol = espresso_two_level_minimize(on, dc, 4, opt);
         if(sol.cost != 1u || sol.cover.size() != 1u)
         {
             std::fprintf(stderr, "espresso unexpected result for ~x2: cost=%zu cubes=%zu\n", sol.cost, sol.cover.size());
@@ -51,7 +54,7 @@ int main()
         std::vector<std::uint16_t> on{0};
         std::vector<std::uint16_t> dc{1, 2, 3};
 
-        auto sol = espresso_two_level_minimize(on, dc, 2);
+        auto sol = espresso_two_level_minimize(on, dc, 2, opt);
         if(sol.cost != 0u || sol.cover.empty())
         {
             std::fprintf(stderr, "espresso unexpected result for DC-const1: cost=%zu cubes=%zu\n", sol.cost, sol.cover.size());
@@ -70,4 +73,3 @@ int main()
 
     return 0;
 }
-

@@ -97,7 +97,11 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Local XOR/XNOR rewriting from SOP patterns
 - [x] Two-level minimization on small, exclusive cones:
   - [x] Quine–McCluskey prime implicants + exact cover (very small) / greedy cover (moderate)
-  - [x] Espresso-style heuristic minimization (expand + irredundant) with ON/DC/OFF sets (bounded truth-table cones)
+  - [x] Espresso-style heuristic minimization with ON/DC/OFF (bounded truth-table cones)
+    - [x] “full” loop components: EXPAND + IRREDUNDANT + REDUCE + (bounded) “last gasp” perturbation
+  - [x] Better PI selection for bounded cases (Petrick-style exact cover when feasible)
+  - [x] Multi-output sharing (bounded): joint cover selection to encourage shared product terms across multiple outputs
+  - [x] Stronger cost model: gate-count vs literal-count, plus optional primitive weights for 2-level selection
 - [x] Tests validating correctness + gate-count improvement under `test/0015.verilog_compile/`
 
 ### TODO (not yet implemented)
@@ -124,12 +128,11 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
   - [ ] Optional dump of “best-so-far” netlist
   - [ ] A reproducible summary line (seed, budgets, final cost)
 - [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
+  - [ ] CUDA support!
 
 #### Two-level minimization (Espresso / full cover)
-- [ ] Espresso “full” loop (add REDUCE step + last-gasp/perturbation passes for better results)
-- [ ] Better prime implicant selection (e.g. Petrick/exact cover for larger-but-bounded cases) when not using Espresso path
-- [ ] Multi-output sharing (shared product terms across multiple outputs), not “per-output cone” only
-- [ ] Stronger cost model (literal count vs gate count; optional weights per primitive)
+- [ ] Espresso “industrial-strength” loop (additional heuristics beyond EXPAND/REDUCE/IRREDUNDANT, e.g. more sophisticated selection/ordering)
+- [ ] Multi-output sharing beyond exact cube identity (kernel extraction / partial sharing across cubes)
 
 #### Don’t-care (DC-set) inference & exploitation
 - [ ] Derive DC from X/Z semantics and `assume_binary_inputs` (explicit, verifiable DC-set plumbing)

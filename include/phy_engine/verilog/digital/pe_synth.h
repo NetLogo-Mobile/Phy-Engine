@@ -44,19 +44,35 @@
 
 namespace phy_engine::verilog::digital
 {
-    struct pe_synth_options
-    {
-        bool allow_inout{false};
-        bool allow_multi_driver{false};
-        bool support_always_comb{true};
-        bool support_always_ff{true};
-        bool assume_binary_inputs{false};  // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
-        ::std::uint8_t opt_level{0};       // 0=O0, 1=O1, 2=O2, 3=O3 (gate-count driven post-synth optimizations)
-        bool optimize_wires{false};   // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
-        bool optimize_mul2{false};    // best-effort: replace 2-bit multiplier tiles with MUL2 models
-        bool optimize_adders{false};  // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
-        ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
-    };
+	    struct pe_synth_options
+	    {
+	        enum class two_level_cost_model : ::std::uint8_t
+	        {
+	            gate_count,    // approximate 2-input gate count (NOT/AND/OR), with shared NOTs per cone
+	            literal_count, // SOP literal count (sum of specified vars across cubes)
+	        };
+	        struct two_level_cost_weights
+	        {
+	            ::std::uint16_t not_w{1};
+	            ::std::uint16_t and_w{1};
+	            ::std::uint16_t or_w{1};
+	        };
+
+	        bool allow_inout{false};
+	        bool allow_multi_driver{false};
+	        bool support_always_comb{true};
+	        bool support_always_ff{true};
+	        bool assume_binary_inputs{false};  // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
+	        ::std::uint8_t opt_level{0};       // 0=O0, 1=O1, 2=O2, 3=O3 (gate-count driven post-synth optimizations)
+	        bool optimize_wires{false};   // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
+	        bool optimize_mul2{false};    // best-effort: replace 2-bit multiplier tiles with MUL2 models
+	        bool optimize_adders{false};  // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
+	        ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
+
+	        // Two-level minimization cost model (used in O3 cone minimization passes).
+	        two_level_cost_model two_level_cost{two_level_cost_model::gate_count};
+	        two_level_cost_weights two_level_weights{};
+	    };
 
     struct pe_synth_error
     {
@@ -4127,47 +4143,21 @@ namespace phy_engine::verilog::digital
             std::size_t cost{static_cast<std::size_t>(-1)};
         };
 
-        [[nodiscard]] inline std::size_t qm_cover_cost(::std::vector<qm_implicant> const& primes,
-                                                       ::std::vector<std::size_t> const& pick,
-                                                       std::size_t var_count) noexcept
+        [[nodiscard]] inline std::size_t two_level_cover_cost(::std::vector<qm_implicant> const& cover,
+                                                              std::size_t var_count,
+                                                              pe_synth_options const& opt) noexcept
         {
-            // Cost model (2-input gates only): NOTs for negated literals + AND trees + OR tree.
-            ::std::vector<bool> neg_used{};
-            neg_used.assign(var_count, false);
-            std::size_t terms{};
-            std::size_t and_cost{};
-
-            for(auto const idx : pick)
+            if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count)
             {
-                if(idx >= primes.size()) { continue; }
-                auto const& imp = primes[idx];
                 std::size_t lits{};
-                for(std::size_t v{}; v < var_count; ++v)
+                for(auto const& imp : cover)
                 {
-                    if((imp.mask >> v) & 1u) { continue; }
-                    ++lits;
-                    bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
-                    if(!bit_is_1) { neg_used[v] = true; }
+                    lits += implicant_literals(imp, var_count);
                 }
-                ++terms;
-                if(lits >= 2) { and_cost += (lits - 1u); }
+                return lits;
             }
 
-            std::size_t not_cost{};
-            for(std::size_t v{}; v < var_count; ++v)
-            {
-                if(neg_used[v]) { ++not_cost; }
-            }
-
-            std::size_t or_cost{};
-            if(terms >= 2) { or_cost = terms - 1u; }
-
-            return not_cost + and_cost + or_cost;
-        }
-
-        [[nodiscard]] inline std::size_t two_level_cover_cost(::std::vector<qm_implicant> const& cover, std::size_t var_count) noexcept
-        {
-            // Cost model (2-input gates only): NOTs for negated literals + AND trees + OR tree.
+            // Gate-count model (2-input gates only): NOTs for negated literals (shared per cone) + AND trees + OR tree.
             ::std::vector<bool> neg_used{};
             neg_used.assign(var_count, false);
 
@@ -4176,16 +4166,16 @@ namespace phy_engine::verilog::digital
 
             for(auto const& imp : cover)
             {
-                std::size_t lits{};
+                std::size_t cube_lits{};
                 for(std::size_t v{}; v < var_count; ++v)
                 {
                     if((imp.mask >> v) & 1u) { continue; }
-                    ++lits;
+                    ++cube_lits;
                     bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
                     if(!bit_is_1) { neg_used[v] = true; }
                 }
                 ++terms;
-                if(lits >= 2) { and_cost += (lits - 1u); }
+                if(cube_lits >= 2) { and_cost += (cube_lits - 1u); }
             }
 
             std::size_t not_cost{};
@@ -4197,7 +4187,24 @@ namespace phy_engine::verilog::digital
             std::size_t or_cost{};
             if(terms >= 2) { or_cost = terms - 1u; }
 
-            return not_cost + and_cost + or_cost;
+            return static_cast<std::size_t>(opt.two_level_weights.not_w) * not_cost +
+                   static_cast<std::size_t>(opt.two_level_weights.and_w) * and_cost +
+                   static_cast<std::size_t>(opt.two_level_weights.or_w) * or_cost;
+        }
+
+        [[nodiscard]] inline std::size_t qm_cover_cost(::std::vector<qm_implicant> const& primes,
+                                                       ::std::vector<std::size_t> const& pick,
+                                                       std::size_t var_count,
+                                                       pe_synth_options const& opt) noexcept
+        {
+            ::std::vector<qm_implicant> cover{};
+            cover.reserve(pick.size());
+            for(auto const idx : pick)
+            {
+                if(idx >= primes.size()) { continue; }
+                cover.push_back(primes[idx]);
+            }
+            return two_level_cover_cost(cover, var_count, opt);
         }
 
         [[nodiscard]] inline bool two_level_cover_covers_all_on(::std::vector<qm_implicant> const& cover,
@@ -4243,15 +4250,411 @@ namespace phy_engine::verilog::digital
             std::size_t cost{static_cast<std::size_t>(-1)};
         };
 
+        struct multi_output_solution
+        {
+            // covers[o] is the SOP cover for output o (same var order for the whole group).
+            ::std::vector<::std::vector<qm_implicant>> covers{};
+            std::size_t cost{static_cast<std::size_t>(-1)};
+        };
+
+        struct cube_key
+        {
+            ::std::uint16_t mask{};
+            ::std::uint16_t value{};
+        };
+        struct cube_key_hash
+        {
+            std::size_t operator()(cube_key const& k) const noexcept
+            {
+                return (static_cast<std::size_t>(k.mask) << 16) ^ static_cast<std::size_t>(k.value);
+            }
+        };
+        struct cube_key_eq
+        {
+            bool operator()(cube_key const& a, cube_key const& b) const noexcept { return a.mask == b.mask && a.value == b.value; }
+        };
+
+        [[nodiscard]] inline cube_key to_cube_key(qm_implicant const& imp) noexcept
+        {
+            auto const keep = static_cast<::std::uint16_t>(~imp.mask);
+            return cube_key{imp.mask, static_cast<::std::uint16_t>(imp.value & keep)};
+        }
+
+        [[nodiscard]] inline std::size_t cube_literals(qm_implicant const& imp, std::size_t var_count) noexcept
+        {
+            return implicant_literals(imp, var_count);
+        }
+
+        [[nodiscard]] inline std::size_t multi_output_gate_cost(::std::vector<::std::vector<qm_implicant>> const& covers,
+                                                                 std::size_t var_count,
+                                                                 pe_synth_options const& opt) noexcept
+        {
+            if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count)
+            {
+                // PLA-style literal count with shared product terms: count unique cube literals once.
+                ::std::unordered_map<cube_key, bool, cube_key_hash, cube_key_eq> seen{};
+                seen.reserve(256);
+                std::size_t lit{};
+                for(auto const& cv : covers)
+                {
+                    for(auto const& imp : cv)
+                    {
+                        auto const k = to_cube_key(imp);
+                        if(seen.emplace(k, true).second) { lit += cube_literals(imp, var_count); }
+                    }
+                }
+                return lit;
+            }
+
+            // Gate-count with shared NOTs and shared product terms across outputs.
+            // - NOT cost: any var used in complemented form by any selected cube
+            // - AND cost: sum over unique cubes of (lits-1) for lits>=2
+            // - OR cost: per output (terms-1) for terms>=2
+            ::std::uint16_t neg_used_mask{};
+            ::std::unordered_map<cube_key, qm_implicant, cube_key_hash, cube_key_eq> uniq{};
+            uniq.reserve(256);
+
+            for(auto const& cv : covers)
+            {
+                for(auto const& imp : cv)
+                {
+                    (void)uniq.emplace(to_cube_key(imp), imp);
+                }
+            }
+
+            std::size_t and_cost{};
+            for(auto const& kv : uniq)
+            {
+                auto const& imp = kv.second;
+                auto const lits = cube_literals(imp, var_count);
+                if(lits >= 2) { and_cost += (lits - 1u); }
+                for(std::size_t v{}; v < var_count; ++v)
+                {
+                    if((imp.mask >> v) & 1u) { continue; }
+                    bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
+                    if(!bit_is_1) { neg_used_mask = static_cast<::std::uint16_t>(neg_used_mask | static_cast<::std::uint16_t>(1u << v)); }
+                }
+            }
+
+            std::size_t not_cost = static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(neg_used_mask)));
+            std::size_t or_cost{};
+            for(auto const& cv : covers)
+            {
+                if(cv.size() >= 2u) { or_cost += (cv.size() - 1u); }
+            }
+
+            return static_cast<std::size_t>(opt.two_level_weights.not_w) * not_cost +
+                   static_cast<std::size_t>(opt.two_level_weights.and_w) * and_cost +
+                   static_cast<std::size_t>(opt.two_level_weights.or_w) * or_cost;
+        }
+
+        [[nodiscard]] inline multi_output_solution multi_output_two_level_minimize(::std::vector<::std::vector<::std::uint16_t>> const& on_list,
+                                                                                   ::std::vector<::std::vector<::std::uint16_t>> const& dc_list,
+                                                                                   std::size_t var_count,
+                                                                                   pe_synth_options const& opt) noexcept
+        {
+            // Multi-output cover selection that can trade per-output optimality for shared product terms.
+            // Bounded, deterministic greedy heuristic over the union of prime implicants.
+            multi_output_solution sol{};
+            if(on_list.empty() || on_list.size() != dc_list.size()) { return sol; }
+            if(var_count == 0) { return sol; }
+            if(var_count > 16) { return sol; }
+
+            auto const outputs = on_list.size();
+            sol.covers.resize(outputs);
+
+            // Quick constant handling.
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                if(on_list[o].empty())
+                {
+                    sol.covers[o].clear();
+                }
+            }
+
+            // Build prime implicants per output.
+            ::std::vector<::std::vector<qm_implicant>> primes_by_out{};
+            primes_by_out.resize(outputs);
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                primes_by_out[o] = qm_prime_implicants(on_list[o], dc_list[o], var_count);
+                if(primes_by_out[o].empty() && !on_list[o].empty()) { return sol; }
+            }
+
+            // Union of cubes across all outputs.
+            ::std::unordered_map<cube_key, std::size_t, cube_key_hash, cube_key_eq> cube_to_idx{};
+            cube_to_idx.reserve(512);
+            ::std::vector<qm_implicant> cubes{};
+            cubes.reserve(512);
+
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                for(auto const& imp : primes_by_out[o])
+                {
+                    auto const k = to_cube_key(imp);
+                    if(auto it = cube_to_idx.find(k); it == cube_to_idx.end())
+                    {
+                        cube_to_idx.emplace(k, cubes.size());
+                        cubes.push_back(imp);
+                    }
+                }
+            }
+            if(cubes.empty()) { return sol; }
+
+            auto const full_U = static_cast<std::size_t>(1u << var_count);
+            ::std::vector<::std::vector<bool>> is_on_full{};
+            ::std::vector<::std::vector<bool>> is_dc_full{};
+            is_on_full.resize(outputs);
+            is_dc_full.resize(outputs);
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                is_on_full[o].assign(full_U, false);
+                is_dc_full[o].assign(full_U, false);
+                for(auto const m : on_list[o])
+                {
+                    if(static_cast<std::size_t>(m) < full_U) { is_on_full[o][static_cast<std::size_t>(m)] = true; }
+                }
+                for(auto const m : dc_list[o])
+                {
+                    if(static_cast<std::size_t>(m) < full_U) { is_dc_full[o][static_cast<std::size_t>(m)] = true; }
+                }
+            }
+
+            // Coverage bitsets per output (over indices in on_list[o]).
+            ::std::vector<::std::vector<::std::vector<::std::uint64_t>>> cov{};
+            cov.resize(outputs);
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                auto const blocks = (on_list[o].size() + 63u) / 64u;
+                cov[o].resize(cubes.size());
+                for(auto& v : cov[o]) { v.assign(blocks, 0ull); }
+                for(std::size_t ci{}; ci < cubes.size(); ++ci)
+                {
+                    // A cube can only be used for output `o` if it does not cover any OFF minterm for that output.
+                    bool valid{true};
+                    for(std::size_t m{}; m < full_U; ++m)
+                    {
+                        if(is_on_full[o][m] || is_dc_full[o][m]) { continue; }
+                        if(implicant_covers(cubes[ci], static_cast<::std::uint16_t>(m)))
+                        {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if(!valid) { continue; }
+                    for(std::size_t mi{}; mi < on_list[o].size(); ++mi)
+                    {
+                        if(implicant_covers(cubes[ci], on_list[o][mi]))
+                        {
+                            cov[o][ci][mi / 64u] |= (1ull << (mi % 64u));
+                        }
+                    }
+                }
+            }
+
+            auto popcount64 = [](std::uint64_t x) noexcept -> std::size_t { return static_cast<std::size_t>(__builtin_popcountll(x)); };
+
+            // Uncovered sets per output.
+            ::std::vector<::std::vector<std::uint64_t>> uncovered{};
+            uncovered.resize(outputs);
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                auto const blocks = (on_list[o].size() + 63u) / 64u;
+                uncovered[o].assign(blocks, ~0ull);
+                if(on_list[o].size() % 64u)
+                {
+                    auto const rem = on_list[o].size() % 64u;
+                    uncovered[o].back() = (rem == 64u) ? ~0ull : ((1ull << rem) - 1ull);
+                }
+            }
+
+            ::std::vector<::std::vector<std::size_t>> use_idx{};
+            use_idx.resize(outputs);
+            ::std::vector<bool> selected{};
+            selected.assign(cubes.size(), false);
+            ::std::vector<std::size_t> terms_count{};
+            terms_count.assign(outputs, 0u);
+
+            ::std::uint16_t neg_mask_used{};
+            auto cube_neg_mask = [&](qm_implicant const& imp) noexcept -> std::uint16_t
+            {
+                std::uint16_t m{};
+                for(std::size_t v{}; v < var_count; ++v)
+                {
+                    if((imp.mask >> v) & 1u) { continue; }
+                    bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
+                    if(!bit_is_1) { m = static_cast<std::uint16_t>(m | static_cast<std::uint16_t>(1u << v)); }
+                }
+                return m;
+            };
+
+            auto any_uncovered = [&]() noexcept -> bool
+            {
+                for(std::size_t o{}; o < outputs; ++o)
+                {
+                    for(auto const w : uncovered[o])
+                    {
+                        if(w) { return true; }
+                    }
+                }
+                return false;
+            };
+
+            while(any_uncovered())
+            {
+                std::size_t best_ci{static_cast<std::size_t>(-1)};
+                std::size_t best_gain{};
+                std::int64_t best_score{::std::numeric_limits<std::int64_t>::min()};
+                std::size_t best_cost_incr{static_cast<std::size_t>(-1)};
+
+                for(std::size_t ci{}; ci < cubes.size(); ++ci)
+                {
+                    if(selected[ci]) { continue; }
+                    std::size_t gain{};
+                    ::std::vector<bool> hits{};
+                    hits.assign(outputs, false);
+                    for(std::size_t o{}; o < outputs; ++o)
+                    {
+                        std::size_t og{};
+                        for(std::size_t b{}; b < uncovered[o].size(); ++b)
+                        {
+                            og += popcount64(cov[o][ci][b] & uncovered[o][b]);
+                        }
+                        if(og)
+                        {
+                            hits[o] = true;
+                            gain += og;
+                        }
+                    }
+                    if(gain == 0) { continue; }
+
+                    auto const lits = cube_literals(cubes[ci], var_count);
+                    std::size_t and_incr{};
+                    if(lits >= 2) { and_incr = (lits - 1u); }
+
+                    auto const nmask = cube_neg_mask(cubes[ci]);
+                    auto const new_neg = static_cast<std::uint16_t>(nmask & static_cast<std::uint16_t>(~neg_mask_used));
+                    auto const not_incr = static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(new_neg)));
+
+                    std::size_t or_incr{};
+                    for(std::size_t o{}; o < outputs; ++o)
+                    {
+                        if(!hits[o]) { continue; }
+                        if(terms_count[o] >= 1u) { ++or_incr; }
+                    }
+
+                    auto const cost_incr = static_cast<std::size_t>(opt.two_level_weights.not_w) * not_incr +
+                                           static_cast<std::size_t>(opt.two_level_weights.and_w) * and_incr +
+                                           static_cast<std::size_t>(opt.two_level_weights.or_w) * or_incr;
+
+                    auto const score = static_cast<std::int64_t>(gain) * 64 - static_cast<std::int64_t>(cost_incr);
+                    if(score > best_score || (score == best_score && (gain > best_gain || (gain == best_gain && cost_incr < best_cost_incr))))
+                    {
+                        best_score = score;
+                        best_ci = ci;
+                        best_gain = gain;
+                        best_cost_incr = cost_incr;
+                    }
+                }
+
+                if(best_ci == static_cast<std::size_t>(-1)) { return sol; }
+                selected[best_ci] = true;
+                neg_mask_used = static_cast<std::uint16_t>(neg_mask_used | cube_neg_mask(cubes[best_ci]));
+
+                for(std::size_t o{}; o < outputs; ++o)
+                {
+                    bool contributed{};
+                    for(std::size_t b{}; b < uncovered[o].size(); ++b)
+                    {
+                        auto const hit = cov[o][best_ci][b] & uncovered[o][b];
+                        if(hit) { contributed = true; }
+                        uncovered[o][b] &= ~cov[o][best_ci][b];
+                    }
+                    if(contributed)
+                    {
+                        use_idx[o].push_back(best_ci);
+                        ++terms_count[o];
+                    }
+                }
+            }
+
+            // Build covers per output and prune redundancies (per-output irredundant).
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                auto const& on = on_list[o];
+                if(on.empty())
+                {
+                    sol.covers[o].clear();
+                    continue;
+                }
+                auto& picks = use_idx[o];
+                if(picks.empty()) { return sol; }
+
+                // Count coverage per ON minterm.
+                ::std::vector<unsigned> cnt{};
+                cnt.assign(on.size(), 0u);
+                for(auto const ci : picks)
+                {
+                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    {
+                        if(implicant_covers(cubes[ci], on[mi])) { ++cnt[mi]; }
+                    }
+                }
+
+                for(std::size_t i{}; i < picks.size();)
+                {
+                    auto const ci = picks[i];
+                    bool redundant{true};
+                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    {
+                        if(!implicant_covers(cubes[ci], on[mi])) { continue; }
+                        if(cnt[mi] <= 1u)
+                        {
+                            redundant = false;
+                            break;
+                        }
+                    }
+                    if(!redundant)
+                    {
+                        ++i;
+                        continue;
+                    }
+                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    {
+                        if(!implicant_covers(cubes[ci], on[mi])) { continue; }
+                        if(cnt[mi]) { --cnt[mi]; }
+                    }
+                    picks[i] = picks.back();
+                    picks.pop_back();
+                }
+
+                sol.covers[o].reserve(picks.size());
+                for(auto const ci : picks) { sol.covers[o].push_back(cubes[ci]); }
+            }
+
+            // Validate (best-effort): cover each ON and do not hit OFF (implicit, since cubes come from primes).
+            for(std::size_t o{}; o < outputs; ++o)
+            {
+                if(!two_level_cover_covers_all_on(sol.covers[o], on_list[o])) { return multi_output_solution{}; }
+            }
+
+            sol.cost = multi_output_gate_cost(sol.covers, var_count, opt);
+            return sol;
+        }
+
         [[nodiscard]] inline espresso_solution espresso_two_level_minimize(::std::vector<::std::uint16_t> const& on,
                                                                            ::std::vector<::std::uint16_t> const& dc,
-                                                                           std::size_t var_count) noexcept
+                                                                           std::size_t var_count,
+                                                                           pe_synth_options const& opt) noexcept
         {
-            // A small, deterministic Espresso-style loop:
-            // - start from minterm cover (ON-set)
-            // - iteratively EXPAND (w.r.t. OFF-set), then IRREDUNDANT (drop redundant cubes)
+            // A small, deterministic Espresso-style loop (bounded truth-table cones):
+            // - Start from minterm cover (ON-set)
+            // - Iterate: EXPAND (w.r.t. OFF-set) → IRREDUNDANT → REDUCE (w.r.t. essential region) → IRREDUNDANT
+            // - Optionally run a small "last gasp" perturbation (deterministic) to escape local minima
             //
-            // This is still subject to bounded truth-table enumeration; it is intended for small exclusive cones.
+            // Notes:
+            // - This is not a full industrial Espresso implementation, but it captures the key passes in a bounded setting.
+            // - The cost function is configurable via `pe_synth_options::{two_level_cost,two_level_weights}`.
 
             espresso_solution sol{};
             if(var_count == 0)
@@ -4372,12 +4775,8 @@ namespace phy_engine::verilog::digital
                 return changed;
             };
 
-            // A few deterministic expand/irredundant rounds.
-            for(std::size_t iter{}; iter < 8u; ++iter)
+            auto dedupe = [&]() noexcept
             {
-                for(auto& c : cover) { c = expand_one(c); }
-
-                // Deduplicate identical cubes (can happen after expansion).
                 ::std::sort(cover.begin(), cover.end(), [](qm_implicant const& a, qm_implicant const& b) noexcept {
                     if(a.mask != b.mask) { return a.mask < b.mask; }
                     return a.value < b.value;
@@ -4386,23 +4785,191 @@ namespace phy_engine::verilog::digital
                                           cover.end(),
                                           [](qm_implicant const& a, qm_implicant const& b) noexcept { return a.mask == b.mask && a.value == b.value; }),
                             cover.end());
+            };
 
-                auto const changed = irredundant();
-                if(!changed) { break; }
+            auto reduce_step = [&]() noexcept
+            {
+                if(cover.empty()) { return; }
+                // Coverage counts over ON minterms.
+                ::std::vector<::std::uint16_t> cnt{};
+                cnt.assign(U, 0u);
+                for(auto const& c : cover)
+                {
+                    for(auto const m : on)
+                    {
+                        if(!implicant_covers(c, m)) { continue; }
+                        auto& x = cnt[static_cast<std::size_t>(m)];
+                        if(x != ::std::numeric_limits<::std::uint16_t>::max()) { ++x; }
+                    }
+                }
+
+                for(auto& c : cover)
+                {
+                    // Essential region R: ON minterms uniquely covered by c.
+                    bool has_r{};
+                    ::std::uint16_t r_min{};
+                    for(auto const m : on)
+                    {
+                        if(!implicant_covers(c, m)) { continue; }
+                        if(cnt[static_cast<std::size_t>(m)] == 1u)
+                        {
+                            r_min = m;
+                            has_r = true;
+                            break;
+                        }
+                    }
+                    if(!has_r)
+                    {
+                        // No unique responsibility: anchor reduction to the first ON minterm covered by this cube (if any).
+                        bool found{};
+                        for(auto const m : on)
+                        {
+                            if(implicant_covers(c, m))
+                            {
+                                r_min = m;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if(!found) { continue; }
+                    }
+
+                    // Reduce: for each don't-care var, if all R minterms share the same bit, specialize to that bit.
+                    // In the anchored case (single minterm), this specializes all don't-care vars, shrinking to that minterm.
+                    for(std::size_t v{}; v < var_count; ++v)
+                    {
+                        auto const bit = static_cast<::std::uint16_t>(1u << v);
+                        if(((c.mask >> v) & 1u) == 0u) { continue; }  // already specified
+
+                        bool all0{true};
+                        bool all1{true};
+
+                        if(has_r)
+                        {
+                            for(auto const m : on)
+                            {
+                                if(!implicant_covers(c, m)) { continue; }
+                                if(cnt[static_cast<std::size_t>(m)] != 1u) { continue; }
+                                if(m & bit) { all0 = false; }
+                                else { all1 = false; }
+                                if(!all0 && !all1) { break; }
+                            }
+                        }
+                        else
+                        {
+                            // anchored single minterm
+                            if(r_min & bit) { all0 = false; }
+                            else { all1 = false; }
+                        }
+
+                        if(all0 != all1)  // exactly one is true
+                        {
+                            c.mask = static_cast<::std::uint16_t>(c.mask & static_cast<::std::uint16_t>(~bit));
+                            if(all1) { c.value = static_cast<::std::uint16_t>(c.value | bit); }
+                            else { c.value = static_cast<::std::uint16_t>(c.value & static_cast<::std::uint16_t>(~bit)); }
+                        }
+                    }
+                }
+            };
+
+            auto step_expand = [&]() noexcept -> void
+            {
+                for(auto& c : cover) { c = expand_one(c); }
+                dedupe();
+                (void)irredundant();
+            };
+
+            auto step_reduce = [&]() noexcept -> void
+            {
+                reduce_step();
+                dedupe();
+                (void)irredundant();
+            };
+
+            // Main expand/reduce/irredundant iterations with best-so-far tracking.
+            std::vector<qm_implicant> best_cover = cover;
+            std::size_t best_cost = two_level_cover_cost(best_cover, var_count, opt);
+
+            for(std::size_t iter{}; iter < 8u; ++iter)
+            {
+                auto const prev_best = best_cost;
+
+                step_expand();
+                if(two_level_cover_covers_all_on(cover, on) && !two_level_cover_hits_off(cover, is_on, is_dc))
+                {
+                    auto const cst = two_level_cover_cost(cover, var_count, opt);
+                    if(cst < best_cost)
+                    {
+                        best_cost = cst;
+                        best_cover = cover;
+                    }
+                }
+
+                step_reduce();
+                if(two_level_cover_covers_all_on(cover, on) && !two_level_cover_hits_off(cover, is_on, is_dc))
+                {
+                    auto const cst = two_level_cover_cost(cover, var_count, opt);
+                    if(cst < best_cost)
+                    {
+                        best_cost = cst;
+                        best_cover = cover;
+                    }
+                }
+
+                if(best_cost >= prev_best) { break; }
+            }
+
+            // Last gasp: deterministic perturbation of one cube, then rerun a few iterations.
+            if(!best_cover.empty())
+            {
+                for(std::size_t attempt{}; attempt < 4u; ++attempt)
+                {
+                    cover = best_cover;
+                    if(cover.empty()) { break; }
+                    auto const idx = static_cast<std::size_t>((attempt * 2654435761u) % cover.size());
+
+                    // Pick an anchor ON minterm covered by this cube; shrink to that minterm.
+                    std::optional<std::uint16_t> anchor{};
+                    for(auto const m : on)
+                    {
+                        if(implicant_covers(cover[idx], m))
+                        {
+                            anchor = m;
+                            break;
+                        }
+                    }
+                    if(!anchor) { continue; }
+                    cover[idx].mask = 0u;
+                    cover[idx].value = *anchor;
+
+                    for(std::size_t i{}; i < 4u; ++i)
+                    {
+                        step_expand();
+                        step_reduce();
+                    }
+                    if(!two_level_cover_covers_all_on(cover, on) || two_level_cover_hits_off(cover, is_on, is_dc)) { continue; }
+                    auto const cst = two_level_cover_cost(cover, var_count, opt);
+                    if(cst < best_cost)
+                    {
+                        best_cost = cst;
+                        best_cover = cover;
+                    }
+                }
             }
 
             // Validate cover (best-effort). If something went wrong, bail.
-            if(!two_level_cover_covers_all_on(cover, on)) { return sol; }
-            if(two_level_cover_hits_off(cover, is_on, is_dc)) { return sol; }
+            if(!two_level_cover_covers_all_on(best_cover, on)) { return sol; }
+            if(two_level_cover_hits_off(best_cover, is_on, is_dc)) { return sol; }
 
-            sol.cover = ::std::move(cover);
-            sol.cost = two_level_cover_cost(sol.cover, var_count);
+            sol.cover = ::std::move(best_cover);
+            sol.cost = best_cost;
             return sol;
         }
 
         [[nodiscard]] inline qm_solution qm_exact_minimum_cover(::std::vector<qm_implicant> const& primes,
                                                                 ::std::vector<::std::uint16_t> const& on,
-                                                                std::size_t var_count) noexcept
+                                                                std::size_t var_count,
+                                                                pe_synth_options const& opt) noexcept
         {
             // Branch-and-bound exact cover on ON-set minterms.
             qm_solution best{};
@@ -4473,7 +5040,7 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            auto const base_cost = qm_cover_cost(primes, picked, var_count);
+            auto const base_cost = qm_cover_cost(primes, picked, var_count, opt);
             best.pick = picked;
             best.cost = base_cost;
 
@@ -4499,7 +5066,7 @@ namespace phy_engine::verilog::digital
             {
                 if(best.cost != static_cast<std::size_t>(-1))
                 {
-                    auto const cost = qm_cover_cost(primes, pick, var_count);
+                    auto const cost = qm_cover_cost(primes, pick, var_count, opt);
                     if(cost >= best.cost) { return; }
                 }
 
@@ -4516,7 +5083,7 @@ namespace phy_engine::verilog::digital
                 }
                 if(!found)
                 {
-                    auto const cost = qm_cover_cost(primes, pick, var_count);
+                    auto const cost = qm_cover_cost(primes, pick, var_count, opt);
                     if(cost < best.cost)
                     {
                         best.pick = pick;
@@ -4564,9 +5131,220 @@ namespace phy_engine::verilog::digital
             return best;
         }
 
+        [[nodiscard]] inline qm_solution qm_petrick_minimum_cover(::std::vector<qm_implicant> const& primes,
+                                                                  ::std::vector<::std::uint16_t> const& on,
+                                                                  std::size_t var_count,
+                                                                  pe_synth_options const& opt) noexcept
+        {
+            // Petrick's method (exact) for moderate problem sizes (bounded by primes<=64).
+            // Returns minimal cost cover under the chosen cost model.
+            qm_solution sol{};
+            if(on.empty())
+            {
+                sol.cost = 0;
+                return sol;
+            }
+            if(primes.size() == 0 || primes.size() > 64u) { return sol; }
+
+            // Essential picks first.
+            ::std::vector<bool> covered{};
+            covered.assign(on.size(), false);
+
+            auto covers_m = [&](std::size_t pi, ::std::uint16_t m) noexcept -> bool
+            {
+                if(pi >= primes.size()) { return false; }
+                return implicant_covers(primes[pi], m);
+            };
+
+            bool changed{true};
+            while(changed)
+            {
+                changed = false;
+                for(std::size_t mi{}; mi < on.size(); ++mi)
+                {
+                    if(covered[mi]) { continue; }
+                    auto const m = on[mi];
+                    std::size_t cnt{};
+                    std::size_t last{};
+                    for(std::size_t pi{}; pi < primes.size(); ++pi)
+                    {
+                        if(!covers_m(pi, m)) { continue; }
+                        ++cnt;
+                        last = pi;
+                        if(cnt > 1) { break; }
+                    }
+                    if(cnt == 0)
+                    {
+                        sol.cost = static_cast<std::size_t>(-1);
+                        return sol;
+                    }
+                    if(cnt == 1)
+                    {
+                        bool already{};
+                        for(auto const p : sol.pick)
+                        {
+                            if(p == last)
+                            {
+                                already = true;
+                                break;
+                            }
+                        }
+                        if(!already) { sol.pick.push_back(last); }
+                        for(std::size_t mj{}; mj < on.size(); ++mj)
+                        {
+                            if(covered[mj]) { continue; }
+                            if(covers_m(last, on[mj])) { covered[mj] = true; }
+                        }
+                        changed = true;
+                    }
+                }
+            }
+
+            // Build clauses for remaining uncovered minterms.
+            ::std::vector<::std::uint16_t> remaining{};
+            remaining.reserve(on.size());
+            for(std::size_t mi{}; mi < on.size(); ++mi)
+            {
+                if(!covered[mi]) { remaining.push_back(on[mi]); }
+            }
+            if(remaining.empty())
+            {
+                sol.cost = qm_cover_cost(primes, sol.pick, var_count, opt);
+                return sol;
+            }
+
+            auto bit_cost = [&](std::uint64_t bits) noexcept -> std::size_t
+            {
+                ::std::vector<std::size_t> pick = sol.pick;
+                for(std::size_t pi{}; pi < primes.size(); ++pi)
+                {
+                    if((bits >> pi) & 1ull) { pick.push_back(pi); }
+                }
+                return qm_cover_cost(primes, pick, var_count, opt);
+            };
+
+            ::std::vector<std::uint64_t> terms{};
+            terms.reserve(256);
+            terms.push_back(0ull);
+
+            constexpr std::size_t max_terms = 16384;
+
+            for(auto const m : remaining)
+            {
+                std::uint64_t clause{};
+                for(std::size_t pi{}; pi < primes.size(); ++pi)
+                {
+                    // skip already-picked primes
+                    bool already{};
+                    for(auto const p : sol.pick)
+                    {
+                        if(p == pi)
+                        {
+                            already = true;
+                            break;
+                        }
+                    }
+                    if(already) { continue; }
+                    if(covers_m(pi, m)) { clause |= (1ull << pi); }
+                }
+                if(clause == 0ull)
+                {
+                    sol.cost = static_cast<std::size_t>(-1);
+                    return sol;
+                }
+
+                ::std::vector<std::uint64_t> next{};
+                next.reserve(terms.size() * 4u + 8u);
+                for(auto const t : terms)
+                {
+                    auto c = clause;
+                    while(c)
+                    {
+                        auto const b = static_cast<unsigned>(__builtin_ctzll(c));
+                        c &= (c - 1ull);
+                        next.push_back(t | (1ull << b));
+                        if(next.size() > max_terms)
+                        {
+                            sol.cost = static_cast<std::size_t>(-1);
+                            return sol;
+                        }
+                    }
+                }
+
+                // Dedup.
+                ::std::sort(next.begin(), next.end());
+                next.erase(::std::unique(next.begin(), next.end()), next.end());
+
+                // Dominance pruning by subset + cost.
+                ::std::vector<std::size_t> cost{};
+                cost.resize(next.size());
+                for(std::size_t i{}; i < next.size(); ++i) { cost[i] = bit_cost(next[i]); }
+
+                ::std::vector<bool> drop{};
+                drop.assign(next.size(), false);
+                for(std::size_t i{}; i < next.size(); ++i)
+                {
+                    if(drop[i]) { continue; }
+                    for(std::size_t j{i + 1}; j < next.size(); ++j)
+                    {
+                        if(drop[j]) { continue; }
+                        auto const a = next[i];
+                        auto const b = next[j];
+                        if((a & b) == a)
+                        {
+                            if(cost[i] <= cost[j]) { drop[j] = true; }
+                        }
+                        else if((a & b) == b)
+                        {
+                            if(cost[j] <= cost[i]) { drop[i] = true; break; }
+                        }
+                    }
+                }
+
+                ::std::vector<std::uint64_t> pruned{};
+                pruned.reserve(next.size());
+                for(std::size_t i{}; i < next.size(); ++i)
+                {
+                    if(!drop[i]) { pruned.push_back(next[i]); }
+                }
+                if(pruned.empty())
+                {
+                    sol.cost = static_cast<std::size_t>(-1);
+                    return sol;
+                }
+
+                terms = ::std::move(pruned);
+            }
+
+            // Choose best term.
+            std::uint64_t best_bits{};
+            std::size_t best_cost{static_cast<std::size_t>(-1)};
+            for(auto const t : terms)
+            {
+                auto const c = bit_cost(t);
+                if(c < best_cost)
+                {
+                    best_cost = c;
+                    best_bits = t;
+                }
+            }
+            if(best_cost == static_cast<std::size_t>(-1))
+            {
+                sol.cost = static_cast<std::size_t>(-1);
+                return sol;
+            }
+            for(std::size_t pi{}; pi < primes.size(); ++pi)
+            {
+                if((best_bits >> pi) & 1ull) { sol.pick.push_back(pi); }
+            }
+            sol.cost = qm_cover_cost(primes, sol.pick, var_count, opt);
+            return sol;
+        }
+
         [[nodiscard]] inline qm_solution qm_greedy_cover(::std::vector<qm_implicant> const& primes,
                                                          ::std::vector<::std::uint16_t> const& on,
-                                                         std::size_t var_count) noexcept
+                                                         std::size_t var_count,
+                                                         pe_synth_options const& opt) noexcept
         {
             qm_solution sol{};
             if(on.empty())
@@ -4585,7 +5363,7 @@ namespace phy_engine::verilog::digital
 
             for(std::size_t pi{}; pi < primes.size(); ++pi)
             {
-                prime_cost[pi] = qm_cover_cost(primes, ::std::vector<std::size_t>{pi}, var_count);
+                prime_cost[pi] = qm_cover_cost(primes, ::std::vector<std::size_t>{pi}, var_count, opt);
                 for(std::size_t mi{}; mi < on.size(); ++mi)
                 {
                     if(implicant_covers(primes[pi], on[mi]))
@@ -4696,7 +5474,7 @@ namespace phy_engine::verilog::digital
                 apply_pick(best_pi);
             }
 
-            sol.cost = qm_cover_cost(primes, sol.pick, var_count);
+            sol.cost = qm_cover_cost(primes, sol.pick, var_count, opt);
             return sol;
         }
 
@@ -4912,6 +5690,361 @@ namespace phy_engine::verilog::digital
             roots.reserve(gate_by_out.size());
             for(auto const& kv : gate_by_out) { roots.push_back(kv.first); }
 
+            // Multi-output sharing (bounded): for protected output nodes that share the same leaf set, choose covers jointly to
+            // encourage shared product terms (beyond per-output independent minimization).
+            //
+            // This runs before the generic per-root loop below. We only target protected roots to keep the scope tight and safe.
+            {
+                struct cone
+                {
+                    ::phy_engine::model::node_t* root{};
+                    ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
+                    ::std::vector<::phy_engine::model::node_t*> leaves{};  // canonical (sorted) leaf order
+                    ::std::vector<::std::uint16_t> on{};
+                    ::std::vector<::std::uint16_t> dc{};
+                };
+                struct group
+                {
+                    ::std::vector<::phy_engine::model::node_t*> leaves{};
+                    ::std::vector<cone> cones{};
+                };
+
+                auto leaves_hash = [&](::std::vector<::phy_engine::model::node_t*> const& v) noexcept -> std::size_t
+                {
+                    auto mix = [](std::size_t h, std::size_t x) noexcept -> std::size_t {
+                        return (h ^ (x + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
+                    };
+                    std::size_t h{};
+                    for(auto* p : v) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
+                    return h;
+                };
+
+                ::std::unordered_map<std::size_t, ::std::vector<std::size_t>> hash_to_groups{};
+                hash_to_groups.reserve(256);
+                ::std::vector<group> groups{};
+                groups.reserve(128);
+
+                auto find_group = [&](::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept -> group&
+                {
+                    auto const h = leaves_hash(leaves);
+                    auto& ids = hash_to_groups[h];
+                    for(auto const gi : ids)
+                    {
+                        if(gi >= groups.size()) { continue; }
+                        if(groups[gi].leaves == leaves) { return groups[gi]; }
+                    }
+                    groups.push_back(group{.leaves = leaves, .cones = {}});
+                    ids.push_back(groups.size() - 1u);
+                    return groups.back();
+                };
+
+                auto collect_cone = [&](::phy_engine::model::node_t* root, cone& out) noexcept -> bool
+                {
+                    out.root = root;
+                    out.to_delete.clear();
+                    out.leaves.clear();
+                    out.on.clear();
+                    out.dc.clear();
+
+                    if(root == nullptr) { return false; }
+                    if(!is_protected(root)) { return false; }
+                    auto it_drv = fan.driver_count.find(root);
+                    if(it_drv == fan.driver_count.end() || it_drv->second != 1) { return false; }
+                    auto it_root = gate_by_out.find(root);
+                    if(it_root == gate_by_out.end()) { return false; }
+
+                    out.to_delete.reserve(max_gates);
+                    out.leaves.reserve(max_vars);
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visited{};
+                    visited.reserve(max_gates * 2u);
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> leaf_seen{};
+                    leaf_seen.reserve(max_vars * 2u);
+
+                    bool ok{true};
+                    auto dfs = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> void
+                    {
+                        if(!ok || n == nullptr) { return; }
+                        if(visited.contains(n)) { return; }
+                        visited.emplace(n, true);
+
+                        auto itg = gate_by_out.find(n);
+                        if(itg == gate_by_out.end())
+                        {
+                            if(!leaf_seen.contains(n))
+                            {
+                                if(out.leaves.size() >= max_vars) { ok = false; return; }
+                                leaf_seen.emplace(n, true);
+                                out.leaves.push_back(n);
+                            }
+                            return;
+                        }
+
+                        auto const& g = itg->second;
+                        if(n != root)
+                        {
+                            if(is_protected(n)) { ok = false; return; }
+                            auto itc = fan.consumer_count.find(n);
+                            if(itc == fan.consumer_count.end() || itc->second != 1) { ok = false; return; }
+                            auto itd = fan.driver_count.find(n);
+                            if(itd == fan.driver_count.end() || itd->second != 1) { ok = false; return; }
+                        }
+
+                        if(out.to_delete.size() >= max_gates) { ok = false; return; }
+                        out.to_delete.push_back(g.pos);
+
+                        self(self, g.in0);
+                        if(g.k != gkind::not_gate) { self(self, g.in1); }
+                    };
+
+                    dfs(dfs, root);
+                    if(!ok) { return false; }
+                    if(out.leaves.empty()) { return false; }
+
+                    // Canonical leaf order for consistent variable indexing across outputs.
+                    ::std::sort(out.leaves.begin(), out.leaves.end(), [](auto* a, auto* b) noexcept {
+                        return reinterpret_cast<std::uintptr_t>(a) < reinterpret_cast<std::uintptr_t>(b);
+                    });
+
+                    auto const var_count = out.leaves.size();
+                    if(var_count == 0 || var_count > 16) { return false; }
+
+                    out.on.reserve(1u << var_count);
+                    for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << var_count); ++m)
+                    {
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
+                        leaf_val.reserve(var_count * 2u);
+                        for(std::size_t i{}; i < var_count; ++i)
+                        {
+                            auto const bit = ((m >> i) & 1u) != 0;
+                            leaf_val.emplace(out.leaves[i], bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                                : ::phy_engine::model::digital_node_statement_t::false_state);
+                        }
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
+                        memo.reserve(out.to_delete.size() * 2u + 8u);
+                        auto const r = eval_gate(eval_gate, root, leaf_val, memo);
+                        if(r == ::phy_engine::model::digital_node_statement_t::true_state) { out.on.push_back(m); }
+                        else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
+                        else
+                        {
+                            if(opt.assume_binary_inputs) { out.dc.push_back(m); }
+                            else { return false; }
+                        }
+                    }
+
+                    // Normalize deletion list and avoid duplicates.
+                    ::std::sort(out.to_delete.begin(),
+                                out.to_delete.end(),
+                                [](auto const& a, auto const& b) noexcept {
+                                    if(a.chunk_pos != b.chunk_pos) { return a.chunk_pos > b.chunk_pos; }
+                                    return a.vec_pos > b.vec_pos;
+                                });
+                    out.to_delete.erase(::std::unique(out.to_delete.begin(),
+                                                     out.to_delete.end(),
+                                                     [](auto const& a, auto const& b) noexcept {
+                                                         return a.chunk_pos == b.chunk_pos && a.vec_pos == b.vec_pos;
+                                                     }),
+                                        out.to_delete.end());
+
+                    return true;
+                };
+
+                // Collect candidate protected cones into groups by leaf-set.
+                for(auto* root : roots)
+                {
+                    cone c{};
+                    if(!collect_cone(root, c)) { continue; }
+                    auto& g = find_group(c.leaves);
+                    g.cones.push_back(::std::move(c));
+                }
+
+                // Helper: per-output best cover (QM/Petrick/Espresso).
+                auto best_single_cover = [&](::std::vector<::std::uint16_t> const& on,
+                                             ::std::vector<::std::uint16_t> const& dc,
+                                             std::size_t var_count) noexcept -> ::std::vector<qm_implicant>
+                {
+                    if(on.empty())
+                    {
+                        return {};
+                    }
+                    if(on.size() == (1u << var_count))
+                    {
+                        return {qm_implicant{0u, static_cast<::std::uint16_t>((var_count >= 16) ? 0xFFFFu : ((1u << var_count) - 1u)), false}};
+                    }
+
+                    auto const primes = qm_prime_implicants(on, dc, var_count);
+                    if(primes.empty()) { return {}; }
+                    qm_solution qm_sol{};
+                    if(var_count <= exact_vars)
+                    {
+                        qm_sol = qm_exact_minimum_cover(primes, on, var_count, opt);
+                    }
+                    else
+                    {
+                        qm_sol = qm_greedy_cover(primes, on, var_count, opt);
+                        if(primes.size() <= 64u && on.size() <= 64u)
+                        {
+                            auto const pet = qm_petrick_minimum_cover(primes, on, var_count, opt);
+                            if(pet.cost != static_cast<std::size_t>(-1) &&
+                               (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
+                            {
+                                qm_sol = pet;
+                            }
+                        }
+                    }
+                    if(qm_sol.cost == static_cast<std::size_t>(-1)) { return {}; }
+
+                    ::std::vector<qm_implicant> qm_cover{};
+                    qm_cover.reserve(qm_sol.pick.size());
+                    for(auto const idx : qm_sol.pick)
+                    {
+                        if(idx < primes.size()) { qm_cover.push_back(primes[idx]); }
+                    }
+                    auto qm_cost = two_level_cover_cost(qm_cover, var_count, opt);
+
+                    if(var_count > exact_vars)
+                    {
+                        auto const esp = espresso_two_level_minimize(on, dc, var_count, opt);
+                        if(esp.cost != static_cast<std::size_t>(-1) && esp.cost < qm_cost) { return esp.cover; }
+                    }
+                    return qm_cover;
+                };
+
+                for(auto& grp : groups)
+                {
+                    if(grp.cones.size() < 2u) { continue; }
+                    auto const var_count = grp.leaves.size();
+                    if(var_count == 0 || var_count > max_vars) { continue; }
+
+                    ::std::vector<::std::vector<::std::uint16_t>> on_list{};
+                    ::std::vector<::std::vector<::std::uint16_t>> dc_list{};
+                    on_list.reserve(grp.cones.size());
+                    dc_list.reserve(grp.cones.size());
+                    for(auto const& c : grp.cones)
+                    {
+                        on_list.push_back(c.on);
+                        dc_list.push_back(c.dc);
+                    }
+
+                    // Baseline: independent best per output, but with shared-term accounting in the cost model.
+                    ::std::vector<::std::vector<qm_implicant>> base_covers{};
+                    base_covers.resize(grp.cones.size());
+                    for(std::size_t oi{}; oi < grp.cones.size(); ++oi)
+                    {
+                        base_covers[oi] = best_single_cover(on_list[oi], dc_list[oi], var_count);
+                        if(!on_list[oi].empty() && base_covers[oi].empty())
+                        {
+                            // Failed to find a cover for a non-constant-0 function: skip this group.
+                            base_covers.clear();
+                            break;
+                        }
+                    }
+                    if(base_covers.empty()) { continue; }
+                    auto const base_cost = multi_output_gate_cost(base_covers, var_count, opt);
+
+                    // Multi-output greedy selection.
+                    auto mo = multi_output_two_level_minimize(on_list, dc_list, var_count, opt);
+                    ::std::vector<::std::vector<qm_implicant>> chosen = base_covers;
+                    std::size_t chosen_cost = base_cost;
+                    if(mo.cost != static_cast<std::size_t>(-1) && mo.cost < chosen_cost)
+                    {
+                        chosen = ::std::move(mo.covers);
+                        chosen_cost = mo.cost;
+                    }
+
+                    // Include the required YES buffers for protected roots in the improvement check.
+                    std::size_t old_models{};
+                    for(auto const& c : grp.cones) { old_models += c.to_delete.size(); }
+                    auto const est_new_models = chosen_cost + grp.cones.size();  // +YES per output root
+                    if(est_new_models >= old_models) { continue; }
+
+                    // Delete old cones.
+                    for(auto const& c : grp.cones)
+                    {
+                        for(auto const& mp : c.to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    }
+
+                    // Shared caches across outputs in the group.
+                    auto* const0 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::false_state);
+                    auto* const1 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::true_state);
+                    if(const0 == nullptr || const1 == nullptr) { continue; }
+
+                    ::std::vector<::phy_engine::model::node_t*> neg{};
+                    neg.assign(var_count, nullptr);
+                    ::std::unordered_map<cube_key, ::phy_engine::model::node_t*, cube_key_hash, cube_key_eq> term_cache{};
+                    term_cache.reserve(256);
+
+                    auto ensure_neg = [&](std::size_t v) noexcept -> ::phy_engine::model::node_t*
+                    {
+                        if(v >= var_count) { return nullptr; }
+                        if(neg[v] != nullptr) { return neg[v]; }
+                        neg[v] = make_not(grp.leaves[v]);
+                        return neg[v];
+                    };
+
+                    auto build_term = [&](qm_implicant const& imp) noexcept -> ::phy_engine::model::node_t*
+                    {
+                        auto const key = to_cube_key(imp);
+                        if(auto it = term_cache.find(key); it != term_cache.end()) { return it->second; }
+
+                        ::phy_engine::model::node_t* term = nullptr;
+                        std::size_t lits{};
+                        for(std::size_t v{}; v < var_count; ++v)
+                        {
+                            if((imp.mask >> v) & 1u) { continue; }
+                            bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
+                            auto* lit = bit_is_1 ? grp.leaves[v] : ensure_neg(v);
+                            if(lit == nullptr) { return nullptr; }
+                            ++lits;
+                            if(term == nullptr) { term = lit; }
+                            else { term = make_and(term, lit); }
+                            if(term == nullptr) { return nullptr; }
+                        }
+                        if(lits == 0) { term = const1; }
+                        if(term == nullptr) { return nullptr; }
+                        term_cache.emplace(key, term);
+                        return term;
+                    };
+
+                    auto build_cover_to = [&](::std::vector<qm_implicant> const& cover, ::phy_engine::model::node_t* root) noexcept -> bool
+                    {
+                        if(root == nullptr) { return false; }
+                        if(cover.empty())
+                        {
+                            return make_yes(const0, root);
+                        }
+                        if(cover.size() == 1u && cube_literals(cover[0], var_count) == 0u)
+                        {
+                            return make_yes(const1, root);
+                        }
+
+                        ::std::vector<::phy_engine::model::node_t*> terms{};
+                        terms.reserve(cover.size());
+                        for(auto const& imp : cover)
+                        {
+                            auto* t = build_term(imp);
+                            if(t == nullptr) { return false; }
+                            terms.push_back(t);
+                        }
+                        if(terms.empty()) { return make_yes(const0, root); }
+
+                        ::phy_engine::model::node_t* out = terms[0];
+                        for(std::size_t i{1}; i < terms.size(); ++i)
+                        {
+                            out = make_or(out, terms[i]);
+                            if(out == nullptr) { return false; }
+                        }
+                        return make_yes(out, root);
+                    };
+
+                    for(std::size_t oi{}; oi < grp.cones.size() && oi < chosen.size(); ++oi)
+                    {
+                        (void)build_cover_to(chosen[oi], grp.cones[oi].root);
+                    }
+
+                    changed = true;
+                }
+            }
+
             for(auto* root : roots)
             {
                 if(root == nullptr) { continue; }
@@ -4919,6 +6052,20 @@ namespace phy_engine::verilog::digital
                 if(it_drv == fan.driver_count.end() || it_drv->second != 1) { continue; }
                 auto it_root = gate_by_out.find(root);
                 if(it_root == gate_by_out.end()) { continue; }
+
+                // Ensure the root gate still exists (this pass deletes cones as it goes; we use a snapshot map).
+                {
+                    auto const& g = it_root->second;
+                    auto* mb = ::phy_engine::netlist::get_model(nl, g.pos);
+                    if(mb == nullptr || mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
+                    auto const nm = model_name_u8(*mb);
+                    if((g.k == gkind::not_gate && nm != u8"NOT") || (g.k == gkind::and_gate && nm != u8"AND") || (g.k == gkind::or_gate && nm != u8"OR") ||
+                       (g.k == gkind::xor_gate && nm != u8"XOR") || (g.k == gkind::xnor_gate && nm != u8"XNOR") || (g.k == gkind::nand_gate && nm != u8"NAND") ||
+                       (g.k == gkind::nor_gate && nm != u8"NOR") || (g.k == gkind::imp_gate && nm != u8"IMP") || (g.k == gkind::nimp_gate && nm != u8"NIMP"))
+                    {
+                        continue;
+                    }
+                }
 
                 ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
                 to_delete.reserve(max_gates);
@@ -5002,8 +6149,24 @@ namespace phy_engine::verilog::digital
 
                 auto const primes = qm_prime_implicants(on, dc, leaves.size());
                 if(primes.size() > max_primes) { continue; }
-                auto const qm_sol = (leaves.size() <= exact_vars) ? qm_exact_minimum_cover(primes, on, leaves.size())
-                                                                  : qm_greedy_cover(primes, on, leaves.size());
+                qm_solution qm_sol{};
+                if(leaves.size() <= exact_vars)
+                {
+                    qm_sol = qm_exact_minimum_cover(primes, on, leaves.size(), opt);
+                }
+                else
+                {
+                    qm_sol = qm_greedy_cover(primes, on, leaves.size(), opt);
+                    if(primes.size() <= 64u && on.size() <= 64u)
+                    {
+                        auto const pet = qm_petrick_minimum_cover(primes, on, leaves.size(), opt);
+                        if(pet.cost != static_cast<std::size_t>(-1) &&
+                           (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
+                        {
+                            qm_sol = pet;
+                        }
+                    }
+                }
                 if(qm_sol.cost == static_cast<std::size_t>(-1)) { continue; }
 
                 enum class best_kind : std::uint8_t
@@ -5018,7 +6181,7 @@ namespace phy_engine::verilog::digital
                 // Espresso-style heuristic (still bounded by enumeration). Skip tiny cases where QM exact cover is already optimal.
                 if(leaves.size() > exact_vars)
                 {
-                    esp = espresso_two_level_minimize(on, dc, leaves.size());
+                    esp = espresso_two_level_minimize(on, dc, leaves.size(), opt);
                     if(esp.cost != static_cast<std::size_t>(-1) && esp.cost < best_cost)
                     {
                         best = best_kind::espresso;
