@@ -128,13 +128,13 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
   - [ ] Optional dump of “best-so-far” netlist
   - [ ] A reproducible summary line (seed, budgets, final cost)
 - [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
-  - [ ] CUDA support!
+  - [ ] CUDA support! multi-gpu!
 
 #### Two-level minimization (Espresso / full cover)
 - [x] Espresso “industrial-strength” loop (additional heuristics beyond EXPAND/REDUCE/IRREDUNDANT, e.g. cube ordering + bounded last-gasp)
 - [x] Multi-output sharing beyond exact cube identity (bounded partial sharing via common literal-pair extraction)
-- [ ] More advanced Espresso heuristics (e.g. binate variable ordering, complementation-based improvements)
-- [ ] Richer multi-output sharing (kernel extraction / partial sharing across larger subcubes)
+- [x] More advanced Espresso heuristics (binate variable ordering + complementation-based improvement via output inversion)
+- [x] Richer multi-output sharing (kernel extraction / partial sharing across larger subcubes)
 
 #### Don’t-care (DC-set) inference & exploitation
 - [ ] Derive DC from X/Z semantics and `assume_binary_inputs` (explicit, verifiable DC-set plumbing)

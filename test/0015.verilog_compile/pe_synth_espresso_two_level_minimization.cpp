@@ -71,5 +71,39 @@ int main()
         }
     }
 
+    // Case 3 (complementation-based improvement): f = ~(x0 & x1 & x2 & x3).
+    {
+        std::vector<std::uint16_t> on{};
+        std::vector<std::uint16_t> dc{};
+        for(std::uint16_t m{}; m < 16u; ++m)
+        {
+            if(m != 15u) { on.push_back(m); }
+        }
+
+        auto sol = espresso_two_level_minimize(on, dc, 4, opt);
+        if(!sol.complemented)
+        {
+            std::fprintf(stderr, "espresso expected complemented cover for ~(x0&x1&x2&x3)\n");
+            return 6;
+        }
+        if(sol.cost != 4u)
+        {
+            std::fprintf(stderr, "espresso expected cost=4 for complemented solution, got %zu\n", sol.cost);
+            return 7;
+        }
+
+        for(std::uint16_t m{}; m < 16u; ++m)
+        {
+            bool const exp = (m != 15u);
+            bool const raw = cover_covers_minterm(sol.cover, m);
+            bool const got = sol.complemented ? !raw : raw;
+            if(got != exp)
+            {
+                std::fprintf(stderr, "espresso complemented mismatch at m=%u (exp=%u got=%u)\n", m, static_cast<unsigned>(exp), static_cast<unsigned>(got));
+                return 8;
+            }
+        }
+    }
+
     return 0;
 }

@@ -4248,6 +4248,7 @@ namespace phy_engine::verilog::digital
         {
             ::std::vector<qm_implicant> cover{};
             std::size_t cost{static_cast<std::size_t>(-1)};
+            bool complemented{};
         };
 
         struct multi_output_solution
@@ -4642,10 +4643,66 @@ namespace phy_engine::verilog::digital
             return sol;
         }
 
-        [[nodiscard]] inline espresso_solution espresso_two_level_minimize(::std::vector<::std::uint16_t> const& on,
-                                                                           ::std::vector<::std::uint16_t> const& dc,
-                                                                           std::size_t var_count,
-                                                                           pe_synth_options const& opt) noexcept
+        [[nodiscard]] inline ::std::vector<std::size_t> espresso_binate_var_order(::std::vector<::std::uint16_t> const& on,
+                                                                                  ::std::vector<::std::uint16_t> const& dc,
+                                                                                  std::size_t var_count) noexcept
+        {
+            ::std::vector<std::size_t> order{};
+            order.reserve(var_count);
+            if(var_count == 0) { return order; }
+
+            struct var_stat
+            {
+                std::size_t v{};
+                std::size_t c0{};
+                std::size_t c1{};
+                bool binate{};
+            };
+            ::std::vector<var_stat> stats{};
+            stats.reserve(var_count);
+
+            for(std::size_t v{}; v < var_count; ++v)
+            {
+                std::size_t c0{};
+                std::size_t c1{};
+                for(auto const m : on)
+                {
+                    if((m >> v) & 1u) { ++c1; }
+                    else { ++c0; }
+                }
+                for(auto const m : dc)
+                {
+                    if((m >> v) & 1u) { ++c1; }
+                    else { ++c0; }
+                }
+                bool const binate = (c0 != 0u && c1 != 0u);
+                stats.push_back(var_stat{v, c0, c1, binate});
+            }
+
+            ::std::sort(stats.begin(),
+                        stats.end(),
+                        [](var_stat const& a, var_stat const& b) noexcept {
+                            if(a.binate != b.binate) { return a.binate > b.binate; }
+                            auto const amin = (a.c0 < a.c1) ? a.c0 : a.c1;
+                            auto const bmin = (b.c0 < b.c1) ? b.c0 : b.c1;
+                            if(a.binate)
+                            {
+                                if(amin != bmin) { return amin > bmin; }
+                            }
+                            auto const atot = a.c0 + a.c1;
+                            auto const btot = b.c0 + b.c1;
+                            if(atot != btot) { return atot > btot; }
+                            return a.v < b.v;
+                        });
+
+            for(auto const& s : stats) { order.push_back(s.v); }
+            return order;
+        }
+
+        [[nodiscard]] inline espresso_solution espresso_two_level_minimize_base(::std::vector<::std::uint16_t> const& on,
+                                                                                ::std::vector<::std::uint16_t> const& dc,
+                                                                                std::size_t var_count,
+                                                                                pe_synth_options const& opt) noexcept
         {
             // A small, deterministic Espresso-style loop (bounded truth-table cones):
             // - Start from minterm cover (ON-set)
@@ -4654,6 +4711,7 @@ namespace phy_engine::verilog::digital
             //
             // Notes:
             // - This is not a full industrial Espresso implementation, but it captures the key passes in a bounded setting.
+            // - Uses binate variable ordering to guide expansion/reduction.
             // - The cost function is configurable via `pe_synth_options::{two_level_cost,two_level_weights}`.
 
             espresso_solution sol{};
@@ -4666,6 +4724,12 @@ namespace phy_engine::verilog::digital
             if(var_count > 16) { return sol; }
 
             auto const U = static_cast<std::size_t>(1u << var_count);
+            auto var_order = espresso_binate_var_order(on, dc, var_count);
+            if(var_order.size() != var_count)
+            {
+                var_order.clear();
+                for(std::size_t v{}; v < var_count; ++v) { var_order.push_back(v); }
+            }
 
             ::std::vector<bool> is_on{};
             ::std::vector<bool> is_dc{};
@@ -4702,7 +4766,7 @@ namespace phy_engine::verilog::digital
                 while(changed)
                 {
                     changed = false;
-                    for(std::size_t v{}; v < var_count; ++v)
+                    for(auto const v : var_order)
                     {
                         if((c.mask >> v) & 1u) { continue; }
                         qm_implicant cand = c;
@@ -4836,7 +4900,7 @@ namespace phy_engine::verilog::digital
 
                     // Reduce: for each don't-care var, if all R minterms share the same bit, specialize to that bit.
                     // In the anchored case (single minterm), this specializes all don't-care vars, shrinking to that minterm.
-                    for(std::size_t v{}; v < var_count; ++v)
+                    for(auto const v : var_order)
                     {
                         auto const bit = static_cast<::std::uint16_t>(1u << v);
                         if(((c.mask >> v) & 1u) == 0u) { continue; }  // already specified
@@ -4983,6 +5047,56 @@ namespace phy_engine::verilog::digital
             sol.cover = ::std::move(best_cover);
             sol.cost = best_cost;
             return sol;
+        }
+
+        [[nodiscard]] inline espresso_solution espresso_two_level_minimize(::std::vector<::std::uint16_t> const& on,
+                                                                           ::std::vector<::std::uint16_t> const& dc,
+                                                                           std::size_t var_count,
+                                                                           pe_synth_options const& opt) noexcept
+        {
+            auto best = espresso_two_level_minimize_base(on, dc, var_count, opt);
+            if(best.cost == static_cast<std::size_t>(-1)) { return best; }
+            if(var_count == 0 || var_count > 16) { return best; }
+
+            // Complementation-based improvement: try minimizing F' (OFF-set), then invert output if cheaper.
+            auto const U = static_cast<std::size_t>(1u << var_count);
+            ::std::vector<bool> is_on{};
+            ::std::vector<bool> is_dc{};
+            is_on.assign(U, false);
+            is_dc.assign(U, false);
+            for(auto const m : on)
+            {
+                if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
+            }
+            for(auto const m : dc)
+            {
+                if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
+            }
+
+            ::std::vector<::std::uint16_t> off{};
+            off.reserve(U);
+            for(std::size_t m{}; m < U; ++m)
+            {
+                if(is_on[m] || is_dc[m]) { continue; }
+                off.push_back(static_cast<::std::uint16_t>(m));
+            }
+            if(off.empty()) { return best; }
+
+            auto comp = espresso_two_level_minimize_base(off, dc, var_count, opt);
+            if(comp.cost == static_cast<std::size_t>(-1)) { return best; }
+
+            std::size_t penalty{};
+            if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count) { penalty = 1u; }
+            else { penalty = static_cast<std::size_t>(opt.two_level_weights.not_w); }
+
+            if(comp.cost + penalty < best.cost)
+            {
+                comp.cost = comp.cost + penalty;
+                comp.complemented = true;
+                return comp;
+            }
+
+            return best;
         }
 
         [[nodiscard]] inline qm_solution qm_exact_minimum_cover(::std::vector<qm_implicant> const& primes,
@@ -5922,7 +6036,7 @@ namespace phy_engine::verilog::digital
 
                     if(var_count > exact_vars)
                     {
-                        auto const esp = espresso_two_level_minimize(on, dc, var_count, opt);
+                        auto const esp = espresso_two_level_minimize_base(on, dc, var_count, opt);
                         if(esp.cost != static_cast<std::size_t>(-1) && esp.cost < qm_cost) { return esp.cover; }
                     }
                     return qm_cover;
@@ -5970,38 +6084,17 @@ namespace phy_engine::verilog::digital
                         chosen_cost = mo.cost;
                     }
 
-                    // Partial sharing beyond identical cubes: extract the best shared literal-pair across distinct cubes.
+                    // Partial sharing beyond identical cubes: extract a shared subcube (size 2..K) across distinct cubes.
                     struct lit
                     {
                         std::size_t v{};
                         bool neg{};
                     };
-                    struct pair_key
+                    constexpr std::size_t max_shared_literals = 3u;
+                    auto const var_mask = static_cast<std::uint16_t>((var_count >= 16) ? 0xFFFFu : ((1u << var_count) - 1u));
+                    auto popcount16 = [](std::uint16_t x) noexcept -> std::size_t
                     {
-                        lit a{};
-                        lit b{};
-                    };
-                    struct pair_hash
-                    {
-                        std::size_t operator()(pair_key const& p) const noexcept
-                        {
-                            auto h = static_cast<std::size_t>(p.a.v) ^ (static_cast<std::size_t>(p.a.neg) << 8);
-                            h ^= (static_cast<std::size_t>(p.b.v) << 16) ^ (static_cast<std::size_t>(p.b.neg) << 24);
-                            return h;
-                        }
-                    };
-                    struct pair_eq
-                    {
-                        bool operator()(pair_key const& x, pair_key const& y) const noexcept
-                        {
-                            return x.a.v == y.a.v && x.a.neg == y.a.neg && x.b.v == y.b.v && x.b.neg == y.b.neg;
-                        }
-                    };
-
-                    auto canon_pair = [&](lit a, lit b) noexcept -> pair_key
-                    {
-                        if(a.v > b.v || (a.v == b.v && a.neg > b.neg)) { ::std::swap(a, b); }
-                        return pair_key{a, b};
+                        return static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(x)));
                     };
 
                     auto cube_lits = [&](qm_implicant const& imp) noexcept -> ::std::vector<lit>
@@ -6013,6 +6106,12 @@ namespace phy_engine::verilog::digital
                             bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
                             lits.push_back(lit{v, !bit_is_1});
                         }
+                        ::std::sort(lits.begin(),
+                                    lits.end(),
+                                    [](lit const& a, lit const& b) noexcept {
+                                        if(a.v != b.v) { return a.v < b.v; }
+                                        return a.neg < b.neg;
+                                    });
                         return lits;
                     };
 
@@ -6026,8 +6125,21 @@ namespace phy_engine::verilog::digital
                         }
                     }
 
-                    ::std::unordered_map<pair_key, std::size_t, pair_hash, pair_eq> pair_count{};
-                    pair_count.reserve(256);
+                    ::std::unordered_map<cube_key, std::size_t, cube_key_hash, cube_key_eq> subcube_count{};
+                    subcube_count.reserve(512);
+                    auto add_subcube = [&](lit const* lits, std::size_t count) noexcept
+                    {
+                        std::uint16_t mask = var_mask;
+                        std::uint16_t value{};
+                        for(std::size_t i{}; i < count; ++i)
+                        {
+                            auto const bit = static_cast<std::uint16_t>(1u << lits[i].v);
+                            mask = static_cast<std::uint16_t>(mask & static_cast<std::uint16_t>(~bit));
+                            if(!lits[i].neg) { value = static_cast<std::uint16_t>(value | bit); }
+                        }
+                        ++subcube_count[cube_key{mask, value}];
+                    };
+
                     for(auto const& kv : uniq_cubes)
                     {
                         auto const& imp = kv.second;
@@ -6037,29 +6149,60 @@ namespace phy_engine::verilog::digital
                         {
                             for(std::size_t j{i + 1}; j < lits.size(); ++j)
                             {
-                                auto const pk = canon_pair(lits[i], lits[j]);
-                                ++pair_count[pk];
+                                lit pair[2]{lits[i], lits[j]};
+                                add_subcube(pair, 2u);
+                            }
+                        }
+                        if(max_shared_literals >= 3u && lits.size() >= 3u)
+                        {
+                            for(std::size_t i{}; i + 2 < lits.size(); ++i)
+                            {
+                                for(std::size_t j{i + 1}; j + 1 < lits.size(); ++j)
+                                {
+                                    for(std::size_t k{j + 1}; k < lits.size(); ++k)
+                                    {
+                                        lit trip[3]{lits[i], lits[j], lits[k]};
+                                        add_subcube(trip, 3u);
+                                    }
+                                }
                             }
                         }
                     }
 
-                    pair_key best_pair{};
-                    std::size_t best_pair_cnt{};
-                    for(auto const& kv : pair_count)
+                    cube_key best_shared{};
+                    std::size_t best_gain{};
+                    std::size_t best_cnt{};
+                    std::size_t best_size{};
+                    for(auto const& kv : subcube_count)
                     {
-                        if(kv.second > best_pair_cnt)
+                        auto const cnt = kv.second;
+                        if(cnt < 2u) { continue; }
+                        auto const keep = static_cast<std::uint16_t>(~kv.first.mask & var_mask);
+                        auto const size = popcount16(keep);
+                        if(size < 2u || size > max_shared_literals) { continue; }
+
+                        std::size_t gain{};
+                        if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count)
                         {
-                            best_pair_cnt = kv.second;
-                            best_pair = kv.first;
+                            gain = (cnt - 1u) * size;
+                        }
+                        else
+                        {
+                            gain = (cnt - 1u) * (size - 1u) * static_cast<std::size_t>(opt.two_level_weights.and_w);
+                        }
+                        if(gain > best_gain || (gain == best_gain && (size > best_size || (size == best_size && cnt > best_cnt))))
+                        {
+                            best_gain = gain;
+                            best_cnt = cnt;
+                            best_size = size;
+                            best_shared = kv.first;
                         }
                     }
 
-                    bool use_pair_sharing = (best_pair_cnt >= 2u);
-                    // Savings estimate: each cube containing the pair saves 1 AND; shared pair costs 1 AND.
-                    std::size_t pair_gain = (best_pair_cnt >= 1u) ? (best_pair_cnt - 1u) : 0u;
-                    if(use_pair_sharing && pair_gain > 0u)
+                    bool use_shared_subcube = (best_gain > 0u);
+                    if(use_shared_subcube)
                     {
-                        chosen_cost = (chosen_cost > pair_gain) ? (chosen_cost - pair_gain) : 0u;
+                        chosen_cost = (chosen_cost > best_gain) ? (chosen_cost - best_gain) : 0u;
                     }
 
                     // Include the required YES buffers for protected roots in the improvement check.
@@ -6084,9 +6227,6 @@ namespace phy_engine::verilog::digital
                     ::std::unordered_map<cube_key, ::phy_engine::model::node_t*, cube_key_hash, cube_key_eq> term_cache{};
                     term_cache.reserve(256);
 
-                    ::std::unordered_map<pair_key, ::phy_engine::model::node_t*, pair_hash, pair_eq> pair_cache{};
-                    pair_cache.reserve(8);
-
                     auto ensure_neg = [&](std::size_t v) noexcept -> ::phy_engine::model::node_t*
                     {
                         if(v >= var_count) { return nullptr; }
@@ -6095,34 +6235,36 @@ namespace phy_engine::verilog::digital
                         return neg[v];
                     };
 
-                    auto lit_node = [&](lit l) noexcept -> ::phy_engine::model::node_t*
-                    {
-                        return l.neg ? ensure_neg(l.v) : grp.leaves[l.v];
-                    };
+                    auto const shared_keep = static_cast<std::uint16_t>(~best_shared.mask & var_mask);
+                    auto const shared_value = static_cast<std::uint16_t>(best_shared.value & shared_keep);
+                    auto const shared_size = popcount16(shared_keep);
+                    ::phy_engine::model::node_t* shared_node = nullptr;
 
-                    auto pair_in_cube = [&](qm_implicant const& imp) noexcept -> bool
+                    auto shared_in_cube = [&](qm_implicant const& imp) noexcept -> bool
                     {
-                        if(!use_pair_sharing) { return false; }
-                        auto const a_mask = static_cast<std::uint16_t>(1u << best_pair.a.v);
-                        auto const b_mask = static_cast<std::uint16_t>(1u << best_pair.b.v);
-                        if((imp.mask & a_mask) || (imp.mask & b_mask)) { return false; }
-                        bool const abit1 = ((imp.value >> best_pair.a.v) & 1u) != 0;
-                        bool const bbit1 = ((imp.value >> best_pair.b.v) & 1u) != 0;
-                        if(abit1 == best_pair.a.neg) { return false; }
-                        if(bbit1 == best_pair.b.neg) { return false; }
+                        if(!use_shared_subcube) { return false; }
+                        if((imp.mask & shared_keep) != 0u) { return false; }
+                        if(((imp.value ^ shared_value) & shared_keep) != 0u) { return false; }
                         return true;
                     };
 
-                    auto build_pair_node = [&](pair_key const& pk) noexcept -> ::phy_engine::model::node_t*
+                    auto build_shared_node = [&]() noexcept -> ::phy_engine::model::node_t*
                     {
-                        if(auto it = pair_cache.find(pk); it != pair_cache.end()) { return it->second; }
-                        auto* la = lit_node(pk.a);
-                        auto* lb = lit_node(pk.b);
-                        if(la == nullptr || lb == nullptr) { return nullptr; }
-                        auto* out = make_and(la, lb);
-                        if(out == nullptr) { return nullptr; }
-                        pair_cache.emplace(pk, out);
-                        return out;
+                        if(!use_shared_subcube) { return nullptr; }
+                        if(shared_node != nullptr) { return shared_node; }
+                        ::phy_engine::model::node_t* term = nullptr;
+                        for(std::size_t v{}; v < var_count; ++v)
+                        {
+                            if(((shared_keep >> v) & 1u) == 0u) { continue; }
+                            bool const bit_is_1 = ((shared_value >> v) & 1u) != 0;
+                            auto* lit = bit_is_1 ? grp.leaves[v] : ensure_neg(v);
+                            if(lit == nullptr) { return nullptr; }
+                            if(term == nullptr) { term = lit; }
+                            else { term = make_and(term, lit); }
+                            if(term == nullptr) { return nullptr; }
+                        }
+                        shared_node = term;
+                        return shared_node;
                     };
 
                     auto build_term = [&](qm_implicant const& imp) noexcept -> ::phy_engine::model::node_t*
@@ -6132,17 +6274,18 @@ namespace phy_engine::verilog::digital
 
                         ::phy_engine::model::node_t* term = nullptr;
                         std::size_t lits{};
-                        bool used_pair{};
-                        if(pair_in_cube(imp))
+                        bool used_shared{};
+                        if(shared_in_cube(imp))
                         {
-                            term = build_pair_node(best_pair);
+                            term = build_shared_node();
                             if(term == nullptr) { return nullptr; }
-                            used_pair = true;
+                            used_shared = true;
+                            lits = shared_size;
                         }
                         for(std::size_t v{}; v < var_count; ++v)
                         {
                             if((imp.mask >> v) & 1u) { continue; }
-                            if(used_pair && (v == best_pair.a.v || v == best_pair.b.v)) { continue; }
+                            if(used_shared && ((shared_keep >> v) & 1u)) { continue; }
                             bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
                             auto* lit = bit_is_1 ? grp.leaves[v] : ensure_neg(v);
                             if(lit == nullptr) { return nullptr; }
@@ -6151,7 +6294,7 @@ namespace phy_engine::verilog::digital
                             else { term = make_and(term, lit); }
                             if(term == nullptr) { return nullptr; }
                         }
-                        if(lits == 0 && !used_pair) { term = const1; }
+                        if(lits == 0 && !used_shared) { term = const1; }
                         if(term == nullptr) { return nullptr; }
                         term_cache.emplace(key, term);
                         return term;
@@ -6449,6 +6592,13 @@ namespace phy_engine::verilog::digital
                     if(out == nullptr) { ok = false; break; }
                 }
                 if(!ok || out == nullptr) { continue; }
+
+                if(best == best_kind::espresso && esp.complemented)
+                {
+                    auto* inv = make_not(out);
+                    if(inv == nullptr) { continue; }
+                    out = inv;
+                }
 
                 if(out == root)
                 {
