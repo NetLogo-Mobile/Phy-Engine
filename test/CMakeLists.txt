@@ -118,4 +118,26 @@ if(PHY_ENGINE_CUDA_CLANG_TEST)
 
     add_test(NAME cuda_random_links_correctness COMMAND "${CMAKE_BINARY_DIR}/cuda/cuda_random_links_correctness")
     set_tests_properties(cuda_random_links_correctness PROPERTIES SKIP_RETURN_CODE 77)
+
+    set(_phy_cuda_pe_synth_correctness_src "${CMAKE_SOURCE_DIR}/0013.cuda/pe_synth_cuda_u64_cones_correctness.cu")
+    set(_phy_cuda_pe_synth_impl_src "${CMAKE_SOURCE_DIR}/../src/pe_synth_cuda_u64_cones.cu")
+    set_source_files_properties("${_phy_cuda_pe_synth_correctness_src}" PROPERTIES LANGUAGE CXX)
+    set_source_files_properties("${_phy_cuda_pe_synth_impl_src}" PROPERTIES LANGUAGE CXX)
+    add_executable(pe_synth_cuda_u64_cones_correctness "${_phy_cuda_pe_synth_correctness_src}" "${_phy_cuda_pe_synth_impl_src}")
+    set_target_properties(pe_synth_cuda_u64_cones_correctness PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/cuda")
+
+    target_compile_definitions(pe_synth_cuda_u64_cones_correctness PRIVATE PHY_ENGINE_ENABLE_CUDA_PE_SYNTH=1)
+    target_include_directories(pe_synth_cuda_u64_cones_correctness PRIVATE "${CMAKE_SOURCE_DIR}/../include" "${PHY_ENGINE_CUDA_PATH}/include")
+    target_compile_options(pe_synth_cuda_u64_cones_correctness PRIVATE -x cuda "--cuda-path=${PHY_ENGINE_CUDA_PATH}" "--cuda-gpu-arch=${PHY_ENGINE_CUDA_SMOKE_ARCH}")
+    target_link_options(pe_synth_cuda_u64_cones_correctness PRIVATE "--cuda-path=${PHY_ENGINE_CUDA_PATH}" "--cuda-gpu-arch=${PHY_ENGINE_CUDA_SMOKE_ARCH}")
+    target_link_libraries(pe_synth_cuda_u64_cones_correctness PRIVATE ${PHY_ENGINE_CUDART_LIBRARY})
+
+    foreach(_dir IN LISTS _phy_cuda_lib_dirs)
+        if(EXISTS "${_dir}")
+            target_link_options(pe_synth_cuda_u64_cones_correctness PRIVATE "-Wl,-rpath,${_dir}")
+        endif()
+    endforeach()
+
+    add_test(NAME pe_synth_cuda_u64_cones_correctness COMMAND "${CMAKE_BINARY_DIR}/cuda/pe_synth_cuda_u64_cones_correctness")
+    set_tests_properties(pe_synth_cuda_u64_cones_correctness PROPERTIES SKIP_RETURN_CODE 77)
 endif()

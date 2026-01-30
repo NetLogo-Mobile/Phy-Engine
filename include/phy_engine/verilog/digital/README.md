@@ -149,7 +149,17 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
   - [x] Optional dump of “best-so-far” netlist (via callback)
   - [x] A reproducible summary line (seed, budgets, final cost)
 - [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
-  - [ ] CUDA support! multi-gpu!
+  - [x] CUDA support (best-effort) + multi-GPU (device bitmask), used to accelerate bounded truth-table batching in `resub`/`sweep` when enabled at runtime (`--cuda-opt`).
+  - Build example (Clang CUDA, no nvcc):
+    - Recommended optimized build settings (important for `-Omax/-Ocuda` runtime):
+      - `-DCMAKE_BUILD_TYPE=Release` (or `RelWithDebInfo` for profiling)
+      - `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` (LTO, if supported by your toolchain)
+    - `cmake -S src -B build_cuda -DCMAKE_CXX_COMPILER=clang++ -DPHY_ENGINE_ENABLE_CUDA_PE_SYNTH=ON -DPHY_ENGINE_CUDA_PATH=/usr/local/cuda -DPHY_ENGINE_CUDA_PE_SYNTH_ARCH=sm_70`
+    - `cmake --build build_cuda -j`
+  - Run example (2x V100 -> mask 3):
+    - `./build_cuda/verilog2plsav out.sav in.v -Ocuda --cuda-device-mask 3`
+  - Notes:
+    - `-Ocuda` is shorthand for `-Omax` + enabling CUDA-assisted optimization, and also increases some default bounded windows (e.g. sweep/resub vars).
 
 #### Two-level minimization (Espresso / full cover)
 - [x] Espresso “industrial-strength” loop (additional heuristics beyond EXPAND/REDUCE/IRREDUNDANT, e.g. cube ordering + bounded last-gasp)

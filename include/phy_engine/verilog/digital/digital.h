@@ -4323,12 +4323,12 @@ namespace phy_engine::verilog::digital
                                 proc_text.append(body_renamed);
                                 proc_text.append(u8" end");
 
-	                                auto const lr2{lex(::fast_io::u8string_view{proc_text.data(), proc_text.size()})};
-	                                details::parser fp{__builtin_addressof(lr2.tokens), 0, p->errors};
-	                                fp.return_target = ::fast_io::u8string_view{mangled_ret.data(), mangled_ret.size()};
+                                auto const lr2{lex(::fast_io::u8string_view{proc_text.data(), proc_text.size()})};
+                                details::parser fp{__builtin_addressof(lr2.tokens), 0, p->errors};
+                                fp.return_target = ::fast_io::u8string_view{mangled_ret.data(), mangled_ret.size()};
 
-	                                always_comb ac{};
-	                                ac.is_star = true;
+                                always_comb ac{};
+                                ac.is_star = true;
                                 ac.stmt_nodes.reserve(64);
                                 auto const root_idx = parse_proc_stmt(fp, *m, ac.stmt_nodes, true);
                                 if(root_idx < ac.stmt_nodes.size() && ac.stmt_nodes.index_unchecked(root_idx).k == stmt_node::kind::block)
@@ -8135,17 +8135,81 @@ namespace phy_engine::verilog::digital
             range_desc r{};
             accept_range(p, m, r);
 
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            initial_block ib{};
+            ib.stmt_nodes.reserve(32);
+            ::fast_io::vector<::std::size_t> init_stmt_idxs{};
+
             for(;;)
             {
                 auto const name{p.expect_ident(u8"expected identifier in declaration")};
                 if(name.empty()) { return; }
 
-                if(r.has_range) { (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg, is_signed); }
+                ::fast_io::vector<::std::size_t> declared_bits{};
+                declared_bits.clear();
+                if(r.has_range)
+                {
+                    auto& vd{declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg, is_signed)};
+                    declared_bits = vd.bits;
+                }
                 else
                 {
                     auto const sig{get_or_create_signal(m, name)};
                     if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
                     if(is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
+                    declared_bits.push_back(sig);
+                }
+
+                // SystemVerilog module-scope declaration initializers:
+                // - `wire w = expr;` is lowered to a continuous assignment.
+                // - `logic/reg/bit x = expr;` is lowered to an implicit `initial` block assignment (t=0).
+                if(p.accept_sym(u8'='))
+                {
+                    auto const rhs{ep.parse_expr()};
+                    if(!is_reg)
+                    {
+                        if(declared_bits.size() <= 1)
+                        {
+                            auto const rhs1{ep.resize(rhs, 1)};
+                            m.assigns.push_back({declared_bits.empty() ? SIZE_MAX : declared_bits.front_unchecked(), rhs1.scalar_root, SIZE_MAX});
+                        }
+                        else
+                        {
+                            auto rhs_bits{ep.resize_to_vector(rhs, declared_bits.size(), rhs.is_signed)};
+                            for(::std::size_t i{}; i < declared_bits.size() && i < rhs_bits.size(); ++i)
+                            {
+                                m.assigns.push_back({declared_bits.index_unchecked(i), rhs_bits.index_unchecked(i), SIZE_MAX});
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if(declared_bits.size() <= 1)
+                        {
+                            auto const rhs1{ep.resize(rhs, 1)};
+                            stmt_node st{};
+                            st.k = stmt_node::kind::blocking_assign;
+                            st.delay_ticks = 0;
+                            st.lhs_signal = declared_bits.empty() ? SIZE_MAX : declared_bits.front_unchecked();
+                            st.expr_root = rhs1.scalar_root;
+                            if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                            init_stmt_idxs.push_back(add_stmt(ib.stmt_nodes, ::std::move(st)));
+                        }
+                        else
+                        {
+                            auto rhs_bits{ep.resize_to_vector(rhs, declared_bits.size(), rhs.is_signed)};
+                            stmt_node st{};
+                            st.k = stmt_node::kind::blocking_assign_vec;
+                            st.delay_ticks = 0;
+                            st.lhs_signals = declared_bits;
+                            st.rhs_roots = ::std::move(rhs_bits);
+                            for(auto const sig: st.lhs_signals)
+                            {
+                                if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                            }
+                            init_stmt_idxs.push_back(add_stmt(ib.stmt_nodes, ::std::move(st)));
+                        }
+                    }
                 }
 
                 if(!p.accept_sym(u8',')) { break; }
@@ -8155,6 +8219,15 @@ namespace phy_engine::verilog::digital
             {
                 p.err(p.peek(), u8"expected ';'");
                 p.skip_until_semicolon();
+            }
+
+            if(is_reg && !init_stmt_idxs.empty())
+            {
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                blk.stmts = ::std::move(init_stmt_idxs);
+                ib.roots.push_back(add_stmt(ib.stmt_nodes, ::std::move(blk)));
+                m.initials.push_back(::std::move(ib));
             }
         }
 
@@ -8348,11 +8421,36 @@ namespace phy_engine::verilog::digital
             if(p.accept_kw(u8"signed")) { is_signed = true; }
             else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
 
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            initial_block ib{};
+            ib.stmt_nodes.reserve(32);
+            ::fast_io::vector<::std::size_t> init_stmt_idxs{};
+
             for(;;)
             {
                 auto const name{p.expect_ident(u8"expected identifier in integer declaration")};
                 if(name.empty()) { return; }
-                (void)declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, msb, lsb, true, is_signed);
+                auto& vd{declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, msb, lsb, true, is_signed)};
+
+                // SystemVerilog module-scope packed integer declaration initializers:
+                //   int i = 0;  byte b = 8'hff;
+                // Lower to an implicit `initial` block (t=0) that assigns the variable.
+                if(p.accept_sym(u8'='))
+                {
+                    auto const rhs{ep.parse_expr()};
+                    auto rhs_bits{ep.resize_to_vector(rhs, vd.bits.size(), rhs.is_signed)};
+                    stmt_node st{};
+                    st.k = stmt_node::kind::blocking_assign_vec;
+                    st.delay_ticks = 0;
+                    st.lhs_signals = vd.bits;
+                    st.rhs_roots = ::std::move(rhs_bits);
+                    for(auto const sig: st.lhs_signals)
+                    {
+                        if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    }
+                    init_stmt_idxs.push_back(add_stmt(ib.stmt_nodes, ::std::move(st)));
+                }
+
                 if(!p.accept_sym(u8',')) { break; }
             }
 
@@ -8360,6 +8458,15 @@ namespace phy_engine::verilog::digital
             {
                 p.err(p.peek(), u8"expected ';'");
                 p.skip_until_semicolon();
+            }
+
+            if(!init_stmt_idxs.empty())
+            {
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                blk.stmts = ::std::move(init_stmt_idxs);
+                ib.roots.push_back(add_stmt(ib.stmt_nodes, ::std::move(blk)));
+                m.initials.push_back(::std::move(ib));
             }
         }
 
@@ -8711,6 +8818,52 @@ namespace phy_engine::verilog::digital
                 return;
             }
 
+            auto contains_blocking_assign = [&](auto&& self, ::fast_io::vector<stmt_node> const& arena, ::std::size_t idx) noexcept -> bool
+            {
+                if(idx == SIZE_MAX || idx >= arena.size()) { return false; }
+                auto const& n{arena.index_unchecked(idx)};
+                if(n.k == stmt_node::kind::blocking_assign || n.k == stmt_node::kind::blocking_assign_vec) { return true; }
+                if(n.k == stmt_node::kind::block || n.k == stmt_node::kind::subprogram_block)
+                {
+                    for(auto const sub: n.stmts)
+                    {
+                        if(self(self, arena, sub)) { return true; }
+                    }
+                    return false;
+                }
+                if(n.k == stmt_node::kind::if_stmt)
+                {
+                    for(auto const sub: n.stmts)
+                    {
+                        if(self(self, arena, sub)) { return true; }
+                    }
+                    for(auto const sub: n.else_stmts)
+                    {
+                        if(self(self, arena, sub)) { return true; }
+                    }
+                    return false;
+                }
+                if(n.k == stmt_node::kind::case_stmt)
+                {
+                    for(auto const& ci: n.case_items)
+                    {
+                        for(auto const sub: ci.stmts)
+                        {
+                            if(self(self, arena, sub)) { return true; }
+                        }
+                    }
+                    return false;
+                }
+                if(n.k == stmt_node::kind::for_stmt || n.k == stmt_node::kind::while_stmt || n.k == stmt_node::kind::do_while_stmt)
+                {
+                    if(self(self, arena, n.init_stmt)) { return true; }
+                    if(self(self, arena, n.step_stmt)) { return true; }
+                    if(self(self, arena, n.body_stmt)) { return true; }
+                    return false;
+                }
+                return false;
+            };
+
             bool is_star{};
             bool any_edge{};
             ::fast_io::vector<::std::size_t> comb_sens{};
@@ -8751,6 +8904,11 @@ namespace phy_engine::verilog::digital
                 {
                     ek = sensitivity_event::kind::negedge;
                     any_edge = true;
+                }
+                else if(require_edge)
+                {
+                    // SystemVerilog always_ff requires edge events only.
+                    p.err(p.peek(), u8"always_ff sensitivity list must use posedge/negedge events only");
                 }
 
                 auto const name{p.expect_ident(u8"expected identifier in sensitivity list")};
@@ -8841,8 +8999,13 @@ namespace phy_engine::verilog::digital
                 ff.stmt_nodes.reserve(64);
                 proc_scope scope{};
                 scope.push_frame();
-                ff.roots.push_back(parse_proc_stmt(p, m, ff.stmt_nodes, true, __builtin_addressof(scope)));
+                auto const root{parse_proc_stmt(p, m, ff.stmt_nodes, true, __builtin_addressof(scope))};
+                ff.roots.push_back(root);
                 scope.pop_frame();
+                if(require_edge && contains_blocking_assign(contains_blocking_assign, ff.stmt_nodes, root))
+                {
+                    p.err(p.peek(), u8"always_ff requires nonblocking '<=' assignments (blocking '=' is not allowed)");
+                }
                 m.always_ffs.push_back(::std::move(ff));
                 return;
             }

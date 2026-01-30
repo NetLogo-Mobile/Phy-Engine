@@ -75,7 +75,7 @@ namespace
                         "  --mode full|structure|checkpoint          Export mode (default: full)\n"
                         "  --no-io                                  Do not generate INPUT/OUTPUT models\n"
                         "  --synth                                  Synthesize to PE primitives (no VERILOG_MODULE)\n"
-                        "  -O0|-O1|-O2|-O3|-O4|-Omax                  PE synth optimization level (default: O0)\n"
+                        "  -O0|-O1|-O2|-O3|-O4|-Omax|-Ocuda            PE synth optimization level (default: O0)\n"
                         "  --opt-level N                             PE synth optimization level (0..4)\n"
                         "  --opt-timeout-ms MS                        Omax: wall-clock budget (0 disables; default: 0)\n"
                         "  --opt-max-iter N                           Omax: max restarts/tries (default: 32)\n"
@@ -86,6 +86,9 @@ namespace
                         "  --opt-verify-exact-max-inputs N            Omax: exhaustive verify threshold (default: 12)\n"
                         "  --opt-verify-rand-vectors N                Omax: random vectors when not exhaustive (default: 256)\n"
                         "  --opt-verify-seed SEED                     Omax: verify RNG seed (default: 1)\n"
+                        "  --cuda-opt                                 Enable CUDA acceleration for some O3/Omax passes (default: off)\n"
+                        "  --cuda-device-mask MASK                    CUDA device bitmask (0 = all; e.g. 3 uses GPU0+GPU1)\n"
+                        "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
                         "  --opt-cost gate|weighted                   Omax: objective cost model (default: gate)\n"
                         "  --opt-weight-NOT N                         Omax: weighted cost (default: 1)\n"
                         "  --opt-weight-AND N                         Omax: weighted cost (default: 1)\n"
@@ -97,6 +100,9 @@ namespace
                         "  --opt-weight-IMP N                         Omax: weighted cost (default: 1)\n"
                         "  --opt-weight-NIMP N                        Omax: weighted cost (default: 1)\n"
                         "  --opt-weight-YES N                         Omax: weighted cost (default: 1)\n"
+                        "  --opt-weight-CASE_EQ N                     Omax: weighted cost (default: 1)\n"
+                        "  --opt-weight-IS_UNKNOWN N                  Omax: weighted cost (default: 1)\n"
+                        "  --report                                  Print PE synth report (passes/iterations/Omax summary)\n"
                         "  --qm-max-vars N                            Two-level minimize budget (0 disables; default: 10)\n"
                         "  --qm-max-gates N                           Two-level minimize budget (default: 64)\n"
                         "  --qm-max-primes N                          Two-level minimize budget (default: 4096)\n"
@@ -171,6 +177,7 @@ namespace
         {
             auto const a = std::string_view(argv[i]);
             if(a == "-Omax" || a == "--Omax") { lvl = 4; }
+            if(a == "-Ocuda" || a == "--Ocuda") { lvl = 4; }
             if(a.size() == 3 && a[0] == '-' && a[1] == 'O')
             {
                 char const d = a[2];
@@ -305,6 +312,7 @@ int main(int argc, char** argv)
         if(auto v = parse_toggle(argc, argv, "--opt-wires", "--no-opt-wires")) { opt_wires = *v; }
         if(auto v = parse_toggle(argc, argv, "--opt-mul2", "--no-opt-mul2")) { opt_mul2 = *v; }
         if(auto v = parse_toggle(argc, argv, "--opt-adders", "--no-opt-adders")) { opt_adders = *v; }
+        bool const show_report = has_flag(argc, argv, "--report");
 
         // Omax / budget knobs (also affect O3 since they are per-pass/global budgets).
         std::size_t omax_timeout_ms = 0;
@@ -344,6 +352,35 @@ int main(int argc, char** argv)
             omax_rand_seed = static_cast<std::uint64_t>(*v);
         }
         bool const omax_allow_regress = has_flag(argc, argv, "--opt-allow-regress");
+
+        bool const ocuda = has_flag(argc, argv, "-Ocuda") || has_flag(argc, argv, "--Ocuda");
+        bool const cuda_opt = has_flag(argc, argv, "--cuda-opt") || ocuda;
+        std::uint32_t cuda_device_mask = 0;
+        if(auto s = arg_after(argc, argv, "--cuda-device-mask"))
+        {
+            auto v = parse_size(*s);
+            if(!v || *v > 0xFFFFFFFFull)
+            {
+                ::fast_io::io::perr(::fast_io::err(), "error: invalid --cuda-device-mask\n");
+                return 12;
+            }
+            cuda_device_mask = static_cast<std::uint32_t>(*v);
+        }
+        std::size_t cuda_min_batch = 1024;
+        if(auto s = arg_after(argc, argv, "--cuda-min-batch"))
+        {
+            auto v = parse_size(*s);
+            if(!v)
+            {
+                ::fast_io::io::perr(::fast_io::err(), "error: invalid --cuda-min-batch\n");
+                return 12;
+            }
+            cuda_min_batch = *v;
+        }
+        else if(ocuda)
+        {
+            cuda_min_batch = 64;
+        }
 
         bool const omax_verify = has_flag(argc, argv, "--opt-verify");
         std::size_t omax_verify_exact_max_inputs = 12;
@@ -405,6 +442,8 @@ int main(int argc, char** argv)
         auto w_imp = std::uint16_t{1};
         auto w_nimp = std::uint16_t{1};
         auto w_yes = std::uint16_t{1};
+        auto w_case_eq = std::uint16_t{1};
+        auto w_is_unknown = std::uint16_t{1};
         auto parse_w16 = [&](char const* flag, std::uint16_t& out) -> bool
         {
             if(auto s = arg_after(argc, argv, flag))
@@ -418,7 +457,8 @@ int main(int argc, char** argv)
         if(!parse_w16("--opt-weight-NOT", w_not) || !parse_w16("--opt-weight-AND", w_and) || !parse_w16("--opt-weight-OR", w_or) ||
            !parse_w16("--opt-weight-XOR", w_xor) || !parse_w16("--opt-weight-XNOR", w_xnor) || !parse_w16("--opt-weight-NAND", w_nand) ||
            !parse_w16("--opt-weight-NOR", w_nor) || !parse_w16("--opt-weight-IMP", w_imp) || !parse_w16("--opt-weight-NIMP", w_nimp) ||
-           !parse_w16("--opt-weight-YES", w_yes))
+           !parse_w16("--opt-weight-YES", w_yes) || !parse_w16("--opt-weight-CASE_EQ", w_case_eq) ||
+           !parse_w16("--opt-weight-IS_UNKNOWN", w_is_unknown))
         {
             ::fast_io::io::perr(::fast_io::err(), "error: invalid --opt-weight-*\n");
             return 12;
@@ -449,6 +489,13 @@ int main(int argc, char** argv)
         {
             ::fast_io::io::perr(::fast_io::err(), "error: invalid budget option (expects an integer)\n");
             return 12;
+        }
+
+        if(ocuda)
+        {
+            // Improve optimization quality under -Ocuda by expanding bounded TT windows by default.
+            if(!arg_after(argc, argv, "--resub-max-vars")) { resub_max_vars = std::max<std::size_t>(resub_max_vars, 10u); }
+            if(!arg_after(argc, argv, "--sweep-max-vars")) { sweep_max_vars = std::max<std::size_t>(sweep_max_vars, 10u); }
         }
         bool const allow_inout = has_flag(argc, argv, "--allow-inout");
         bool const allow_multi_driver = has_flag(argc, argv, "--allow-multi-driver");
@@ -557,6 +604,7 @@ int main(int argc, char** argv)
         {
             ::phy_engine::verilog::digital::pe_synth_error err{};
             ::phy_engine::verilog::digital::pe_synth_options opt{};
+            ::phy_engine::verilog::digital::pe_synth_report rep{};
             opt.allow_inout = allow_inout;
             opt.allow_multi_driver = allow_multi_driver;
             opt.assume_binary_inputs = assume_binary_inputs;
@@ -564,6 +612,13 @@ int main(int argc, char** argv)
             opt.optimize_wires = opt_wires;
             opt.optimize_mul2 = opt_mul2;
             opt.optimize_adders = opt_adders;
+            opt.cuda_enable = cuda_opt;
+            opt.cuda_device_mask = cuda_device_mask;
+            opt.cuda_min_batch = cuda_min_batch;
+            if(ocuda)
+            {
+                opt.decomp_var_order_tries = std::max<std::size_t>(opt.decomp_var_order_tries, 16u);
+            }
 
             opt.omax_timeout_ms = omax_timeout_ms;
             opt.omax_max_iter = omax_max_iter;
@@ -585,6 +640,8 @@ int main(int argc, char** argv)
             opt.omax_gate_weights.imp_w = w_imp;
             opt.omax_gate_weights.nimp_w = w_nimp;
             opt.omax_gate_weights.yes_w = w_yes;
+            opt.omax_gate_weights.case_eq_w = w_case_eq;
+            opt.omax_gate_weights.is_unknown_w = w_is_unknown;
 
             opt.qm_max_vars = qm_max_vars;
             opt.qm_max_gates = qm_max_gates;
@@ -599,11 +656,52 @@ int main(int argc, char** argv)
             opt.max_total_models = max_total_models;
             opt.max_total_logic_gates = max_total_logic_gates;
 
+            opt.report_enable = show_report;
+            opt.report = show_report ? __builtin_addressof(rep) : nullptr;
+
             ::fast_io::io::perr(::fast_io::err(), "[verilog2penl] synthesize_to_pe_netlist\n");
             if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, port_nodes, &err, opt))
             {
                 ::fast_io::io::perr(::fast_io::u8err(), u8"error: synthesize_to_pe_netlist failed: ", u8sv{err.message.data(), err.message.size()}, u8"\n");
                 return 14;
+            }
+
+            if(show_report)
+            {
+                ::fast_io::io::perr(::fast_io::err(), "[verilog2penl] pe_synth report:\n");
+                if(!rep.omax_summary.empty())
+                {
+                    ::fast_io::io::perr(::fast_io::u8err(), u8"  ", u8sv{rep.omax_summary.data(), rep.omax_summary.size()}, u8"\n");
+                }
+                if(!rep.iter_gate_count.empty())
+                {
+                    ::fast_io::io::perr(::fast_io::err(), "  iter_gates:");
+                    for(auto v: rep.iter_gate_count) { ::fast_io::io::perr(::fast_io::err(), " ", v); }
+                    ::fast_io::io::perr(::fast_io::err(), "\n");
+                }
+                for(auto const& ps: rep.passes)
+                {
+                    ::fast_io::io::perr(::fast_io::u8err(),
+                                        u8"  pass ",
+                                        ps.pass,
+                                        u8": ",
+                                        ps.before,
+                                        u8" -> ",
+                                        ps.after,
+                                        u8"\n");
+                }
+                if(!rep.omax_best_cost.empty())
+                {
+                    ::fast_io::io::perr(::fast_io::err(), "  omax_best_cost:");
+                    for(auto v: rep.omax_best_cost) { ::fast_io::io::perr(::fast_io::err(), " ", v); }
+                    ::fast_io::io::perr(::fast_io::err(), "\n");
+                }
+                if(!rep.omax_best_gate_count.empty())
+                {
+                    ::fast_io::io::perr(::fast_io::err(), "  omax_best_gates:");
+                    for(auto v: rep.omax_best_gate_count) { ::fast_io::io::perr(::fast_io::err(), " ", v); }
+                    ::fast_io::io::perr(::fast_io::err(), "\n");
+                }
             }
         }
         else
