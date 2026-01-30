@@ -3,7 +3,13 @@ cmake_minimum_required(VERSION 3.15)
 project(test_phy_engine LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-set(CMAKE_BUILD_TYPE Debug)
+
+# Respect user-provided build type (e.g. -DCMAKE_BUILD_TYPE=Release).
+# If not set (single-config generators like Ninja/Make), default to Release.
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/../include)
 
