@@ -1740,6 +1740,22 @@ namespace phy_engine::verilog::digital
                                                                ::std::size_t cone_count,
                                                                ::std::uint32_t stride_blocks,
                                                                ::std::uint64_t* out_blocks) noexcept;
+
+        // CUDA bitset helper: keep a row-major u64 matrix on device(s) for repeated masked popcount / any checks.
+        // This is used to accelerate QM/Espresso "cover/search" bitset scoring when available.
+        extern "C" void* phy_engine_pe_synth_cuda_bitset_matrix_create(::std::uint32_t device_mask,
+                                                                       ::std::uint64_t const* rows,
+                                                                       ::std::size_t row_count,
+                                                                       ::std::uint32_t stride_words) noexcept;
+        extern "C" void phy_engine_pe_synth_cuda_bitset_matrix_destroy(void* handle) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_row_and_popcount(void* handle,
+                                                                                ::std::uint64_t const* mask,
+                                                                                ::std::uint32_t mask_words,
+                                                                                ::std::uint32_t* out_counts) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(void* handle,
+                                                                           ::std::uint64_t const* mask,
+                                                                           ::std::uint32_t mask_words,
+                                                                           ::std::uint8_t* out_any) noexcept;
 #endif
 
         [[nodiscard]] inline bool cuda_eval_u64_cones(::std::uint32_t device_mask,
@@ -1776,6 +1792,87 @@ namespace phy_engine::verilog::digital
             (void)cone_count;
             (void)stride_blocks;
             (void)out_blocks;
+            return false;
+#endif
+        }
+
+        struct cuda_bitset_matrix_raii
+        {
+            void* handle{};
+
+            cuda_bitset_matrix_raii() noexcept = default;
+            cuda_bitset_matrix_raii(cuda_bitset_matrix_raii const&) = delete;
+            cuda_bitset_matrix_raii& operator=(cuda_bitset_matrix_raii const&) = delete;
+
+            cuda_bitset_matrix_raii(cuda_bitset_matrix_raii&& o) noexcept : handle(o.handle) { o.handle = nullptr; }
+            cuda_bitset_matrix_raii& operator=(cuda_bitset_matrix_raii&& o) noexcept
+            {
+                if(this == &o) { return *this; }
+                reset();
+                handle = o.handle;
+                o.handle = nullptr;
+                return *this;
+            }
+
+            ~cuda_bitset_matrix_raii() noexcept { reset(); }
+
+            void reset() noexcept
+            {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+                if(handle != nullptr) { phy_engine_pe_synth_cuda_bitset_matrix_destroy(handle); }
+#endif
+                handle = nullptr;
+            }
+        };
+
+        [[nodiscard]] inline cuda_bitset_matrix_raii cuda_bitset_matrix_create(::std::uint32_t device_mask,
+                                                                               ::std::uint64_t const* rows,
+                                                                               ::std::size_t row_count,
+                                                                               ::std::uint32_t stride_words) noexcept
+        {
+            cuda_bitset_matrix_raii r{};
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(rows == nullptr || row_count == 0u || stride_words == 0u) { return r; }
+            r.handle = phy_engine_pe_synth_cuda_bitset_matrix_create(device_mask, rows, row_count, stride_words);
+#else
+            (void)device_mask;
+            (void)rows;
+            (void)row_count;
+            (void)stride_words;
+#endif
+            return r;
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_row_and_popcount(cuda_bitset_matrix_raii const& m,
+                                                                      ::std::uint64_t const* mask,
+                                                                      ::std::uint32_t mask_words,
+                                                                      ::std::uint32_t* out_counts) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || mask == nullptr || out_counts == nullptr || mask_words == 0u) { return false; }
+            return phy_engine_pe_synth_cuda_bitset_matrix_row_and_popcount(m.handle, mask, mask_words, out_counts);
+#else
+            (void)m;
+            (void)mask;
+            (void)mask_words;
+            (void)out_counts;
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_row_any_and(cuda_bitset_matrix_raii const& m,
+                                                                 ::std::uint64_t const* mask,
+                                                                 ::std::uint32_t mask_words,
+                                                                 ::std::uint8_t* out_any) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || mask == nullptr || out_any == nullptr || mask_words == 0u) { return false; }
+            return phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(m.handle, mask, mask_words, out_any);
+#else
+            (void)m;
+            (void)mask;
+            (void)mask_words;
+            (void)out_any;
             return false;
 #endif
         }
@@ -9548,13 +9645,19 @@ namespace phy_engine::verilog::digital
             }
 
             // Coverage bitsets per output (over indices in on_list[o]).
-            ::std::vector<::std::vector<::std::vector<::std::uint64_t>>> cov{};
+            ::std::vector<std::size_t> blocks_by_out{};
+            blocks_by_out.resize(outputs);
+            ::std::vector<::std::vector<::std::uint64_t>> cov{};
             cov.resize(outputs);
             for(std::size_t o{}; o < outputs; ++o)
             {
                 auto const blocks = (on_list[o].size() + 63u) / 64u;
-                cov[o].resize(cubes.size());
-                for(auto& v: cov[o]) { v.assign(blocks, 0ull); }
+                blocks_by_out[o] = blocks;
+                cov[o].assign(cubes.size() * blocks, 0ull);
+                auto cov_row = [&](std::size_t ci) noexcept -> ::std::uint64_t*
+                {
+                    return cov[o].data() + ci * blocks;
+                };
                 for(std::size_t ci{}; ci < cubes.size(); ++ci)
                 {
                     // A cube can only be used for output `o` if it does not cover any OFF minterm for that output.
@@ -9571,7 +9674,7 @@ namespace phy_engine::verilog::digital
                     if(!valid) { continue; }
                     for(std::size_t mi{}; mi < on_list[o].size(); ++mi)
                     {
-                        if(implicant_covers(cubes[ci], on_list[o][mi])) { cov[o][ci][mi / 64u] |= (1ull << (mi % 64u)); }
+                        if(implicant_covers(cubes[ci], on_list[o][mi])) { cov_row(ci)[mi / 64u] |= (1ull << (mi % 64u)); }
                     }
                 }
             }
@@ -9624,8 +9727,46 @@ namespace phy_engine::verilog::digital
                 return false;
             };
 
+            // Optional CUDA acceleration for multi-output masked popcount scoring (best-effort).
+            ::std::vector<cuda_bitset_matrix_raii> cov_gpu{};
+            ::std::vector<::std::vector<::std::uint32_t>> gains_gpu{};
+            ::std::vector<bool> use_cuda_gains{};
+            cov_gpu.resize(outputs);
+            gains_gpu.resize(outputs);
+            use_cuda_gains.assign(outputs, false);
+            if(opt.cuda_enable && !cubes.empty())
+            {
+                for(std::size_t o{}; o < outputs; ++o)
+                {
+                    auto const blocks = blocks_by_out[o];
+                    if(blocks == 0u) { continue; }
+                    auto const workload = cubes.size() * blocks;
+                    if(workload < opt.cuda_min_batch) { continue; }
+                    cov_gpu[o] = cuda_bitset_matrix_create(opt.cuda_device_mask, cov[o].data(), cubes.size(), static_cast<::std::uint32_t>(blocks));
+                    if(cov_gpu[o].handle != nullptr)
+                    {
+                        gains_gpu[o].resize(cubes.size());
+                        use_cuda_gains[o] = true;
+                    }
+                }
+            }
+
             while(any_uncovered())
             {
+                for(std::size_t o{}; o < outputs; ++o)
+                {
+                    if(!use_cuda_gains[o]) { continue; }
+                    auto const blocks = blocks_by_out[o];
+                    if(!cuda_bitset_matrix_row_and_popcount(cov_gpu[o],
+                                                           uncovered[o].data(),
+                                                           static_cast<::std::uint32_t>(blocks),
+                                                           gains_gpu[o].data()))
+                    {
+                        use_cuda_gains[o] = false;
+                        gains_gpu[o].clear();
+                    }
+                }
+
                 std::size_t best_ci{static_cast<std::size_t>(-1)};
                 std::size_t best_gain{};
                 std::int64_t best_score{::std::numeric_limits<std::int64_t>::min()};
@@ -9640,7 +9781,16 @@ namespace phy_engine::verilog::digital
                     for(std::size_t o{}; o < outputs; ++o)
                     {
                         std::size_t og{};
-                        for(std::size_t b{}; b < uncovered[o].size(); ++b) { og += popcount64(cov[o][ci][b] & uncovered[o][b]); }
+                        auto const blocks = blocks_by_out[o];
+                        if(use_cuda_gains[o])
+                        {
+                            og = static_cast<std::size_t>(gains_gpu[o][ci]);
+                        }
+                        else
+                        {
+                            auto const* row = cov[o].data() + ci * blocks;
+                            for(std::size_t b{}; b < blocks; ++b) { og += popcount64(row[b] & uncovered[o][b]); }
+                        }
                         if(og)
                         {
                             hits[o] = true;
@@ -9685,11 +9835,13 @@ namespace phy_engine::verilog::digital
                 for(std::size_t o{}; o < outputs; ++o)
                 {
                     bool contributed{};
-                    for(std::size_t b{}; b < uncovered[o].size(); ++b)
+                    auto const blocks = blocks_by_out[o];
+                    auto const* row = cov[o].data() + best_ci * blocks;
+                    for(std::size_t b{}; b < blocks; ++b)
                     {
-                        auto const hit = cov[o][best_ci][b] & uncovered[o][b];
+                        auto const hit = row[b] & uncovered[o][b];
                         if(hit) { contributed = true; }
-                        uncovered[o][b] &= ~cov[o][best_ci][b];
+                        uncovered[o][b] &= ~row[b];
                     }
                     if(contributed)
                     {
@@ -9712,13 +9864,29 @@ namespace phy_engine::verilog::digital
                 if(picks.empty()) { return sol; }
 
                 // Count coverage per ON minterm.
-                ::std::vector<unsigned> cnt{};
+                auto const blocks = blocks_by_out[o];
+                auto cov_row_o = [&](std::size_t ci) noexcept -> ::std::uint64_t const*
+                {
+                    return cov[o].data() + ci * blocks;
+                };
+
+                ::std::vector<::std::uint16_t> cnt{};
                 cnt.assign(on.size(), 0u);
                 for(auto const ci: picks)
                 {
-                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    auto const* row = cov_row_o(ci);
+                    for(std::size_t b{}; b < blocks; ++b)
                     {
-                        if(implicant_covers(cubes[ci], on[mi])) { ++cnt[mi]; }
+                        auto x = row[b];
+                        while(x)
+                        {
+                            auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                            x &= (x - 1ull);
+                            auto const idx = b * 64u + static_cast<std::size_t>(bit);
+                            if(idx >= on.size()) { continue; }
+                            auto& v = cnt[idx];
+                            if(v != ::std::numeric_limits<::std::uint16_t>::max()) { ++v; }
+                        }
                     }
                 }
 
@@ -9726,24 +9894,48 @@ namespace phy_engine::verilog::digital
                 {
                     auto const ci = picks[i];
                     bool redundant{true};
-                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    bool covers_any{};
                     {
-                        if(!implicant_covers(cubes[ci], on[mi])) { continue; }
-                        if(cnt[mi] <= 1u)
+                        auto const* row = cov_row_o(ci);
+                        for(std::size_t b{}; b < blocks && redundant; ++b)
                         {
-                            redundant = false;
-                            break;
+                            auto x = row[b];
+                            while(x)
+                            {
+                                auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                                x &= (x - 1ull);
+                                auto const idx = b * 64u + static_cast<std::size_t>(bit);
+                                if(idx >= on.size()) { continue; }
+                                covers_any = true;
+                                if(cnt[idx] <= 1u)
+                                {
+                                    redundant = false;
+                                    break;
+                                }
+                            }
                         }
                     }
+                    if(!covers_any) { redundant = true; }
                     if(!redundant)
                     {
                         ++i;
                         continue;
                     }
-                    for(std::size_t mi{}; mi < on.size(); ++mi)
                     {
-                        if(!implicant_covers(cubes[ci], on[mi])) { continue; }
-                        if(cnt[mi]) { --cnt[mi]; }
+                        auto const* row = cov_row_o(ci);
+                        for(std::size_t b{}; b < blocks; ++b)
+                        {
+                            auto x = row[b];
+                            while(x)
+                            {
+                                auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                                x &= (x - 1ull);
+                                auto const idx = b * 64u + static_cast<std::size_t>(bit);
+                                if(idx >= on.size()) { continue; }
+                                auto& v = cnt[idx];
+                                if(v) { --v; }
+                            }
+                        }
                     }
                     picks[i] = picks.back();
                     picks.pop_back();
@@ -10640,9 +10832,17 @@ namespace phy_engine::verilog::digital
             }
 
             auto const blocks = (on.size() + 63u) / 64u;
-            ::std::vector<::std::vector<::std::uint64_t>> cov{};
-            cov.resize(primes.size());
-            for(auto& v: cov) { v.assign(blocks, 0ull); }
+            ::std::vector<::std::uint64_t> cov{};
+            cov.assign(primes.size() * blocks, 0ull);
+
+            auto cov_row = [&](std::size_t pi) noexcept -> ::std::uint64_t*
+            {
+                return cov.data() + pi * blocks;
+            };
+            auto cov_row_c = [&](std::size_t pi) noexcept -> ::std::uint64_t const*
+            {
+                return cov.data() + pi * blocks;
+            };
 
             ::std::vector<::std::size_t> prime_cost{};
             prime_cost.resize(primes.size());
@@ -10652,7 +10852,7 @@ namespace phy_engine::verilog::digital
                 prime_cost[pi] = qm_cover_cost(primes, ::std::vector<std::size_t>{pi}, var_count, opt);
                 for(std::size_t mi{}; mi < on.size(); ++mi)
                 {
-                    if(implicant_covers(primes[pi], on[mi])) { cov[pi][mi / 64u] |= (1ull << (mi % 64u)); }
+                    if(implicant_covers(primes[pi], on[mi])) { cov_row(pi)[mi / 64u] |= (1ull << (mi % 64u)); }
                 }
             }
 
@@ -10676,7 +10876,7 @@ namespace phy_engine::verilog::digital
             {
                 for(std::size_t mi{}; mi < on.size(); ++mi)
                 {
-                    if((cov[pi][mi / 64u] >> (mi % 64u)) & 1ull)
+                    if((cov_row_c(pi)[mi / 64u] >> (mi % 64u)) & 1ull)
                     {
                         ++cover_count[mi];
                         last_prime[mi] = pi;
@@ -10692,7 +10892,8 @@ namespace phy_engine::verilog::digital
                 if(pi >= primes.size() || picked[pi]) { return; }
                 picked[pi] = true;
                 sol.pick.push_back(pi);
-                for(std::size_t b{}; b < blocks; ++b) { uncovered[b] &= ~cov[pi][b]; }
+                auto const* r = cov_row_c(pi);
+                for(std::size_t b{}; b < blocks; ++b) { uncovered[b] &= ~r[b]; }
             };
 
             bool changed{true};
@@ -10719,24 +10920,68 @@ namespace phy_engine::verilog::digital
                 return false;
             };
 
+            // Optional CUDA acceleration for masked popcount scoring (best-effort).
+            // We keep the cover matrix on the device(s) and only stream the changing mask (`uncovered`) per iteration.
+            cuda_bitset_matrix_raii cov_gpu{};
+            bool use_cuda_gains{false};
+            ::std::vector<::std::uint32_t> gains_gpu{};
+            if(opt.cuda_enable && blocks != 0u && !primes.empty())
+            {
+                auto const workload = primes.size() * blocks;
+                if(workload >= opt.cuda_min_batch)
+                {
+                    cov_gpu = cuda_bitset_matrix_create(opt.cuda_device_mask, cov.data(), primes.size(), static_cast<::std::uint32_t>(blocks));
+                    if(cov_gpu.handle != nullptr)
+                    {
+                        gains_gpu.resize(primes.size());
+                        use_cuda_gains = true;
+                    }
+                }
+            }
+
             while(any_uncovered())
             {
+                if(use_cuda_gains)
+                {
+                    if(!cuda_bitset_matrix_row_and_popcount(cov_gpu, uncovered.data(), static_cast<::std::uint32_t>(blocks), gains_gpu.data()))
+                    {
+                        use_cuda_gains = false;
+                        gains_gpu.clear();
+                    }
+                }
+
                 std::size_t best_pi{static_cast<std::size_t>(-1)};
                 std::size_t best_gain{};
                 std::size_t best_cost{static_cast<std::size_t>(-1)};
                 std::int64_t best_score{::std::numeric_limits<std::int64_t>::min()};
+
+                struct cand_t
+                {
+                    std::size_t pi{};
+                    std::size_t gain{};
+                    std::size_t cost{};
+                    std::int64_t score{};
+                };
+                ::std::vector<cand_t> cands{};
+                cands.reserve(64);
 
                 for(std::size_t pi{}; pi < primes.size(); ++pi)
                 {
                     if(picked[pi]) { continue; }
 
                     std::size_t gain{};
-                    for(std::size_t b{}; b < blocks; ++b) { gain += popcount64(cov[pi][b] & uncovered[b]); }
+                    if(use_cuda_gains) { gain = static_cast<std::size_t>(gains_gpu[pi]); }
+                    else
+                    {
+                        auto const* r = cov_row_c(pi);
+                        for(std::size_t b{}; b < blocks; ++b) { gain += popcount64(r[b] & uncovered[b]); }
+                    }
                     if(gain == 0) { continue; }
 
                     auto const cost = prime_cost[pi];
                     // Score: prioritize coverage, then lower cost.
                     auto const score = static_cast<std::int64_t>(gain) * 64 - static_cast<std::int64_t>(cost);
+                    if(cands.size() < 64u) { cands.push_back(cand_t{pi, gain, cost, score}); }
                     if(score > best_score || (score == best_score && (gain > best_gain || (gain == best_gain && cost < best_cost))))
                     {
                         best_score = score;
@@ -10751,7 +10996,150 @@ namespace phy_engine::verilog::digital
                     sol.cost = static_cast<std::size_t>(-1);
                     return sol;
                 }
+
+                // Bounded 2-step lookahead (deterministic): among the top candidates, pick one that leaves a good next move.
+                // This tends to improve greedy cover quality when the prime set is large.
+                if(cands.size() >= 2u && blocks != 0u)
+                {
+                    ::std::sort(cands.begin(),
+                                cands.end(),
+                                [](cand_t const& a, cand_t const& b) noexcept
+                                {
+                                    if(a.score != b.score) { return a.score > b.score; }
+                                    if(a.gain != b.gain) { return a.gain > b.gain; }
+                                    return a.cost < b.cost;
+                                });
+
+                    constexpr std::size_t lookahead_k = 16u;
+                    auto const k = (cands.size() < lookahead_k) ? cands.size() : lookahead_k;
+
+                    ::std::vector<::std::uint64_t> tmp_uncovered{};
+                    tmp_uncovered.resize(blocks);
+
+                    std::size_t best2_pi = best_pi;
+                    std::int64_t best2_score = best_score;
+                    std::size_t best2_gain = best_gain;
+                    std::size_t best2_cost = best_cost;
+                    std::int64_t best2_combined = ::std::numeric_limits<std::int64_t>::min();
+
+                    for(std::size_t i{}; i < k; ++i)
+                    {
+                        auto const p = cands[i].pi;
+                        auto const* pr = cov_row_c(p);
+                        for(std::size_t b{}; b < blocks; ++b) { tmp_uncovered[b] = uncovered[b] & ~pr[b]; }
+
+                        std::int64_t best_next_score = ::std::numeric_limits<std::int64_t>::min();
+                        for(std::size_t j{}; j < k; ++j)
+                        {
+                            auto const q = cands[j].pi;
+                            if(q == p) { continue; }
+                            auto const* qr = cov_row_c(q);
+                            std::size_t g2{};
+                            for(std::size_t b{}; b < blocks; ++b) { g2 += popcount64(qr[b] & tmp_uncovered[b]); }
+                            if(g2 == 0u) { continue; }
+                            auto const c2 = prime_cost[q];
+                            auto const s2 = static_cast<std::int64_t>(g2) * 64 - static_cast<std::int64_t>(c2);
+                            if(s2 > best_next_score) { best_next_score = s2; }
+                        }
+
+                        auto const combined = cands[i].score + ((best_next_score == ::std::numeric_limits<std::int64_t>::min()) ? 0 : best_next_score);
+                        if(combined > best2_combined)
+                        {
+                            best2_combined = combined;
+                            best2_pi = p;
+                            best2_score = cands[i].score;
+                            best2_gain = cands[i].gain;
+                            best2_cost = cands[i].cost;
+                        }
+                    }
+
+                    if(best2_pi != best_pi)
+                    {
+                        best_pi = best2_pi;
+                        best_score = best2_score;
+                        best_gain = best2_gain;
+                        best_cost = best2_cost;
+                    }
+                }
+
                 apply_pick(best_pi);
+            }
+
+            // Irredundant cleanup (bitset-based): drop any selected prime that covers no unique ON minterm.
+            // This improves the greedy cover (especially after 2-step lookahead) at low extra cost.
+            if(!sol.pick.empty() && blocks != 0u)
+            {
+                ::std::vector<::std::uint16_t> cnt{};
+                cnt.assign(on.size(), 0u);
+
+                auto add_counts = [&](std::size_t pi) noexcept
+                {
+                    auto const* row = cov_row_c(pi);
+                    for(std::size_t b{}; b < blocks; ++b)
+                    {
+                        auto x = row[b];
+                        while(x)
+                        {
+                            auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                            x &= (x - 1ull);
+                            auto const idx = b * 64u + static_cast<std::size_t>(bit);
+                            if(idx >= on.size()) { continue; }
+                            auto& v = cnt[idx];
+                            if(v != ::std::numeric_limits<::std::uint16_t>::max()) { ++v; }
+                        }
+                    }
+                };
+
+                for(auto const pi: sol.pick) { add_counts(pi); }
+
+                for(std::size_t i{}; i < sol.pick.size();)
+                {
+                    auto const pi = sol.pick[i];
+                    auto const* row = cov_row_c(pi);
+                    bool redundant{true};
+                    bool covers_any{};
+                    for(std::size_t b{}; b < blocks && redundant; ++b)
+                    {
+                        auto x = row[b];
+                        while(x)
+                        {
+                            auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                            x &= (x - 1ull);
+                            auto const idx = b * 64u + static_cast<std::size_t>(bit);
+                            if(idx >= on.size()) { continue; }
+                            covers_any = true;
+                            if(cnt[idx] <= 1u)
+                            {
+                                redundant = false;
+                                break;
+                            }
+                        }
+                    }
+                    if(!covers_any) { redundant = true; }
+                    if(!redundant)
+                    {
+                        ++i;
+                        continue;
+                    }
+
+                    // Remove prime and decrement its covered counts.
+                    for(std::size_t b{}; b < blocks; ++b)
+                    {
+                        auto x = row[b];
+                        while(x)
+                        {
+                            auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                            x &= (x - 1ull);
+                            auto const idx = b * 64u + static_cast<std::size_t>(bit);
+                            if(idx >= on.size()) { continue; }
+                            auto& v = cnt[idx];
+                            if(v) { --v; }
+                        }
+                    }
+
+                    sol.pick[i] = sol.pick.back();
+                    sol.pick.pop_back();
+                }
             }
 
             sol.cost = qm_cover_cost(primes, sol.pick, var_count, opt);

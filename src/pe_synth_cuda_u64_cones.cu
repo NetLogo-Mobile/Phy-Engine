@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <thread>
 #include <vector>
 
@@ -176,6 +177,71 @@ namespace phy_engine::verilog::digital::details
             out_blocks[cone_idx * static_cast<std::size_t>(stride_blocks) + word_idx] = val[16u + (gc - 1u)] & word_mask;
         }
 
+        // Row-major u64 bitset matrix helpers (QM/Espresso cover scoring).
+        // Layout: rows[row * stride_words + w]
+        __global__ void bitset_row_and_popcount_kernel(std::uint64_t const* rows,
+                                                       std::size_t row_count,
+                                                       std::uint32_t stride_words,
+                                                       std::uint64_t const* mask,
+                                                       std::uint32_t* out_counts) noexcept
+        {
+            auto const row = static_cast<std::size_t>(blockIdx.x);
+            if(row >= row_count) { return; }
+
+            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
+                           static_cast<std::uint32_t>(threadIdx.x);
+            std::uint32_t v{};
+            if(w < stride_words)
+            {
+                auto const x = rows[row * static_cast<std::size_t>(stride_words) + w] & mask[w];
+                v = static_cast<std::uint32_t>(__popcll(static_cast<unsigned long long>(x)));
+            }
+
+            extern __shared__ std::uint32_t sh[];
+            sh[threadIdx.x] = v;
+            __syncthreads();
+
+            // Tree reduction (blockDim.x is power-of-2).
+            for(unsigned s = blockDim.x >> 1u; s > 0u; s >>= 1u)
+            {
+                if(threadIdx.x < s) { sh[threadIdx.x] += sh[threadIdx.x + s]; }
+                __syncthreads();
+            }
+
+            if(threadIdx.x == 0u) { atomicAdd(out_counts + row, sh[0]); }
+        }
+
+        __global__ void bitset_row_any_and_kernel(std::uint64_t const* rows,
+                                                  std::size_t row_count,
+                                                  std::uint32_t stride_words,
+                                                  std::uint64_t const* mask,
+                                                  std::uint32_t* out_any) noexcept
+        {
+            auto const row = static_cast<std::size_t>(blockIdx.x);
+            if(row >= row_count) { return; }
+
+            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
+                           static_cast<std::uint32_t>(threadIdx.x);
+            std::uint8_t v{};
+            if(w < stride_words)
+            {
+                auto const x = rows[row * static_cast<std::size_t>(stride_words) + w] & mask[w];
+                v = static_cast<std::uint8_t>(x != 0ull);
+            }
+
+            __shared__ std::uint8_t sh8[256];
+            sh8[threadIdx.x] = v;
+            __syncthreads();
+
+            for(unsigned s = blockDim.x >> 1u; s > 0u; s >>= 1u)
+            {
+                if(threadIdx.x < s) { sh8[threadIdx.x] = static_cast<std::uint8_t>(sh8[threadIdx.x] | sh8[threadIdx.x + s]); }
+                __syncthreads();
+            }
+
+            if(threadIdx.x == 0u && sh8[0] != 0u) { atomicOr(out_any + row, 1u); }
+        }
+
         struct device_chunk
         {
             int device{};
@@ -281,6 +347,157 @@ namespace phy_engine::verilog::digital::details
             (void)cudaStreamDestroy(stream);
 
             chunk.ok = ok;
+            return ok;
+        }
+
+        struct bitset_matrix_device
+        {
+            int device{};
+            std::size_t begin{};
+            std::size_t end{};
+            std::uint32_t stride_words{};
+            cudaStream_t stream{};
+
+            std::uint64_t* d_rows{};
+            std::uint64_t* d_mask{};
+            std::uint32_t* d_popc{};
+            std::uint32_t* d_any{};
+
+            bool ok{};
+        };
+
+        struct bitset_matrix_handle
+        {
+            std::uint32_t device_mask{};
+            std::size_t row_count{};
+            std::uint32_t stride_words{};
+            std::vector<bitset_matrix_device> devs{};
+        };
+
+        [[nodiscard]] inline bool init_bitset_matrix_device(bitset_matrix_device& d,
+                                                            std::uint64_t const* rows,
+                                                            std::size_t row_count,
+                                                            std::uint32_t stride_words) noexcept
+        {
+            d.ok = false;
+            if(d.end <= d.begin) { d.ok = true; return true; }
+
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+            if(cudaStreamCreateWithFlags(&d.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
+
+            auto const n = d.end - d.begin;
+            auto const words = n * static_cast<std::size_t>(stride_words);
+            auto const rows_bytes = words * sizeof(std::uint64_t);
+            auto const mask_bytes = static_cast<std::size_t>(stride_words) * sizeof(std::uint64_t);
+            auto const popc_bytes = n * sizeof(std::uint32_t);
+            auto const any_bytes = n * sizeof(std::uint32_t);
+
+            bool ok = true;
+            if(cudaMalloc(reinterpret_cast<void**>(&d.d_rows), rows_bytes) != cudaSuccess) { ok = false; }
+            if(ok && cudaMalloc(reinterpret_cast<void**>(&d.d_mask), mask_bytes) != cudaSuccess) { ok = false; }
+            if(ok && cudaMalloc(reinterpret_cast<void**>(&d.d_popc), popc_bytes) != cudaSuccess) { ok = false; }
+            if(ok && cudaMalloc(reinterpret_cast<void**>(&d.d_any), any_bytes) != cudaSuccess) { ok = false; }
+
+            if(ok && cudaMemcpyAsync(d.d_rows,
+                                     rows + d.begin * static_cast<std::size_t>(stride_words),
+                                     rows_bytes,
+                                     cudaMemcpyHostToDevice,
+                                     d.stream) != cudaSuccess)
+            {
+                ok = false;
+            }
+
+            if(ok && cudaStreamSynchronize(d.stream) != cudaSuccess) { ok = false; }
+            d.ok = ok;
+            return ok;
+        }
+
+        inline void destroy_bitset_matrix_device(bitset_matrix_device& d) noexcept
+        {
+            if(d.d_any != nullptr) { (void)cudaFree(d.d_any); }
+            if(d.d_popc != nullptr) { (void)cudaFree(d.d_popc); }
+            if(d.d_mask != nullptr) { (void)cudaFree(d.d_mask); }
+            if(d.d_rows != nullptr) { (void)cudaFree(d.d_rows); }
+            if(d.stream != nullptr) { (void)cudaStreamDestroy(d.stream); }
+            d = bitset_matrix_device{};
+        }
+
+        [[nodiscard]] inline bool bitset_matrix_row_and_popcount_on_device(bitset_matrix_device& d,
+                                                                           std::uint64_t const* mask,
+                                                                           std::uint32_t mask_words,
+                                                                           std::uint32_t* out_counts) noexcept
+        {
+            d.ok = false;
+            if(d.end <= d.begin) { d.ok = true; return true; }
+            if(mask == nullptr || out_counts == nullptr) { return false; }
+            if(mask_words != d.stride_words) { return false; }
+
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+
+            auto const n = d.end - d.begin;
+            auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
+            auto const popc_bytes = n * sizeof(std::uint32_t);
+
+            bool ok = true;
+            if(cudaMemcpyAsync(d.d_mask, mask, mask_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemsetAsync(d.d_popc, 0, popc_bytes, d.stream) != cudaSuccess) { ok = false; }
+
+            if(ok)
+            {
+                constexpr unsigned threads = 128u;
+                auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                bitset_row_and_popcount_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(
+                    d.d_rows, n, d.stride_words, d.d_mask, d.d_popc);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+
+            if(ok && cudaMemcpyAsync(out_counts + d.begin, d.d_popc, popc_bytes, cudaMemcpyDeviceToHost, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaStreamSynchronize(d.stream) != cudaSuccess) { ok = false; }
+
+            d.ok = ok;
+            return ok;
+        }
+
+        [[nodiscard]] inline bool bitset_matrix_row_any_and_on_device(bitset_matrix_device& d,
+                                                                      std::uint64_t const* mask,
+                                                                      std::uint32_t mask_words,
+                                                                      std::uint8_t* out_any) noexcept
+        {
+            d.ok = false;
+            if(d.end <= d.begin) { d.ok = true; return true; }
+            if(mask == nullptr || out_any == nullptr) { return false; }
+            if(mask_words != d.stride_words) { return false; }
+
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+
+            auto const n = d.end - d.begin;
+            auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
+            auto const any_bytes = n * sizeof(std::uint32_t);
+
+            bool ok = true;
+            if(cudaMemcpyAsync(d.d_mask, mask, mask_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemsetAsync(d.d_any, 0, any_bytes, d.stream) != cudaSuccess) { ok = false; }
+
+            if(ok)
+            {
+                constexpr unsigned threads = 256u;
+                auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                bitset_row_any_and_kernel<<<grid, threads, 0u, d.stream>>>(d.d_rows, n, d.stride_words, d.d_mask, d.d_any);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+
+            std::vector<std::uint32_t> tmp{};
+            tmp.resize(n);
+            if(ok && cudaMemcpyAsync(tmp.data(), d.d_any, any_bytes, cudaMemcpyDeviceToHost, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaStreamSynchronize(d.stream) != cudaSuccess) { ok = false; }
+            if(ok)
+            {
+                for(std::size_t i{}; i < n; ++i) { out_any[d.begin + i] = static_cast<std::uint8_t>(tmp[i] != 0u); }
+            }
+
+            d.ok = ok;
             return ok;
         }
     }  // namespace
@@ -399,6 +616,134 @@ namespace phy_engine::verilog::digital::details
             if(!c.ok) { return false; }
         }
 
+        return true;
+    }
+
+    extern "C" void* phy_engine_pe_synth_cuda_bitset_matrix_create(std::uint32_t device_mask,
+                                                                   std::uint64_t const* rows,
+                                                                   std::size_t row_count,
+                                                                   std::uint32_t stride_words) noexcept
+    {
+        if(rows == nullptr || row_count == 0u || stride_words == 0u) { return nullptr; }
+
+        int dev_count{};
+        if(cudaGetDeviceCount(&dev_count) != cudaSuccess || dev_count <= 0) { return nullptr; }
+
+        std::vector<int> devices{};
+        devices.reserve(static_cast<std::size_t>(dev_count));
+        if(device_mask == 0u)
+        {
+            for(int d = 0; d < dev_count; ++d) { devices.push_back(d); }
+        }
+        else
+        {
+            for(int d = 0; d < dev_count; ++d)
+            {
+                if((device_mask >> static_cast<unsigned>(d)) & 1u) { devices.push_back(d); }
+            }
+        }
+
+        if(devices.empty()) { return nullptr; }
+
+        auto* h = new(std::nothrow) bitset_matrix_handle{};
+        if(h == nullptr) { return nullptr; }
+
+        h->device_mask = device_mask;
+        h->row_count = row_count;
+        h->stride_words = stride_words;
+
+        // Split rows across selected devices (contiguous chunks).
+        auto const k = devices.size();
+        h->devs.reserve(k);
+        for(std::size_t i{}; i < k; ++i)
+        {
+            auto const begin = (row_count * i) / k;
+            auto const end = (row_count * (i + 1u)) / k;
+            bitset_matrix_device d{};
+            d.device = devices[i];
+            d.begin = begin;
+            d.end = end;
+            d.stride_words = stride_words;
+            h->devs.push_back(d);
+        }
+
+        bool ok = true;
+        for(auto& d: h->devs)
+        {
+            if(!init_bitset_matrix_device(d, rows, row_count, stride_words))
+            {
+                ok = false;
+                break;
+            }
+        }
+
+        if(!ok)
+        {
+            for(auto& d: h->devs) { destroy_bitset_matrix_device(d); }
+            delete h;
+            return nullptr;
+        }
+
+        return reinterpret_cast<void*>(h);
+    }
+
+    extern "C" void phy_engine_pe_synth_cuda_bitset_matrix_destroy(void* handle) noexcept
+    {
+        if(handle == nullptr) { return; }
+        auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
+        for(auto& d: h->devs) { destroy_bitset_matrix_device(d); }
+        delete h;
+    }
+
+    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_row_and_popcount(void* handle,
+                                                                            std::uint64_t const* mask,
+                                                                            std::uint32_t mask_words,
+                                                                            std::uint32_t* out_counts) noexcept
+    {
+        if(handle == nullptr || mask == nullptr || out_counts == nullptr) { return false; }
+        auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
+        if(h->stride_words == 0u || h->row_count == 0u) { return false; }
+        if(mask_words != h->stride_words) { return false; }
+
+        std::vector<std::thread> threads{};
+        threads.reserve(h->devs.size());
+        for(auto& d: h->devs)
+        {
+            auto* dp = &d;
+            threads.emplace_back([dp, mask, mask_words, out_counts]() { (void)bitset_matrix_row_and_popcount_on_device(*dp, mask, mask_words, out_counts); });
+        }
+        for(auto& t: threads) { t.join(); }
+
+        for(auto const& d: h->devs)
+        {
+            if(!d.ok) { return false; }
+        }
+        return true;
+    }
+
+    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(void* handle,
+                                                                       std::uint64_t const* mask,
+                                                                       std::uint32_t mask_words,
+                                                                       std::uint8_t* out_any) noexcept
+    {
+        if(handle == nullptr || mask == nullptr || out_any == nullptr) { return false; }
+        auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
+        if(h->stride_words == 0u || h->row_count == 0u) { return false; }
+        if(mask_words != h->stride_words) { return false; }
+
+        std::vector<std::thread> threads{};
+        threads.reserve(h->devs.size());
+        for(auto& d: h->devs)
+        {
+            auto* dp = &d;
+            threads.emplace_back([dp, mask, mask_words, out_any]() { (void)bitset_matrix_row_any_and_on_device(*dp, mask, mask_words, out_any); });
+        }
+        for(auto& t: threads) { t.join(); }
+
+        for(auto const& d: h->devs)
+        {
+            if(!d.ok) { return false; }
+        }
         return true;
     }
 }  // namespace phy_engine::verilog::digital::details
