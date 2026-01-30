@@ -33,6 +33,8 @@ Both tools share the PE synthesis optimization pipeline and accept the same opti
 - `-O4`: Strong tier (full fixpoint-ish pipeline; historically this was the old `O3`).
 - `-Omax` / `-O5`: "Budgeted multi-start search" mode. Runs the `O4` pipeline repeatedly under budgets (timeout / iteration count / per-pass caps), keeping the best solution found.
 - `-Ocuda`: Shorthand for `-Omax` (i.e. `-O5`) + enabling CUDA-assisted optimization. It may also increase some default bounded windows to improve quality (see CUDA sections).
+  - If you want to keep the same optimization knobs as `-O5` but just enable CUDA acceleration, use `-O5 --cuda-opt`.
+  - If you want `-Ocuda` to also expand some bounded windows by default, pass `--cuda-expand-windows`.
 
 You can also specify `--opt-level N` where `N` is `0..5`. If present, `--opt-level` overrides `-O*`.
 
@@ -123,6 +125,8 @@ Omax needs an objective to decide what is "better":
 
 - `--report`
   - Prints a per-pass / per-iteration report, plus an Omax summary line when `-Omax/-Ocuda` is used.
+- `--cuda-trace`
+  - Collects per-pass CUDA telemetry and prints it as part of `--report` output (batch sizes, time, and CPU fallback reasons).
 
 ### CUDA Acceleration (build-time + runtime)
 
@@ -133,6 +137,7 @@ CUDA support is optional and must be built in. At runtime, CUDA usage is best-ef
   - `--cuda-opt`: enable CUDA-assisted optimization.
   - `--cuda-device-mask MASK`: bitmask of devices to use (`0` = all). Example: `3` uses GPU0 and GPU1.
   - `--cuda-min-batch N`: minimum cone batch size before offloading. Higher values reduce GPU overhead for small designs.
+  - `--cuda-trace`: print per-pass CUDA stats (requires `--report`).
 
 `-Ocuda` is a convenience mode: it implies `-Omax` and enables CUDA optimization. It also adjusts a few defaults to improve optimization quality and GPU utilization (e.g. larger sweep/resub windows and smaller `--cuda-min-batch`).
 

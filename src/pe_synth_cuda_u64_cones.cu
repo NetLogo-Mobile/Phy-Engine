@@ -318,7 +318,9 @@ namespace phy_engine::verilog::digital::details
             {
                 if(c.device == device) { return c; }
             }
-            g_ctx.push_back(eval_u64_ctx{});
+            // These ctx types are intentionally non-copyable/non-movable (they own mutex/streams).
+            // Construct in-place to avoid deque push_back needing move/copy.
+            g_ctx.emplace_back();
             g_ctx.back().device = device;
             return g_ctx.back();
         }
@@ -332,7 +334,8 @@ namespace phy_engine::verilog::digital::details
             {
                 if(c.device == device) { return c; }
             }
-            g_ctx.push_back(eval_tt_ctx{});
+            // Construct in-place (non-copyable/non-movable ctx).
+            g_ctx.emplace_back();
             g_ctx.back().device = device;
             return g_ctx.back();
         }
@@ -513,7 +516,8 @@ namespace phy_engine::verilog::digital::details
             {
                 if(c.device == device) { return c; }
             }
-            g_ctx.push_back(espresso_hits_ctx{});
+            // Construct in-place (non-copyable/non-movable ctx).
+            g_ctx.emplace_back();
             g_ctx.back().device = device;
             return g_ctx.back();
         }

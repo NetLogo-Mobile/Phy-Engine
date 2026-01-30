@@ -89,6 +89,8 @@ namespace
                         "  --cuda-opt                                 Enable CUDA acceleration for some O3/O4/Omax passes (default: off)\n"
                         "  --cuda-device-mask MASK                    CUDA device bitmask (0 = all; e.g. 3 uses GPU0+GPU1)\n"
                         "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
+                        "  --cuda-expand-windows                      (Optional) Under -Ocuda: increase some bounded windows (resub/sweep) for quality at higher runtime\n"
+                        "  --cuda-trace                               Collect per-pass CUDA telemetry (printed in --report)\n"
                         "  --opt-cost gate|weighted                   Omax: objective cost model (default: gate)\n"
                         "  --opt-weight-NOT N                         Omax: weighted cost (default: 1)\n"
                         "  --opt-weight-AND N                         Omax: weighted cost (default: 1)\n"
@@ -123,6 +125,68 @@ namespace
                         "  --allow-inout                             Allow inout ports (requires --no-io)\n"
                         "  --allow-multi-driver                      Allow multi-driver digital nets\n"
                         "  --overwrite                              Overwrite existing output\n");
+    }
+
+    static void print_cuda_trace(::phy_engine::verilog::digital::pe_synth_report const& rep)
+    {
+        if(rep.cuda_stats.empty()) { return; }
+
+        ::std::vector<::std::size_t> order{};
+        order.resize(rep.cuda_stats.size());
+        for(::std::size_t i{}; i < order.size(); ++i) { order[i] = i; }
+        ::std::sort(order.begin(),
+                    order.end(),
+                    [&](::std::size_t a, ::std::size_t b) noexcept
+                    {
+                        auto const& sa = rep.cuda_stats[a];
+                        auto const& sb = rep.cuda_stats[b];
+                        if(sa.pass != sb.pass) { return sa.pass < sb.pass; }
+                        return sa.op < sb.op;
+                    });
+
+        ::fast_io::io::perr(::fast_io::err(), "  cuda_trace:\n");
+        for(auto const idx: order)
+        {
+            auto const& st = rep.cuda_stats[idx];
+            auto const avg_items = (st.calls == 0u) ? 0u : (st.items / st.calls);
+            auto const avg_words = (st.calls == 0u) ? 0u : (st.words / st.calls);
+            ::fast_io::io::perr(::fast_io::u8err(),
+                                u8"  cuda ",
+                                st.pass,
+                                u8".",
+                                st.op,
+                                u8": calls=",
+                                st.calls,
+                                u8" ok=",
+                                st.ok_calls,
+                                u8" fail=",
+                                st.fail_calls,
+                                u8" skip(disabled=",
+                                st.skip_disabled,
+                                u8" small=",
+                                st.skip_small_batch,
+                                u8" not_built=",
+                                st.skip_not_built,
+                                u8") items=",
+                                st.items,
+                                u8" avg_items=",
+                                avg_items,
+                                u8" max_items=",
+                                st.max_items,
+                                u8" words=",
+                                st.words,
+                                u8" avg_words=",
+                                avg_words,
+                                u8" max_words=",
+                                st.max_words,
+                                u8" h2dB=",
+                                st.h2d_bytes,
+                                u8" d2hB=",
+                                st.d2h_bytes,
+                                u8" us=",
+                                st.elapsed_us,
+                                u8"\n");
+        }
     }
 
     static std::optional<std::string> arg_after(int argc, char** argv, std::string_view flag)
@@ -355,6 +419,8 @@ int main(int argc, char** argv)
 
         bool const ocuda = has_flag(argc, argv, "-Ocuda") || has_flag(argc, argv, "--Ocuda");
         bool const cuda_opt = has_flag(argc, argv, "--cuda-opt") || ocuda;
+        bool const cuda_expand_windows = has_flag(argc, argv, "--cuda-expand-windows");
+        bool const cuda_trace = has_flag(argc, argv, "--cuda-trace");
         std::uint32_t cuda_device_mask = 0;
         if(auto s = arg_after(argc, argv, "--cuda-device-mask"))
         {
@@ -491,9 +557,9 @@ int main(int argc, char** argv)
             return 12;
         }
 
-        if(ocuda)
+        if(ocuda && cuda_expand_windows)
         {
-            // Improve optimization quality under -Ocuda by expanding bounded TT windows by default.
+            // Optional: improve optimization quality under -Ocuda by expanding bounded windows (can be slower).
             if(!arg_after(argc, argv, "--resub-max-vars")) { resub_max_vars = std::max<std::size_t>(resub_max_vars, 10u); }
             if(!arg_after(argc, argv, "--sweep-max-vars")) { sweep_max_vars = std::max<std::size_t>(sweep_max_vars, 10u); }
         }
@@ -615,6 +681,7 @@ int main(int argc, char** argv)
             opt.cuda_enable = cuda_opt;
             opt.cuda_device_mask = cuda_device_mask;
             opt.cuda_min_batch = cuda_min_batch;
+            opt.cuda_trace_enable = cuda_trace;
             if(ocuda)
             {
                 opt.decomp_var_order_tries = std::max<std::size_t>(opt.decomp_var_order_tries, 16u);
@@ -702,6 +769,7 @@ int main(int argc, char** argv)
                     for(auto v: rep.omax_best_gate_count) { ::fast_io::io::perr(::fast_io::err(), " ", v); }
                     ::fast_io::io::perr(::fast_io::err(), "\n");
                 }
+                if(cuda_trace) { print_cuda_trace(rep); }
             }
         }
         else

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <optional>
 #include <tuple>
@@ -109,7 +110,7 @@ namespace phy_engine::verilog::digital
         bool allow_multi_driver{false};
         bool support_always_comb{true};
         bool support_always_ff{true};
-        bool assume_binary_inputs{false};                // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
+        bool assume_binary_inputs{false};  // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
         // Optimization level:
         // - 0=O0, 1=O1, 2=O2
         // - 3=O3 (fast medium-strength: bounded rewrites/resub/sweep; no QM/techmap/decompose fixpoint)
@@ -134,8 +135,9 @@ namespace phy_engine::verilog::digital
 
         // Optional CUDA acceleration (best-effort). Requires building with PHY_ENGINE_ENABLE_CUDA_PE_SYNTH.
         bool cuda_enable{false};
-        ::std::uint32_t cuda_device_mask{0};  // bitmask of devices to use; 0 means "all available"
-        ::std::size_t cuda_min_batch{1024};   // minimum number of cones/candidates before offloading (avoid launch overhead)
+        ::std::uint32_t cuda_device_mask{0};        // bitmask of devices to use; 0 means "all available"
+        ::std::size_t cuda_min_batch{1024};         // minimum number of cones/candidates before offloading (avoid launch overhead)
+        bool cuda_trace_enable{false};              // collect per-pass CUDA telemetry into `pe_synth_report` (best-effort)
         ::std::size_t decomp_var_order_tries{4};    // BDD decomposition: max variable-order variants to try (bounded, deterministic unless randomized)
         bool optimize_wires{false};                 // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
         bool optimize_mul2{false};                  // best-effort: replace 2-bit multiplier tiles with MUL2 models
@@ -198,10 +200,137 @@ namespace phy_engine::verilog::digital
         ::std::vector<::std::size_t> omax_best_gate_count{};  // best-so-far cost after each Omax try (empty unless opt_level>=5)
         ::std::vector<::std::size_t> omax_best_cost{};        // best-so-far objective cost after each Omax try (matches opt.omax_cost)
         ::fast_io::u8string omax_summary{};                   // single-line, reproducible knobs summary
+
+        struct cuda_stat
+        {
+            ::fast_io::u8string_view pass{};  // pass name (e.g. "sweep")
+            ::fast_io::u8string_view op{};    // op name (e.g. "u64_eval")
+            ::std::size_t calls{};
+            ::std::size_t ok_calls{};
+            ::std::size_t fail_calls{};
+            ::std::size_t skip_disabled{};
+            ::std::size_t skip_small_batch{};
+            ::std::size_t skip_not_built{};
+            ::std::size_t items{};       // total items processed (cones/rows/cubes)
+            ::std::size_t words{};       // total "word blocks" processed (TT blocks / bitset stride words), if applicable
+            ::std::size_t max_items{};   // max items in a single call (best-effort)
+            ::std::size_t max_words{};   // max words in a single call (best-effort)
+            ::std::size_t h2d_bytes{};   // total host->device bytes (best-effort)
+            ::std::size_t d2h_bytes{};   // total device->host bytes (best-effort)
+            ::std::size_t elapsed_us{};  // total wall time spent inside CUDA call wrappers (host-measured)
+        };
+
+        ::std::vector<cuda_stat> cuda_stats{};
     };
 
     namespace details
     {
+        struct cuda_trace_sink
+        {
+            ::std::mutex mu{};
+            ::std::vector<pe_synth_report::cuda_stat> stats{};
+            ::std::unordered_map<::std::uint64_t, ::std::size_t> idx{};
+            bool enable{};
+        };
+
+        inline thread_local cuda_trace_sink* tls_cuda_sink{};
+        inline thread_local ::fast_io::u8string_view tls_cuda_pass{};
+
+        struct cuda_trace_install_guard
+        {
+            cuda_trace_sink* prev{};
+            ::fast_io::u8string_view prev_pass{};
+
+            cuda_trace_install_guard(cuda_trace_sink* sink) noexcept : prev(tls_cuda_sink), prev_pass(tls_cuda_pass)
+            {
+                tls_cuda_sink = sink;
+                tls_cuda_pass = {};
+            }
+
+            ~cuda_trace_install_guard() noexcept
+            {
+                tls_cuda_sink = prev;
+                tls_cuda_pass = prev_pass;
+            }
+        };
+
+        struct cuda_trace_pass_scope
+        {
+            ::fast_io::u8string_view prev{};
+
+            cuda_trace_pass_scope(::fast_io::u8string_view pass) noexcept : prev(tls_cuda_pass) { tls_cuda_pass = pass; }
+
+            ~cuda_trace_pass_scope() noexcept { tls_cuda_pass = prev; }
+        };
+
+        [[nodiscard]] inline ::std::uint64_t cuda_trace_key(::fast_io::u8string_view pass, ::fast_io::u8string_view op) noexcept
+        {
+            // FNV-1a 64-bit on the concatenated bytes (stable, cheap).
+            auto h = 1469598103934665603ull;
+            auto mix = [&](::fast_io::u8string_view s) noexcept
+            {
+                for(std::size_t i{}; i < s.size(); ++i)
+                {
+                    h ^= static_cast<unsigned char>(s.data()[i]);
+                    h *= 1099511628211ull;
+                }
+                // delimiter
+                h ^= 0xFFu;
+                h *= 1099511628211ull;
+            };
+            mix(pass);
+            mix(op);
+            return h;
+        }
+
+        inline void cuda_trace_add(::fast_io::u8string_view op,
+                                   ::std::size_t items,
+                                   ::std::size_t words,
+                                   ::std::size_t h2d_bytes,
+                                   ::std::size_t d2h_bytes,
+                                   ::std::size_t elapsed_us,
+                                   bool ok,
+                                   ::fast_io::u8string_view skip_reason = {}) noexcept
+        {
+            auto* sink = tls_cuda_sink;
+            if(sink == nullptr || !sink->enable) { return; }
+            auto const pass = tls_cuda_pass;
+            auto const key = cuda_trace_key(pass, op);
+            ::std::scoped_lock lk(sink->mu);
+            ::std::size_t idx{};
+            if(auto it = sink->idx.find(key); it != sink->idx.end()) { idx = it->second; }
+            else
+            {
+                idx = sink->stats.size();
+                sink->idx.emplace(key, idx);
+                sink->stats.push_back(pe_synth_report::cuda_stat{.pass = pass, .op = op});
+            }
+            auto& st = sink->stats[idx];
+            ++st.calls;
+            st.items += items;
+            st.words += words;
+            if(items > st.max_items) { st.max_items = items; }
+            if(words > st.max_words) { st.max_words = words; }
+            st.h2d_bytes += h2d_bytes;
+            st.d2h_bytes += d2h_bytes;
+            st.elapsed_us += elapsed_us;
+            if(!skip_reason.empty())
+            {
+                if(skip_reason == u8"disabled") { ++st.skip_disabled; }
+                else if(skip_reason == u8"small_batch") { ++st.skip_small_batch; }
+                else if(skip_reason == u8"not_built") { ++st.skip_not_built; }
+                else
+                {
+                    ++st.fail_calls;
+                }
+            }
+            else if(ok) { ++st.ok_calls; }
+            else
+            {
+                ++st.fail_calls;
+            }
+        }
+
         inline bool is_output_pin(::fast_io::u8string_view model_name, std::size_t pin_idx, std::size_t pin_count) noexcept;
 
         inline ::fast_io::u8string_view model_name_u8(::phy_engine::model::model_base const& mb) noexcept
@@ -1726,7 +1855,7 @@ namespace phy_engine::verilog::digital
             // Special indices:
             // - 65534: CONST0
             // - 65535: CONST1
-            ::std::uint8_t var_count{};     // 0..16
+            ::std::uint8_t var_count{};  // 0..16
             ::std::uint8_t pad0{};
             ::std::uint16_t gate_count{};  // 1..256
             ::std::uint8_t kind[256]{};    // encoded kind per gate (same encoding as cuda_u64_cone_desc)
@@ -1779,20 +1908,23 @@ namespace phy_engine::verilog::digital
                                                                         ::std::uint8_t* out_hits) noexcept;
 #endif
 
-        [[nodiscard]] inline bool cuda_eval_u64_cones(::std::uint32_t device_mask,
-                                                      cuda_u64_cone_desc const* cones,
-                                                      ::std::size_t cone_count,
-                                                      ::std::uint64_t* out_masks) noexcept
+        [[nodiscard]] inline bool
+            cuda_eval_u64_cones(::std::uint32_t device_mask, cuda_u64_cone_desc const* cones, ::std::size_t cone_count, ::std::uint64_t* out_masks) noexcept
         {
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
-            (void)device_mask;
             if(cones == nullptr || out_masks == nullptr || cone_count == 0u) { return false; }
-            return phy_engine_pe_synth_cuda_eval_u64_cones(device_mask, cones, cone_count, out_masks);
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_eval_u64_cones(device_mask, cones, cone_count, out_masks);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"u64_eval", cone_count, 0u, cone_count * sizeof(cuda_u64_cone_desc), cone_count * sizeof(::std::uint64_t), us, ok);
+            return ok;
 #else
             (void)device_mask;
             (void)cones;
             (void)cone_count;
             (void)out_masks;
+            cuda_trace_add(u8"u64_eval", cone_count, 0u, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -1804,15 +1936,26 @@ namespace phy_engine::verilog::digital
                                                      ::std::uint64_t* out_blocks) noexcept
         {
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
-            (void)device_mask;
             if(cones == nullptr || out_blocks == nullptr || cone_count == 0u || stride_blocks == 0u) { return false; }
-            return phy_engine_pe_synth_cuda_eval_tt_cones(device_mask, cones, cone_count, stride_blocks, out_blocks);
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_eval_tt_cones(device_mask, cones, cone_count, stride_blocks, out_blocks);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"tt_eval",
+                           cone_count,
+                           static_cast<std::size_t>(stride_blocks) * cone_count,
+                           cone_count * sizeof(cuda_tt_cone_desc) + static_cast<std::size_t>(stride_blocks) * cone_count * sizeof(::std::uint64_t),
+                           static_cast<std::size_t>(stride_blocks) * cone_count * sizeof(::std::uint64_t),
+                           us,
+                           ok);
+            return ok;
 #else
             (void)device_mask;
             (void)cones;
             (void)cone_count;
             (void)stride_blocks;
             (void)out_blocks;
+            cuda_trace_add(u8"tt_eval", cone_count, static_cast<std::size_t>(stride_blocks) * cone_count, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -1820,18 +1963,30 @@ namespace phy_engine::verilog::digital
         struct cuda_bitset_matrix_raii
         {
             void* handle{};
+            ::std::uint32_t row_count{};
+            ::std::uint32_t stride_words{};
 
             cuda_bitset_matrix_raii() noexcept = default;
             cuda_bitset_matrix_raii(cuda_bitset_matrix_raii const&) = delete;
-            cuda_bitset_matrix_raii& operator=(cuda_bitset_matrix_raii const&) = delete;
+            cuda_bitset_matrix_raii& operator= (cuda_bitset_matrix_raii const&) = delete;
 
-            cuda_bitset_matrix_raii(cuda_bitset_matrix_raii&& o) noexcept : handle(o.handle) { o.handle = nullptr; }
-            cuda_bitset_matrix_raii& operator=(cuda_bitset_matrix_raii&& o) noexcept
+            cuda_bitset_matrix_raii(cuda_bitset_matrix_raii&& o) noexcept : handle(o.handle), row_count(o.row_count), stride_words(o.stride_words)
+            {
+                o.handle = nullptr;
+                o.row_count = 0u;
+                o.stride_words = 0u;
+            }
+
+            cuda_bitset_matrix_raii& operator= (cuda_bitset_matrix_raii&& o) noexcept
             {
                 if(this == &o) { return *this; }
                 reset();
                 handle = o.handle;
+                row_count = o.row_count;
+                stride_words = o.stride_words;
                 o.handle = nullptr;
+                o.row_count = 0u;
+                o.stride_words = 0u;
                 return *this;
             }
 
@@ -1843,23 +1998,36 @@ namespace phy_engine::verilog::digital
                 if(handle != nullptr) { phy_engine_pe_synth_cuda_bitset_matrix_destroy(handle); }
 #endif
                 handle = nullptr;
+                row_count = 0u;
+                stride_words = 0u;
             }
         };
 
-        [[nodiscard]] inline cuda_bitset_matrix_raii cuda_bitset_matrix_create(::std::uint32_t device_mask,
-                                                                               ::std::uint64_t const* rows,
-                                                                               ::std::size_t row_count,
-                                                                               ::std::uint32_t stride_words) noexcept
+        [[nodiscard]] inline cuda_bitset_matrix_raii
+            cuda_bitset_matrix_create(::std::uint32_t device_mask, ::std::uint64_t const* rows, ::std::size_t row_count, ::std::uint32_t stride_words) noexcept
         {
             cuda_bitset_matrix_raii r{};
+            r.row_count = static_cast<::std::uint32_t>(row_count > 0xFFFFFFFFull ? 0u : row_count);
+            r.stride_words = stride_words;
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
             if(rows == nullptr || row_count == 0u || stride_words == 0u) { return r; }
+            auto const t0 = ::std::chrono::steady_clock::now();
             r.handle = phy_engine_pe_synth_cuda_bitset_matrix_create(device_mask, rows, row_count, stride_words);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_create",
+                           row_count,
+                           static_cast<std::size_t>(stride_words) * row_count,
+                           static_cast<std::size_t>(stride_words) * row_count * sizeof(::std::uint64_t),
+                           0u,
+                           us,
+                           r.handle != nullptr);
 #else
             (void)device_mask;
             (void)rows;
             (void)row_count;
             (void)stride_words;
+            cuda_trace_add(u8"bitset_create", row_count, static_cast<std::size_t>(stride_words) * row_count, 0u, 0u, 0u, false, u8"not_built");
 #endif
             return r;
         }
@@ -1871,12 +2039,24 @@ namespace phy_engine::verilog::digital
         {
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
             if(m.handle == nullptr || mask == nullptr || out_counts == nullptr || mask_words == 0u) { return false; }
-            return phy_engine_pe_synth_cuda_bitset_matrix_row_and_popcount(m.handle, mask, mask_words, out_counts);
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_row_and_popcount(m.handle, mask, mask_words, out_counts);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_popcount",
+                           m.row_count,
+                           mask_words,
+                           static_cast<std::size_t>(mask_words) * sizeof(::std::uint64_t),
+                           static_cast<std::size_t>(m.row_count) * sizeof(::std::uint32_t),
+                           us,
+                           ok);
+            return ok;
 #else
             (void)m;
             (void)mask;
             (void)mask_words;
             (void)out_counts;
+            cuda_trace_add(u8"bitset_popcount", m.row_count, mask_words, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -1888,12 +2068,24 @@ namespace phy_engine::verilog::digital
         {
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
             if(m.handle == nullptr || mask == nullptr || out_any == nullptr || mask_words == 0u) { return false; }
-            return phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(m.handle, mask, mask_words, out_any);
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(m.handle, mask, mask_words, out_any);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_any",
+                           m.row_count,
+                           mask_words,
+                           static_cast<std::size_t>(mask_words) * sizeof(::std::uint64_t),
+                           static_cast<std::size_t>(m.row_count) * sizeof(::std::uint8_t),
+                           us,
+                           ok);
+            return ok;
 #else
             (void)m;
             (void)mask;
             (void)mask_words;
             (void)out_any;
+            cuda_trace_add(u8"bitset_any", m.row_count, mask_words, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -1908,7 +2100,18 @@ namespace phy_engine::verilog::digital
         {
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
             if(cubes == nullptr || off_blocks == nullptr || out_hits == nullptr || cube_count == 0u || off_words == 0u) { return false; }
-            return phy_engine_pe_synth_cuda_espresso_cube_hits_off(device_mask, cubes, cube_count, var_count, off_blocks, off_words, out_hits);
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_espresso_cube_hits_off(device_mask, cubes, cube_count, var_count, off_blocks, off_words, out_hits);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"espresso_hits_off",
+                           cube_count,
+                           off_words,
+                           cube_count * sizeof(cuda_cube_desc) + static_cast<std::size_t>(off_words) * sizeof(::std::uint64_t),
+                           cube_count * sizeof(::std::uint8_t),
+                           us,
+                           ok);
+            return ok;
 #else
             (void)device_mask;
             (void)cubes;
@@ -1917,6 +2120,7 @@ namespace phy_engine::verilog::digital
             (void)off_blocks;
             (void)off_words;
             (void)out_hits;
+            cuda_trace_add(u8"espresso_hits_off", cube_count, off_words, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -1959,15 +2163,15 @@ namespace phy_engine::verilog::digital
                 ::std::uint64_t r{};
                 switch(c.kind[gi])
                 {
-                    case 0u: r = ~a; break;            // NOT
-                    case 1u: r = a & b; break;         // AND
-                    case 2u: r = a | b; break;         // OR
-                    case 3u: r = a ^ b; break;         // XOR
-                    case 4u: r = ~(a ^ b); break;      // XNOR
-                    case 5u: r = ~(a & b); break;      // NAND
-                    case 6u: r = ~(a | b); break;      // NOR
-                    case 7u: r = (~a) | b; break;      // IMP
-                    case 8u: r = a & (~b); break;      // NIMP
+                    case 0u: r = ~a; break;        // NOT
+                    case 1u: r = a & b; break;     // AND
+                    case 2u: r = a | b; break;     // OR
+                    case 3u: r = a ^ b; break;     // XOR
+                    case 4u: r = ~(a ^ b); break;  // XNOR
+                    case 5u: r = ~(a & b); break;  // NAND
+                    case 6u: r = ~(a | b); break;  // NOR
+                    case 7u: r = (~a) | b; break;  // IMP
+                    case 8u: r = a & (~b); break;  // NIMP
                     default: r = 0ull; break;
                 }
                 val[6u + gi] = r & all_mask;
@@ -5607,7 +5811,7 @@ namespace phy_engine::verilog::digital
             // Detect constant nodes produced by unnamed INPUT models.
             ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const_val{};
             const_val.reserve(128);
-            for(auto const& blk : nl.models)
+            for(auto const& blk: nl.models)
             {
                 for(auto const* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -5658,11 +5862,12 @@ namespace phy_engine::verilog::digital
                 patterns.push_back(pattern{pkind::oai22, 4u, truth_mask(4u, [](bool const* a) noexcept { return !((a[0] | a[1]) & (a[2] | a[3])); }), 4u});
             }
 
-            [[maybe_unused]] auto eval_gate = [&](auto&& self,
-                                 ::phy_engine::model::node_t* node,
-                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
-                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
-                                 ::std::unordered_map<::phy_engine::model::node_t*, bool>& visiting) noexcept -> ::phy_engine::model::digital_node_statement_t
+            [[maybe_unused]] auto eval_gate =
+                [&](auto&& self,
+                    ::phy_engine::model::node_t* node,
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool>& visiting) noexcept -> ::phy_engine::model::digital_node_statement_t
             {
                 if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
                 if(auto it = memo.find(node); it != memo.end()) { return it->second; }
@@ -5724,9 +5929,8 @@ namespace phy_engine::verilog::digital
                 }
             };
 
-            auto build_u64_mask_cone = [&](::phy_engine::model::node_t* root,
-                                           ::std::vector<::phy_engine::model::node_t*> const& leaves,
-                                           cuda_u64_cone_desc& out) noexcept -> bool
+            auto build_u64_mask_cone =
+                [&](::phy_engine::model::node_t* root, ::std::vector<::phy_engine::model::node_t*> const& leaves, cuda_u64_cone_desc& out) noexcept -> bool
             {
                 auto const n = leaves.size();
                 if(n == 0u || n > 6u) { return false; }
@@ -5745,7 +5949,11 @@ namespace phy_engine::verilog::digital
 
                 auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n0) noexcept -> ::std::uint8_t
                 {
-                    if(!ok || n0 == nullptr) { ok = false; return 254u; }
+                    if(!ok || n0 == nullptr)
+                    {
+                        ok = false;
+                        return 254u;
+                    }
                     if(auto itc = const_val.find(n0); itc != const_val.end())
                     {
                         using dns = ::phy_engine::model::digital_node_statement_t;
@@ -5758,13 +5966,21 @@ namespace phy_engine::verilog::digital
                     if(auto ito = out_index.find(n0); ito != out_index.end()) { return ito->second; }
 
                     auto itg = gate_by_out.find(n0);
-                    if(itg == gate_by_out.end()) { ok = false; return 254u; }
+                    if(itg == gate_by_out.end())
+                    {
+                        ok = false;
+                        return 254u;
+                    }
                     auto const& gg = itg->second;
                     auto const a = self(self, gg.in0);
                     auto const b = (gg.k == kind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
                     if(!ok) { return 254u; }
 
-                    if(cone.gate_count >= 64u) { ok = false; return 254u; }
+                    if(cone.gate_count >= 64u)
+                    {
+                        ok = false;
+                        return 254u;
+                    }
                     auto const gi = static_cast<::std::uint8_t>(cone.gate_count++);
                     cone.kind[gi] = enc_kind(gg.k);
                     cone.in0[gi] = a;
@@ -6256,6 +6472,8 @@ namespace phy_engine::verilog::digital
 
                     // Evaluate masks (CUDA best-effort, batched).
                     bool used_cuda{};
+                    if(!opt.cuda_enable) { cuda_trace_add(u8"u64_eval", tasks.size(), 0u, 0u, 0u, 0u, false, u8"disabled"); }
+                    else if(tasks.size() < opt.cuda_min_batch) { cuda_trace_add(u8"u64_eval", tasks.size(), 0u, 0u, 0u, 0u, false, u8"small_batch"); }
                     if(opt.cuda_enable && tasks.size() >= opt.cuda_min_batch)
                     {
                         ::std::vector<cuda_u64_cone_desc> cones{};
@@ -6708,7 +6926,10 @@ namespace phy_engine::verilog::digital
                     if(!a) { return false; }
                     ::std::optional<::std::uint16_t> b{};
                     if(g.k == kind::not_gate) { b = static_cast<::std::uint16_t>(65534u); }
-                    else { b = idx_of(g.in1); }
+                    else
+                    {
+                        b = idx_of(g.in1);
+                    }
                     if(!b) { return false; }
 
                     out.in0[gi] = *a;
@@ -6941,6 +7162,14 @@ namespace phy_engine::verilog::digital
                 {
                     used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, descs.data(), descs.size(), stride_blocks, tt_words.data());
                 }
+                else
+                {
+                    cuda_trace_add(u8"tt_eval", descs.size(), static_cast<std::size_t>(stride_blocks) * descs.size(), 0u, 0u, 0u, false, u8"small_batch");
+                }
+            }
+            else
+            {
+                cuda_trace_add(u8"tt_eval", descs.size(), static_cast<std::size_t>(stride_blocks) * descs.size(), 0u, 0u, 0u, false, u8"disabled");
             }
             if(!used_cuda)
             {
@@ -7605,7 +7834,10 @@ namespace phy_engine::verilog::digital
                         else if(name == u8"NAND") { g.k = kind::nand_gate; }
                         else if(name == u8"NOR") { g.k = kind::nor_gate; }
                         else if(name == u8"IMP") { g.k = kind::imp_gate; }
-                        else { g.k = kind::nimp_gate; }
+                        else
+                        {
+                            g.k = kind::nimp_gate;
+                        }
                         return g;
                     }
 
@@ -7772,14 +8004,22 @@ namespace phy_engine::verilog::digital
                         {
                             if(!leaf_seen.contains(n))
                             {
-                                if(leaves.size() >= max_vars) { ok = false; return; }
+                                if(leaves.size() >= max_vars)
+                                {
+                                    ok = false;
+                                    return;
+                                }
                                 leaf_seen.emplace(n, true);
                                 leaves.push_back(n);
                             }
                             return;
                         }
 
-                        if(++gate_count > max_gates) { ok = false; return; }
+                        if(++gate_count > max_gates)
+                        {
+                            ok = false;
+                            return;
+                        }
                         auto const& gg = itg->second;
                         self(self, gg.in0);
                         if(gg.k != kind::not_gate) { self(self, gg.in1); }
@@ -7813,20 +8053,32 @@ namespace phy_engine::verilog::digital
 
                     auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
                     {
-                        if(!ok2 || n == nullptr) { ok2 = false; return 65534u; }
+                        if(!ok2 || n == nullptr)
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
                         if(auto itc = const_idx.find(n); itc != const_idx.end()) { return itc->second; }
                         if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
                         if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
 
                         auto itg = gate_by_out.find(n);
-                        if(itg == gate_by_out.end()) { ok2 = false; return 65534u; }
+                        if(itg == gate_by_out.end())
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
                         auto const& gg = itg->second;
 
                         auto const a = self(self, gg.in0);
                         auto const b = (gg.k == kind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
                         if(!ok2) { return 65534u; }
 
-                        if(cone.gate_count >= 256u) { ok2 = false; return 65534u; }
+                        if(cone.gate_count >= 256u)
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
                         auto const gi = static_cast<::std::uint16_t>(cone.gate_count++);
                         cone.kind[gi] = enc_kind(gg.k);
                         cone.in0[gi] = a;
@@ -7863,6 +8115,10 @@ namespace phy_engine::verilog::digital
                 if(cands.size() >= 16u || stride_blocks >= 64u)
                 {
                     used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, cones.data(), cones.size(), stride_blocks, tt_words.data());
+                }
+                else
+                {
+                    cuda_trace_add(u8"tt_eval", cones.size(), static_cast<std::size_t>(stride_blocks) * cones.size(), 0u, 0u, 0u, false, u8"small_batch");
                 }
                 if(!used_cuda)
                 {
@@ -8117,7 +8373,7 @@ namespace phy_engine::verilog::digital
             // Detect constant nodes produced by unnamed INPUT models.
             ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> const_idx{};
             const_idx.reserve(128);
-            for(auto const& blk : nl.models)
+            for(auto const& blk: nl.models)
             {
                 for(auto const* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -8279,20 +8535,32 @@ namespace phy_engine::verilog::digital
 
                 auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
                 {
-                    if(!ok2 || n == nullptr) { ok2 = false; return 254u; }
+                    if(!ok2 || n == nullptr)
+                    {
+                        ok2 = false;
+                        return 254u;
+                    }
                     if(auto itc = const_idx.find(n); itc != const_idx.end()) { return itc->second; }
                     if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
                     if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
 
                     auto itg = gate_by_out.find(n);
-                    if(itg == gate_by_out.end()) { ok2 = false; return 254u; }
+                    if(itg == gate_by_out.end())
+                    {
+                        ok2 = false;
+                        return 254u;
+                    }
                     auto const& gg = itg->second;
 
                     auto const a = self(self, gg.in0);
                     auto const b = (gg.k == kind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
                     if(!ok2) { return 254u; }
 
-                    if(cone.gate_count >= 64u) { ok2 = false; return 254u; }
+                    if(cone.gate_count >= 64u)
+                    {
+                        ok2 = false;
+                        return 254u;
+                    }
                     auto const gi = static_cast<::std::uint8_t>(cone.gate_count++);
                     cone.kind[gi] = enc_kind(gg.k);
                     cone.in0[gi] = a;
@@ -8313,6 +8581,8 @@ namespace phy_engine::verilog::digital
 
             // Evaluate truth-table masks (CUDA best-effort).
             bool used_cuda{};
+            if(!cands.empty() && !opt.cuda_enable) { cuda_trace_add(u8"u64_eval", cands.size(), 0u, 0u, 0u, 0u, false, u8"disabled"); }
+            else if(!cands.empty() && cands.size() < opt.cuda_min_batch) { cuda_trace_add(u8"u64_eval", cands.size(), 0u, 0u, 0u, 0u, false, u8"small_batch"); }
             if(opt.cuda_enable && cands.size() >= opt.cuda_min_batch)
             {
                 ::std::vector<cuda_u64_cone_desc> cones{};
@@ -8335,7 +8605,7 @@ namespace phy_engine::verilog::digital
             }
             if(!used_cuda)
             {
-                for(auto& cd : cands)
+                for(auto& cd: cands)
                 {
                     if(!cd.ok) { continue; }
                     cd.mask = eval_u64_cone_cpu(cd.cone);
@@ -8344,7 +8614,7 @@ namespace phy_engine::verilog::digital
 
             bool changed{};
 
-            for(auto& cd : cands)
+            for(auto& cd: cands)
             {
                 auto* root = cd.root;
                 auto const& g = cd.g;
@@ -8478,7 +8748,10 @@ namespace phy_engine::verilog::digital
                         else if(name == u8"NAND") { g.k = kind::nand_gate; }
                         else if(name == u8"NOR") { g.k = kind::nor_gate; }
                         else if(name == u8"IMP") { g.k = kind::imp_gate; }
-                        else { g.k = kind::nimp_gate; }
+                        else
+                        {
+                            g.k = kind::nimp_gate;
+                        }
                         return g;
                     }
 
@@ -8630,14 +8903,22 @@ namespace phy_engine::verilog::digital
                         {
                             if(!leaf_seen.contains(n))
                             {
-                                if(leaves.size() >= max_vars) { ok = false; return; }
+                                if(leaves.size() >= max_vars)
+                                {
+                                    ok = false;
+                                    return;
+                                }
                                 leaf_seen.emplace(n, true);
                                 leaves.push_back(n);
                             }
                             return;
                         }
 
-                        if(++gate_count > max_gates) { ok = false; return; }
+                        if(++gate_count > max_gates)
+                        {
+                            ok = false;
+                            return;
+                        }
                         auto const& gg = itg->second;
                         self(self, gg.in0);
                         if(gg.k != kind::not_gate) { self(self, gg.in1); }
@@ -8671,20 +8952,32 @@ namespace phy_engine::verilog::digital
 
                     auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
                     {
-                        if(!ok2 || n == nullptr) { ok2 = false; return 65534u; }
+                        if(!ok2 || n == nullptr)
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
                         if(auto itc = const_idx.find(n); itc != const_idx.end()) { return itc->second; }
                         if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
                         if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
 
                         auto itg = gate_by_out.find(n);
-                        if(itg == gate_by_out.end()) { ok2 = false; return 65534u; }
+                        if(itg == gate_by_out.end())
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
                         auto const& gg = itg->second;
 
                         auto const a = self(self, gg.in0);
                         auto const b = (gg.k == kind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
                         if(!ok2) { return 65534u; }
 
-                        if(cone.gate_count >= 256u) { ok2 = false; return 65534u; }
+                        if(cone.gate_count >= 256u)
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
                         auto const gi = static_cast<::std::uint16_t>(cone.gate_count++);
                         cone.kind[gi] = enc_kind(gg.k);
                         cone.in0[gi] = a;
@@ -8723,6 +9016,10 @@ namespace phy_engine::verilog::digital
                 if(cands.size() >= 16u || stride_blocks >= 64u)
                 {
                     used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, cones.data(), cones.size(), stride_blocks, tt_words.data());
+                }
+                else
+                {
+                    cuda_trace_add(u8"tt_eval", cones.size(), static_cast<std::size_t>(stride_blocks) * cones.size(), 0u, 0u, 0u, false, u8"small_batch");
                 }
                 if(!used_cuda)
                 {
@@ -9141,20 +9438,32 @@ namespace phy_engine::verilog::digital
 
                 auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
                 {
-                    if(!ok2 || n == nullptr) { ok2 = false; return 254u; }
+                    if(!ok2 || n == nullptr)
+                    {
+                        ok2 = false;
+                        return 254u;
+                    }
                     if(auto itc = const_idx.find(n); itc != const_idx.end()) { return itc->second; }
                     if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
                     if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
 
                     auto itg = gate_by_out.find(n);
-                    if(itg == gate_by_out.end()) { ok2 = false; return 254u; }
+                    if(itg == gate_by_out.end())
+                    {
+                        ok2 = false;
+                        return 254u;
+                    }
                     auto const& gg = itg->second;
 
                     auto const a = self(self, gg.in0);
                     auto const b = (gg.k == kind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
                     if(!ok2) { return 254u; }
 
-                    if(cone.gate_count >= 64u) { ok2 = false; return 254u; }
+                    if(cone.gate_count >= 64u)
+                    {
+                        ok2 = false;
+                        return 254u;
+                    }
                     auto const gi = static_cast<::std::uint8_t>(cone.gate_count++);
                     cone.kind[gi] = enc_kind(gg.k);
                     cone.in0[gi] = a;
@@ -9175,6 +9484,8 @@ namespace phy_engine::verilog::digital
 
             // Evaluate truth-table masks (CUDA best-effort).
             bool used_cuda{};
+            if(!cands.empty() && !opt.cuda_enable) { cuda_trace_add(u8"u64_eval", cands.size(), 0u, 0u, 0u, 0u, false, u8"disabled"); }
+            else if(!cands.empty() && cands.size() < opt.cuda_min_batch) { cuda_trace_add(u8"u64_eval", cands.size(), 0u, 0u, 0u, 0u, false, u8"small_batch"); }
             if(opt.cuda_enable && cands.size() >= opt.cuda_min_batch)
             {
                 ::std::vector<cuda_u64_cone_desc> cones{};
@@ -9698,10 +10009,7 @@ namespace phy_engine::verilog::digital
                 auto const blocks = (on_list[o].size() + 63u) / 64u;
                 blocks_by_out[o] = blocks;
                 cov[o].assign(cubes.size() * blocks, 0ull);
-                auto cov_row = [&](std::size_t ci) noexcept -> ::std::uint64_t*
-                {
-                    return cov[o].data() + ci * blocks;
-                };
+                auto cov_row = [&](std::size_t ci) noexcept -> ::std::uint64_t* { return cov[o].data() + ci * blocks; };
                 for(std::size_t ci{}; ci < cubes.size(); ++ci)
                 {
                     // A cube can only be used for output `o` if it does not cover any OFF minterm for that output.
@@ -9778,14 +10086,27 @@ namespace phy_engine::verilog::digital
             cov_gpu.resize(outputs);
             gains_gpu.resize(outputs);
             use_cuda_gains.assign(outputs, false);
-            if(opt.cuda_enable && !cubes.empty())
+            if(!opt.cuda_enable && !cubes.empty())
+            {
+                for(std::size_t o{}; o < outputs; ++o)
+                {
+                    auto const blocks = blocks_by_out[o];
+                    if(blocks == 0u) { continue; }
+                    cuda_trace_add(u8"bitset_create", cubes.size(), cubes.size() * blocks, 0u, 0u, 0u, false, u8"disabled");
+                }
+            }
+            else if(opt.cuda_enable && !cubes.empty())
             {
                 for(std::size_t o{}; o < outputs; ++o)
                 {
                     auto const blocks = blocks_by_out[o];
                     if(blocks == 0u) { continue; }
                     auto const workload = cubes.size() * blocks;
-                    if(workload < opt.cuda_min_batch) { continue; }
+                    if(workload < opt.cuda_min_batch)
+                    {
+                        cuda_trace_add(u8"bitset_create", cubes.size(), workload, 0u, 0u, 0u, false, u8"small_batch");
+                        continue;
+                    }
                     cov_gpu[o] = cuda_bitset_matrix_create(opt.cuda_device_mask, cov[o].data(), cubes.size(), static_cast<::std::uint32_t>(blocks));
                     if(cov_gpu[o].handle != nullptr)
                     {
@@ -9801,10 +10122,7 @@ namespace phy_engine::verilog::digital
                 {
                     if(!use_cuda_gains[o]) { continue; }
                     auto const blocks = blocks_by_out[o];
-                    if(!cuda_bitset_matrix_row_and_popcount(cov_gpu[o],
-                                                           uncovered[o].data(),
-                                                           static_cast<::std::uint32_t>(blocks),
-                                                           gains_gpu[o].data()))
+                    if(!cuda_bitset_matrix_row_and_popcount(cov_gpu[o], uncovered[o].data(), static_cast<::std::uint32_t>(blocks), gains_gpu[o].data()))
                     {
                         use_cuda_gains[o] = false;
                         gains_gpu[o].clear();
@@ -9826,10 +10144,7 @@ namespace phy_engine::verilog::digital
                     {
                         std::size_t og{};
                         auto const blocks = blocks_by_out[o];
-                        if(use_cuda_gains[o])
-                        {
-                            og = static_cast<std::size_t>(gains_gpu[o][ci]);
-                        }
+                        if(use_cuda_gains[o]) { og = static_cast<std::size_t>(gains_gpu[o][ci]); }
                         else
                         {
                             auto const* row = cov[o].data() + ci * blocks;
@@ -9909,10 +10224,7 @@ namespace phy_engine::verilog::digital
 
                 // Count coverage per ON minterm.
                 auto const blocks = blocks_by_out[o];
-                auto cov_row_o = [&](std::size_t ci) noexcept -> ::std::uint64_t const*
-                {
-                    return cov[o].data() + ci * blocks;
-                };
+                auto cov_row_o = [&](std::size_t ci) noexcept -> ::std::uint64_t const* { return cov[o].data() + ci * blocks; };
 
                 ::std::vector<::std::uint16_t> cnt{};
                 cnt.assign(on.size(), 0u);
@@ -10208,23 +10520,28 @@ namespace phy_engine::verilog::digital
                             desc[i].mask = cubes[i].mask;
                         }
                         used_cuda = cuda_espresso_cube_hits_off(opt.cuda_device_mask,
-                                                               desc.data(),
-                                                               desc.size(),
-                                                               static_cast<std::uint32_t>(var_count),
-                                                               off_bits.data(),
-                                                               static_cast<std::uint32_t>(blocksU),
-                                                               out_hits.data());
+                                                                desc.data(),
+                                                                desc.size(),
+                                                                static_cast<std::uint32_t>(var_count),
+                                                                off_bits.data(),
+                                                                static_cast<std::uint32_t>(blocksU),
+                                                                out_hits.data());
                     }
+                    else
+                    {
+                        cuda_trace_add(u8"espresso_hits_off", cubes.size(), blocksU, 0u, 0u, 0u, false, u8"small_batch");
+                    }
+                }
+                else
+                {
+                    cuda_trace_add(u8"espresso_hits_off", cubes.size(), blocksU, 0u, 0u, 0u, false, u8"disabled");
                 }
 
                 if(used_cuda) { return; }
                 for(std::size_t i{}; i < cubes.size(); ++i) { out_hits[i] = cube_hits_off_fast(cubes[i]) ? 1u : 0u; }
             };
 
-            auto cube_hits_off = [&](qm_implicant const& c) noexcept -> bool
-            {
-                return cube_hits_off_fast(c);
-            };
+            auto cube_hits_off = [&](qm_implicant const& c) noexcept -> bool { return cube_hits_off_fast(c); };
 
             [[maybe_unused]] auto expand_one = [&](qm_implicant const& c0) noexcept -> qm_implicant
             {
@@ -11033,14 +11350,8 @@ namespace phy_engine::verilog::digital
             ::std::vector<::std::uint64_t> cov{};
             cov.assign(primes.size() * blocks, 0ull);
 
-            auto cov_row = [&](std::size_t pi) noexcept -> ::std::uint64_t*
-            {
-                return cov.data() + pi * blocks;
-            };
-            auto cov_row_c = [&](std::size_t pi) noexcept -> ::std::uint64_t const*
-            {
-                return cov.data() + pi * blocks;
-            };
+            auto cov_row = [&](std::size_t pi) noexcept -> ::std::uint64_t* { return cov.data() + pi * blocks; };
+            auto cov_row_c = [&](std::size_t pi) noexcept -> ::std::uint64_t const* { return cov.data() + pi * blocks; };
 
             ::std::vector<::std::size_t> prime_cost{};
             prime_cost.resize(primes.size());
@@ -11123,7 +11434,11 @@ namespace phy_engine::verilog::digital
             cuda_bitset_matrix_raii cov_gpu{};
             bool use_cuda_gains{false};
             ::std::vector<::std::uint32_t> gains_gpu{};
-            if(opt.cuda_enable && blocks != 0u && !primes.empty())
+            if(!opt.cuda_enable && blocks != 0u && !primes.empty())
+            {
+                cuda_trace_add(u8"bitset_create", primes.size(), primes.size() * blocks, 0u, 0u, 0u, false, u8"disabled");
+            }
+            else if(opt.cuda_enable && blocks != 0u && !primes.empty())
             {
                 auto const workload = primes.size() * blocks;
                 if(workload >= opt.cuda_min_batch)
@@ -11134,6 +11449,10 @@ namespace phy_engine::verilog::digital
                         gains_gpu.resize(primes.size());
                         use_cuda_gains = true;
                     }
+                }
+                else
+                {
+                    cuda_trace_add(u8"bitset_create", primes.size(), workload, 0u, 0u, 0u, false, u8"small_batch");
                 }
             }
 
@@ -11160,6 +11479,7 @@ namespace phy_engine::verilog::digital
                     std::size_t cost{};
                     std::int64_t score{};
                 };
+
                 ::std::vector<cand_t> cands{};
                 cands.reserve(64);
 
@@ -11465,7 +11785,7 @@ namespace phy_engine::verilog::digital
             // Detect constant nodes produced by unnamed INPUT models. These are treated as constants (not leaf vars).
             ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const_val{};
             const_val.reserve(128);
-            for(auto const& blk : nl.models)
+            for(auto const& blk: nl.models)
             {
                 for(auto const* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -11728,11 +12048,10 @@ namespace phy_engine::verilog::digital
 
             // Best-effort truth-table evaluation (binary only): if the cone depends on non-binary constants (X/Z),
             // caller should fall back to per-minterm 4-valued evaluation to preserve DC inference semantics.
-            auto eval_binary_cone_on_dc =
-                [&](::phy_engine::model::node_t* root,
-                    ::std::vector<::phy_engine::model::node_t*> const& leaves,
-                    ::std::vector<::std::uint16_t>& on_out,
-                    ::std::vector<::std::uint16_t>& dc_out) noexcept -> bool
+            auto eval_binary_cone_on_dc = [&](::phy_engine::model::node_t* root,
+                                              ::std::vector<::phy_engine::model::node_t*> const& leaves,
+                                              ::std::vector<::std::uint16_t>& on_out,
+                                              ::std::vector<::std::uint16_t>& dc_out) noexcept -> bool
             {
                 on_out.clear();
                 dc_out.clear();
@@ -11754,7 +12073,11 @@ namespace phy_engine::verilog::digital
 
                     auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
                     {
-                        if(!ok2 || n == nullptr) { ok2 = false; return 254u; }
+                        if(!ok2 || n == nullptr)
+                        {
+                            ok2 = false;
+                            return 254u;
+                        }
                         if(auto itc = const_val.find(n); itc != const_val.end())
                         {
                             using dns = ::phy_engine::model::digital_node_statement_t;
@@ -11767,13 +12090,21 @@ namespace phy_engine::verilog::digital
                         if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
 
                         auto itg = gate_by_out.find(n);
-                        if(itg == gate_by_out.end()) { ok2 = false; return 254u; }
+                        if(itg == gate_by_out.end())
+                        {
+                            ok2 = false;
+                            return 254u;
+                        }
                         auto const& gg = itg->second;
                         auto const a = self(self, gg.in0);
                         auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
                         if(!ok2) { return 254u; }
 
-                        if(cone.gate_count >= 64u) { ok2 = false; return 254u; }
+                        if(cone.gate_count >= 64u)
+                        {
+                            ok2 = false;
+                            return 254u;
+                        }
                         auto const gi = static_cast<::std::uint8_t>(cone.gate_count++);
                         cone.kind[gi] = enc_kind_tt(gg.k);
                         cone.in0[gi] = a;
@@ -11791,9 +12122,15 @@ namespace phy_engine::verilog::digital
                     {
                         ::std::uint64_t out_mask{};
                         if(cuda_eval_u64_cones(opt.cuda_device_mask, __builtin_addressof(cone), 1u, __builtin_addressof(out_mask))) { mask = out_mask; }
-                        else { mask = eval_u64_cone_cpu(cone); }
+                        else
+                        {
+                            mask = eval_u64_cone_cpu(cone);
+                        }
                     }
-                    else { mask = eval_u64_cone_cpu(cone); }
+                    else
+                    {
+                        mask = eval_u64_cone_cpu(cone);
+                    }
 
                     auto const U = static_cast<::std::size_t>(1u << var_count);
                     auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
@@ -11820,7 +12157,11 @@ namespace phy_engine::verilog::digital
 
                 auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
                 {
-                    if(!ok2 || n == nullptr) { ok2 = false; return 65534u; }
+                    if(!ok2 || n == nullptr)
+                    {
+                        ok2 = false;
+                        return 65534u;
+                    }
                     if(auto itc = const_val.find(n); itc != const_val.end())
                     {
                         using dns = ::phy_engine::model::digital_node_statement_t;
@@ -11833,13 +12174,21 @@ namespace phy_engine::verilog::digital
                     if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
 
                     auto itg = gate_by_out.find(n);
-                    if(itg == gate_by_out.end()) { ok2 = false; return 65534u; }
+                    if(itg == gate_by_out.end())
+                    {
+                        ok2 = false;
+                        return 65534u;
+                    }
                     auto const& gg = itg->second;
                     auto const a = self(self, gg.in0);
                     auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
                     if(!ok2) { return 65534u; }
 
-                    if(cone.gate_count >= 256u) { ok2 = false; return 65534u; }
+                    if(cone.gate_count >= 256u)
+                    {
+                        ok2 = false;
+                        return 65534u;
+                    }
                     auto const gi = static_cast<::std::uint16_t>(cone.gate_count++);
                     cone.kind[gi] = enc_kind_tt(gg.k);
                     cone.in0[gi] = a;
@@ -11863,7 +12212,10 @@ namespace phy_engine::verilog::digital
                         eval_tt_cone_cpu(cone, blocks, tt.data());
                     }
                 }
-                else { eval_tt_cone_cpu(cone, blocks, tt.data()); }
+                else
+                {
+                    eval_tt_cone_cpu(cone, blocks, tt.data());
+                }
 
                 on_out.reserve(U);
                 for(::std::uint32_t bi{}; bi < blocks; ++bi)
@@ -12116,7 +12468,10 @@ namespace phy_engine::verilog::digital
                             else
                             {
                                 if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { out.dc.push_back(m); }
-                                else { return false; }
+                                else
+                                {
+                                    return false;
+                                }
                             }
                         }
                     }
@@ -14751,10 +15106,10 @@ namespace phy_engine::verilog::digital
             // Note: `instance_state::bindings` only covers input (and inout-as-input) ports.
             if(parent != nullptr)
             {
-            for(auto const& d: inst.output_drives)
-            {
-                if(!ok()) { return false; }
-                if(d.parent_signal == SIZE_MAX) { continue; }
+                for(auto const& d: inst.output_drives)
+                {
+                    if(!ok()) { return false; }
+                    if(d.parent_signal == SIZE_MAX) { continue; }
 
                     auto* dst = parent->signal(d.parent_signal);
                     if(dst == nullptr)
@@ -14795,10 +15150,13 @@ namespace phy_engine::verilog::digital
             // expression DAGs; we just avoid emitting external drivers for temps that are not observed elsewhere.
             ::std::vector<bool> port_out{};
             port_out.assign(m.signal_names.size(), false);
-            for(auto const& p : m.ports)
+            for(auto const& p: m.ports)
             {
                 if(p.signal >= port_out.size()) { continue; }
-                if(p.dir == ::phy_engine::verilog::digital::port_dir::output || p.dir == ::phy_engine::verilog::digital::port_dir::inout) { port_out[p.signal] = true; }
+                if(p.dir == ::phy_engine::verilog::digital::port_dir::output || p.dir == ::phy_engine::verilog::digital::port_dir::inout)
+                {
+                    port_out[p.signal] = true;
+                }
             }
 
             ::std::vector<bool> assigns_read{};
@@ -14858,30 +15216,30 @@ namespace phy_engine::verilog::digital
                     case stmt_node::kind::blocking_assign_vec:
                     case stmt_node::kind::nonblocking_assign_vec:
                     {
-                        for(auto const r : sn.rhs_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
+                        for(auto const r: sn.rhs_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
                         break;
                     }
                     case stmt_node::kind::if_stmt:
                     {
                         collect_expr_reads(sn.expr_root, cur_stamp, out_sigs);
-                        for(auto const s : sn.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
-                        for(auto const s : sn.else_stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        for(auto const s: sn.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        for(auto const s: sn.else_stmts) { self(self, arena, s, cur_stamp, out_sigs); }
                         break;
                     }
                     case stmt_node::kind::case_stmt:
                     {
-                        for(auto const r : sn.case_expr_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
-                        for(auto const& ci : sn.case_items)
+                        for(auto const r: sn.case_expr_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
+                        for(auto const& ci: sn.case_items)
                         {
-                            for(auto const r : ci.match_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
-                            for(auto const s : ci.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                            for(auto const r: ci.match_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
+                            for(auto const s: ci.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
                         }
                         break;
                     }
                     case stmt_node::kind::block:
                     case stmt_node::kind::subprogram_block:
                     {
-                        for(auto const s : sn.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        for(auto const s: sn.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
                         break;
                     }
                     case stmt_node::kind::for_stmt:
@@ -14908,12 +15266,12 @@ namespace phy_engine::verilog::digital
                 ::std::vector<::std::size_t> sigs{};
                 sigs.reserve(128);
                 auto const cur_stamp = ++stamp;
-                for(auto const& a : m.assigns)
+                for(auto const& a: m.assigns)
                 {
                     collect_expr_reads(a.expr_root, cur_stamp, sigs);
                     if(a.guard_root != SIZE_MAX) { collect_expr_reads(a.guard_root, cur_stamp, sigs); }
                 }
-                for(auto const s : sigs)
+                for(auto const s: sigs)
                 {
                     if(s < assigns_read.size()) { assigns_read[s] = true; }
                 }
@@ -14925,15 +15283,15 @@ namespace phy_engine::verilog::digital
                 ::std::vector<::std::size_t> sigs{};
                 sigs.reserve(256);
                 auto const cur_stamp = ++stamp;
-                for(auto const r : roots) { collect_stmt_reads(collect_stmt_reads, arena, r, cur_stamp, sigs); }
-                for(auto const s : sigs)
+                for(auto const r: roots) { collect_stmt_reads(collect_stmt_reads, arena, r, cur_stamp, sigs); }
+                for(auto const s: sigs)
                 {
                     if(s < read_block_count.size()) { ++read_block_count[s]; }
                 }
             };
-            for(auto const& ac : m.always_combs) { add_reader_block(ac.stmt_nodes, ac.roots); }
-            for(auto const& ff : m.always_ffs) { add_reader_block(ff.stmt_nodes, ff.roots); }
-            for(auto const& ib : m.initials) { add_reader_block(ib.stmt_nodes, ib.roots); }
+            for(auto const& ac: m.always_combs) { add_reader_block(ac.stmt_nodes, ac.roots); }
+            for(auto const& ff: m.always_ffs) { add_reader_block(ff.stmt_nodes, ff.roots); }
+            for(auto const& ib: m.initials) { add_reader_block(ib.stmt_nodes, ib.roots); }
 
             // always_comb blocks (restricted subset).
             if(opt.support_always_comb)
@@ -14962,9 +15320,8 @@ namespace phy_engine::verilog::digital
                     {
                         if(!targets[sig]) { continue; }
                         bool const read_here = (sig < sig_seen.size()) && (sig_seen[sig] == cur_stamp);
-                        bool const read_elsewhere =
-                            (sig < assigns_read.size() && assigns_read[sig]) ||
-                            (sig < read_block_count.size() && read_block_count[sig] > (read_here ? 1u : 0u));
+                        bool const read_elsewhere = (sig < assigns_read.size() && assigns_read[sig]) ||
+                                                    (sig < read_block_count.size() && read_block_count[sig] > (read_here ? 1u : 0u));
                         bool const drive = (sig < port_out.size() && port_out[sig]) || read_elsewhere;
                         if(!drive) { continue; }
                         auto* lhs = b.sig_nodes[sig];
@@ -15440,6 +15797,20 @@ namespace phy_engine::verilog::digital
             rep->omax_best_gate_count.clear();
             rep->omax_best_cost.clear();
             rep->omax_summary.clear();
+            rep->cuda_stats.clear();
+        }
+
+        details::cuda_trace_sink cuda_sink{};
+        cuda_sink.enable = opt.cuda_trace_enable;
+        details::cuda_trace_install_guard cuda_guard(opt.cuda_trace_enable ? __builtin_addressof(cuda_sink) : nullptr);
+        if(opt.cuda_trace_enable)
+        {
+            details::cuda_trace_pass_scope cuda_meta_scope{u8"meta"};
+#if PHY_ENGINE_PE_SYNTH_CUDA
+            details::cuda_trace_add(u8"cuda_build", 0u, 0u, 0u, 0u, 0u, true);
+#else
+            details::cuda_trace_add(u8"cuda_build", 0u, 0u, 0u, 0u, 0u, false, u8"not_built");
+#endif
         }
 
         auto const raw_lvl = opt.opt_level;
@@ -15459,16 +15830,16 @@ namespace phy_engine::verilog::digital
         bool const do_xor_rewrite = (lvl >= 2);
         bool const do_double_not = (lvl >= 1);
         bool const do_constprop = (lvl >= 1);
-	        bool const do_absorption = (lvl >= 2);
-	        bool const do_flatten = (lvl >= 2);
-	        // Binary-only rewrites are not semantics-preserving under X/Z; keep them at O3+ even when
-	        // `assume_binary_inputs` is enabled so the optimization levels stay meaningfully distinct.
-	        bool const do_binary_simplify = (lvl >= 3) && opt.assume_binary_inputs;
-	        bool const do_aig_rewrite = (lvl >= 3) && opt.assume_binary_inputs;
-	        bool const do_resub = (lvl >= 3) && opt.assume_binary_inputs;
-	        bool const do_sweep = (lvl >= 3) && opt.assume_binary_inputs;
-	        bool const do_techmap = (lvl >= 4) && opt.assume_binary_inputs && opt.techmap_enable;
-	        bool const do_decompose = (lvl >= 4) && opt.assume_binary_inputs && opt.decompose_large_functions;
+        bool const do_absorption = (lvl >= 2);
+        bool const do_flatten = (lvl >= 2);
+        // Binary-only rewrites are not semantics-preserving under X/Z; keep them at O3+ even when
+        // `assume_binary_inputs` is enabled so the optimization levels stay meaningfully distinct.
+        bool const do_binary_simplify = (lvl >= 3) && opt.assume_binary_inputs;
+        bool const do_aig_rewrite = (lvl >= 3) && opt.assume_binary_inputs;
+        bool const do_resub = (lvl >= 3) && opt.assume_binary_inputs;
+        bool const do_sweep = (lvl >= 3) && opt.assume_binary_inputs;
+        bool const do_techmap = (lvl >= 4) && opt.assume_binary_inputs && opt.techmap_enable;
+        bool const do_decompose = (lvl >= 4) && opt.assume_binary_inputs && opt.decompose_large_functions;
 
         auto run_once = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept -> void
         {
@@ -15478,6 +15849,8 @@ namespace phy_engine::verilog::digital
             {
                 if(!en) { return; }
                 if(node_budget_hit) { return; }
+
+                details::cuda_trace_pass_scope cuda_pass_scope{name};
 
                 if(opt_run.max_total_nodes != 0u && details::count_total_nodes(net) > opt_run.max_total_nodes)
                 {
@@ -15716,6 +16089,8 @@ namespace phy_engine::verilog::digital
                 rep->omax_summary = ::std::move(sum);
             }
         }
+
+        if(rep != nullptr && opt.cuda_trace_enable) { rep->cuda_stats = ::std::move(cuda_sink.stats); }
         return ctx.ok();
     }
 }  // namespace phy_engine::verilog::digital

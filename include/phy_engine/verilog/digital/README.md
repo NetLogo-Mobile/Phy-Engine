@@ -158,8 +158,12 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
     - `cmake --build build_cuda -j`
   - Run example (2x V100 -> mask 3):
     - `./build_cuda/verilog2plsav out.sav in.v -Ocuda --cuda-device-mask 3`
+    - If you want to understand GPU utilization and CPU fallbacks:
+      - `./build_cuda/verilog2plsav out.sav in.v -Ocuda --cuda-device-mask 3 --report --cuda-trace`
   - Notes:
-    - `-Ocuda` is shorthand for `-Omax` (aka `-O5`) + enabling CUDA-assisted optimization, and also increases some default bounded windows (e.g. sweep/resub vars).
+    - `-Ocuda` is shorthand for `-Omax` (aka `-O5`) + enabling CUDA-assisted optimization.
+    - To also increase some bounded windows by default (e.g. sweep/resub vars), pass `--cuda-expand-windows`.
+    - `--cuda-trace` collects per-pass CUDA telemetry and prints it as part of `--report` output.
 
 #### Two-level minimization (Espresso / full cover)
 - [x] Espresso “industrial-strength” loop (additional heuristics beyond EXPAND/REDUCE/IRREDUNDANT, e.g. cube ordering + bounded last-gasp)
