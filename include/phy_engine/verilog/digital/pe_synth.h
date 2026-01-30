@@ -2189,10 +2189,14 @@ namespace phy_engine::verilog::digital
             ::std::unordered_map<::phy_engine::model::node_t*, and_gate> and_by_out{};
             ::std::unordered_map<::phy_engine::model::node_t*, nimp_gate> nimp_by_out{};
             ::std::vector<or_gate> ors{};
+            ::std::unordered_map<::phy_engine::model::node_t*, or_gate> or_by_out{};
+            ::std::vector<and_gate> ands{};
             not_by_out.reserve(1 << 14);
             and_by_out.reserve(1 << 14);
             nimp_by_out.reserve(1 << 14);
             ors.reserve(1 << 14);
+            or_by_out.reserve(1 << 14);
+            ands.reserve(1 << 14);
 
             auto classify_not = [&](::phy_engine::model::model_base const& mb,
                                     ::phy_engine::netlist::model_pos pos) noexcept -> void
@@ -2255,6 +2259,23 @@ namespace phy_engine::verilog::digital
                 g.out = pv.pins[2].nodes;
                 g.out_pin = __builtin_addressof(pv.pins[2]);
                 ors.push_back(g);
+                if(g.out != nullptr) { or_by_out.emplace(g.out, g); }
+            };
+
+            auto classify_and2 = [&](::phy_engine::model::model_base const& mb,
+                                     ::phy_engine::netlist::model_pos pos) noexcept -> void
+            {
+                if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return; }
+                if(model_name_u8(mb) != u8"AND") { return; }
+                auto pv = mb.ptr->generate_pin_view();
+                if(pv.size != 3) { return; }
+                and_gate g{};
+                g.pos = pos;
+                g.a = pv.pins[0].nodes;
+                g.b = pv.pins[1].nodes;
+                g.out = pv.pins[2].nodes;
+                g.out_pin = __builtin_addressof(pv.pins[2]);
+                ands.push_back(g);
             };
 
             for(std::size_t chunk_pos{}; chunk_pos < nl.models.size(); ++chunk_pos)
@@ -2268,6 +2289,7 @@ namespace phy_engine::verilog::digital
                     classify_and(mb, pos);
                     classify_nimp(mb, pos);
                     classify_or(mb, pos);
+                    classify_and2(mb, pos);
                 }
             }
 
@@ -2336,9 +2358,23 @@ namespace phy_engine::verilog::digital
                 bool delete_t0{};
                 bool delete_t1{};
             };
+            struct rewrite_action_pos
+            {
+                bool to_xnor{};
+                ::phy_engine::model::node_t* a{};
+                ::phy_engine::model::node_t* b{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::netlist::model_pos and_pos{};
+                ::phy_engine::netlist::model_pos t0_pos{};
+                ::phy_engine::netlist::model_pos t1_pos{};
+                bool delete_t0{};
+                bool delete_t1{};
+            };
 
             ::std::vector<rewrite_action> actions{};
             actions.reserve(256);
+            ::std::vector<rewrite_action_pos> actions_pos{};
+            actions_pos.reserve(256);
 
             for(auto const& gor : ors)
             {
@@ -2423,6 +2459,64 @@ namespace phy_engine::verilog::digital
                 });
             }
 
+            // POS XOR/XNOR: (a|b)&(~a|~b) = XOR(a,b) ; (a|~b)&(~a|b) = XNOR(a,b)
+            for(auto const& gand : ands)
+            {
+                if(gand.a == nullptr || gand.b == nullptr || gand.out == nullptr || gand.out_pin == nullptr) { continue; }
+                if(is_protected(gand.out)) { continue; }
+                if(!has_unique_driver_pin(gand.out, gand.out_pin, fan.pin_out)) { continue; }
+
+                auto it0 = or_by_out.find(gand.a);
+                auto it1 = or_by_out.find(gand.b);
+                if(it0 == or_by_out.end() || it1 == or_by_out.end()) { continue; }
+                auto const& t0g = it0->second;
+                auto const& t1g = it1->second;
+                if(t0g.a == nullptr || t0g.b == nullptr || t1g.a == nullptr || t1g.b == nullptr) { continue; }
+                if(t0g.out == nullptr || t1g.out == nullptr || t0g.out_pin == nullptr || t1g.out_pin == nullptr) { continue; }
+
+                bool const del0 = is_single_use_internal(t0g.out, t0g.out_pin);
+                bool const del1 = is_single_use_internal(t1g.out, t1g.out_pin);
+
+                auto t0 = canon2(get_lit(t0g.a), get_lit(t0g.b));
+                auto t1 = canon2(get_lit(t1g.a), get_lit(t1g.b));
+                if(t0[0].v == nullptr || t0[1].v == nullptr || t1[0].v == nullptr || t1[1].v == nullptr) { continue; }
+                if(t0[0].v != t1[0].v || t0[1].v != t1[1].v) { continue; }
+                if(t0[0].v == t0[1].v) { continue; }
+
+                bool const same0 = (t0[0].neg == t1[0].neg);
+                bool const same1 = (t0[1].neg == t1[1].neg);
+                if(same0 || same1) { continue; }
+
+                unsigned const nneg0 = static_cast<unsigned>(t0[0].neg) + static_cast<unsigned>(t0[1].neg);
+                unsigned const nneg1 = static_cast<unsigned>(t1[0].neg) + static_cast<unsigned>(t1[1].neg);
+
+                bool to_xnor{};
+                if((nneg0 == 0u && nneg1 == 2u) || (nneg0 == 2u && nneg1 == 0u))
+                {
+                    to_xnor = false;  // XOR
+                }
+                else if((nneg0 == 1u && nneg1 == 1u))
+                {
+                    to_xnor = true;  // XNOR
+                }
+                else
+                {
+                    continue;
+                }
+
+                actions_pos.push_back(rewrite_action_pos{
+                    .to_xnor = to_xnor,
+                    .a = t0[0].v,
+                    .b = t0[1].v,
+                    .out = gand.out,
+                    .and_pos = gand.pos,
+                    .t0_pos = t0g.pos,
+                    .t1_pos = t1g.pos,
+                    .delete_t0 = del0,
+                    .delete_t1 = del1,
+                });
+            }
+
             bool changed{};
             for(auto const& a : actions)
             {
@@ -2449,6 +2543,28 @@ namespace phy_engine::verilog::digital
                     continue;
                 }
 
+                changed = true;
+            }
+
+            for(auto const& a : actions_pos)
+            {
+                if(a.out == nullptr || a.a == nullptr || a.b == nullptr) { continue; }
+                if(is_protected(a.out)) { continue; }
+
+                (void)::phy_engine::netlist::delete_model(nl, a.and_pos);
+                auto new_pos = add_xor_like(a.to_xnor, a.a, a.b);
+                if(!new_pos) { continue; }
+
+                if(a.delete_t0) { (void)::phy_engine::netlist::delete_model(nl, a.t0_pos); }
+                if(a.delete_t1) { (void)::phy_engine::netlist::delete_model(nl, a.t1_pos); }
+
+                auto* nm = ::phy_engine::netlist::get_model(nl, *new_pos);
+                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr) { continue; }
+                if(!::phy_engine::netlist::add_to_node(nl, *nm, 2, *a.out))
+                {
+                    (void)::phy_engine::netlist::delete_model(nl, *new_pos);
+                    continue;
+                }
                 changed = true;
             }
 
@@ -2955,6 +3071,720 @@ namespace phy_engine::verilog::digital
                 if(!move_consumers(pg.out, rep)) { continue; }
                 (void)::phy_engine::netlist::delete_model(nl, pg.pos);
                 changed = true;
+            }
+
+            return changed;
+        }
+
+        [[nodiscard]] inline bool optimize_binary_complement_simplify_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                                     ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
+        {
+            // Binary-only multi-level simplifications (valid when inputs are guaranteed 0/1):
+            // - (x&y) | (x&~y) -> x  and  (x&y) | (~x&y) -> y
+            // - (x|y) & (x|~y) -> x  and  (x|y) & (~x|y) -> y
+            // - (x|~x) -> 1 and (x&~x) -> 0 (when expressed structurally)
+
+            struct not_gate
+            {
+                ::phy_engine::netlist::model_pos pos{};
+                ::phy_engine::model::node_t* in{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::model::pin const* out_pin{};
+            };
+            struct bin_gate
+            {
+                ::fast_io::u8string_view name{};
+                ::phy_engine::netlist::model_pos pos{};
+                ::phy_engine::model::node_t* a{};
+                ::phy_engine::model::node_t* b{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::model::pin const* out_pin{};
+            };
+
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
+            protected_map.reserve(protected_nodes.size() * 2u + 1u);
+            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
+
+            auto const fan = build_gate_opt_fanout(nl);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, not_gate> not_by_out{};
+            not_by_out.reserve(1 << 14);
+            ::std::unordered_map<::phy_engine::model::node_t*, bin_gate> and_by_out{};
+            ::std::unordered_map<::phy_engine::model::node_t*, bin_gate> or_by_out{};
+            and_by_out.reserve(1 << 14);
+            or_by_out.reserve(1 << 14);
+            ::std::vector<bin_gate> ors{};
+            ::std::vector<bin_gate> ands{};
+            ors.reserve(1 << 14);
+            ands.reserve(1 << 14);
+
+            for(std::size_t chunk_pos{}; chunk_pos < nl.models.size(); ++chunk_pos)
+            {
+                auto& blk = nl.models.index_unchecked(chunk_pos);
+                for(std::size_t vec_pos{}; blk.begin + vec_pos < blk.curr; ++vec_pos)
+                {
+                    auto const& mb = blk.begin[vec_pos];
+                    if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { continue; }
+                    auto const name = model_name_u8(mb);
+                    auto pv = mb.ptr->generate_pin_view();
+
+                    if(name == u8"NOT")
+                    {
+                        if(pv.size != 2) { continue; }
+                        not_gate g{};
+                        g.pos = {vec_pos, chunk_pos};
+                        g.in = pv.pins[0].nodes;
+                        g.out = pv.pins[1].nodes;
+                        g.out_pin = __builtin_addressof(pv.pins[1]);
+                        if(g.out != nullptr) { not_by_out.emplace(g.out, g); }
+                        continue;
+                    }
+
+                    if(name != u8"AND" && name != u8"OR") { continue; }
+                    if(pv.size != 3) { continue; }
+                    bin_gate g{};
+                    g.name = name;
+                    g.pos = {vec_pos, chunk_pos};
+                    g.a = pv.pins[0].nodes;
+                    g.b = pv.pins[1].nodes;
+                    g.out = pv.pins[2].nodes;
+                    g.out_pin = __builtin_addressof(pv.pins[2]);
+                    if(g.out == nullptr || g.out_pin == nullptr) { continue; }
+                    if(name == u8"AND")
+                    {
+                        and_by_out.emplace(g.out, g);
+                        ands.push_back(g);
+                    }
+                    else
+                    {
+                        or_by_out.emplace(g.out, g);
+                        ors.push_back(g);
+                    }
+                }
+            }
+
+            auto is_single_use_internal = [&](::phy_engine::model::node_t* n, ::phy_engine::model::pin const* expected_driver) noexcept -> bool
+            {
+                if(n == nullptr) { return false; }
+                if(is_protected(n)) { return false; }
+                auto itd = fan.driver_count.find(n);
+                auto itc = fan.consumer_count.find(n);
+                if(itd == fan.driver_count.end() || itc == fan.consumer_count.end()) { return false; }
+                if(itd->second != 1 || itc->second != 1) { return false; }
+                return has_unique_driver_pin(n, expected_driver, fan.pin_out);
+            };
+
+            struct lit
+            {
+                ::phy_engine::model::node_t* v{};
+                bool neg{};
+            };
+            auto get_lit = [&](::phy_engine::model::node_t* n) noexcept -> lit
+            {
+                if(auto it = not_by_out.find(n); it != not_by_out.end() && it->second.in != nullptr) { return lit{it->second.in, true}; }
+                return lit{n, false};
+            };
+
+            auto move_consumers = [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to) noexcept -> bool
+            {
+                if(from == nullptr || to == nullptr || from == to) { return false; }
+                if(is_protected(from)) { return false; }
+                ::std::vector<::phy_engine::model::pin*> pins_to_move{};
+                pins_to_move.reserve(from->pins.size());
+                for(auto* p : from->pins)
+                {
+                    auto it = fan.pin_out.find(p);
+                    bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
+                    if(is_out) { continue; }
+                    pins_to_move.push_back(p);
+                }
+                for(auto* p : pins_to_move)
+                {
+                    from->pins.erase(p);
+                    p->nodes = to;
+                    to->pins.insert(p);
+                }
+                return true;
+            };
+
+            auto make_const = [&](bool v) noexcept -> ::phy_engine::model::node_t*
+            {
+                return find_or_make_const_node(nl, v ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                     : ::phy_engine::model::digital_node_statement_t::false_state);
+            };
+
+            bool changed{};
+
+            // Simplify OR pairs: (x&y)|(x&~y) -> x, and (x&y)|(~x&y) -> y.
+            for(auto const& og : ors)
+            {
+                if(og.a == nullptr || og.b == nullptr || og.out == nullptr || og.out_pin == nullptr) { continue; }
+                if(is_protected(og.out)) { continue; }
+                if(!has_unique_driver_pin(og.out, og.out_pin, fan.pin_out)) { continue; }
+
+                auto it0 = and_by_out.find(og.a);
+                auto it1 = and_by_out.find(og.b);
+                if(it0 == and_by_out.end() || it1 == and_by_out.end()) { continue; }
+                auto const& a0 = it0->second;
+                auto const& a1 = it1->second;
+                if(a0.a == nullptr || a0.b == nullptr || a1.a == nullptr || a1.b == nullptr) { continue; }
+
+                auto l00 = get_lit(a0.a);
+                auto l01 = get_lit(a0.b);
+                auto l10 = get_lit(a1.a);
+                auto l11 = get_lit(a1.b);
+                ::std::array<lit, 2> t0{l00, l01};
+                ::std::array<lit, 2> t1{l10, l11};
+
+                auto canon = [](lit a, lit b) noexcept -> ::std::array<lit, 2>
+                {
+                    if(reinterpret_cast<std::uintptr_t>(a.v) > reinterpret_cast<std::uintptr_t>(b.v)) { ::std::swap(a, b); }
+                    return {a, b};
+                };
+                t0 = canon(t0[0], t0[1]);
+                t1 = canon(t1[0], t1[1]);
+                if(t0[0].v == nullptr || t0[1].v == nullptr || t1[0].v == nullptr || t1[1].v == nullptr) { continue; }
+                if(t0[0].v != t1[0].v || t0[1].v != t1[1].v) { continue; }
+
+                // Look for one literal with same polarity and the other with opposite polarity.
+                bool const same0 = (t0[0].neg == t1[0].neg);
+                bool const same1 = (t0[1].neg == t1[1].neg);
+                if(same0 == same1) { continue; }  // need exactly one same and one opposite
+
+                ::phy_engine::model::node_t* rep{};
+                if(same0) { rep = t0[0].v; }
+                else { rep = t0[1].v; }
+                // If the common literal is negated, result is ~x (still valid). We'll materialize via NOT.
+                bool const rep_neg = same0 ? t0[0].neg : t0[1].neg;
+                if(rep == nullptr) { continue; }
+                if(rep_neg)
+                {
+                    // Find existing NOT output if available, else build a new NOT (allowed even if shared).
+                    // Prefer reusing by scanning not_by_out; reverse map would be heavier so just create.
+                    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOT{});
+                    (void)pos;
+                    if(m == nullptr) { continue; }
+                    auto& nref = ::phy_engine::netlist::create_node(nl);
+                    auto* nout = __builtin_addressof(nref);
+                    if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *rep) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *nout))
+                    {
+                        (void)::phy_engine::netlist::delete_model(nl, pos);
+                        continue;
+                    }
+                    rep = nout;
+                }
+
+                if(!move_consumers(og.out, rep)) { continue; }
+                (void)::phy_engine::netlist::delete_model(nl, og.pos);
+                if(is_single_use_internal(a0.out, a0.out_pin)) { (void)::phy_engine::netlist::delete_model(nl, a0.pos); }
+                if(is_single_use_internal(a1.out, a1.out_pin)) { (void)::phy_engine::netlist::delete_model(nl, a1.pos); }
+                changed = true;
+            }
+
+            // Simplify AND pairs: (x|y)&(x|~y) -> x, and (x|y)&(~x|y) -> y.
+            for(auto const& ag : ands)
+            {
+                if(ag.a == nullptr || ag.b == nullptr || ag.out == nullptr || ag.out_pin == nullptr) { continue; }
+                if(is_protected(ag.out)) { continue; }
+                if(!has_unique_driver_pin(ag.out, ag.out_pin, fan.pin_out)) { continue; }
+
+                auto it0 = or_by_out.find(ag.a);
+                auto it1 = or_by_out.find(ag.b);
+                if(it0 == or_by_out.end() || it1 == or_by_out.end()) { continue; }
+                auto const& o0 = it0->second;
+                auto const& o1 = it1->second;
+                if(o0.a == nullptr || o0.b == nullptr || o1.a == nullptr || o1.b == nullptr) { continue; }
+
+                auto l00 = get_lit(o0.a);
+                auto l01 = get_lit(o0.b);
+                auto l10 = get_lit(o1.a);
+                auto l11 = get_lit(o1.b);
+                ::std::array<lit, 2> t0{l00, l01};
+                ::std::array<lit, 2> t1{l10, l11};
+                auto canon = [](lit a, lit b) noexcept -> ::std::array<lit, 2>
+                {
+                    if(reinterpret_cast<std::uintptr_t>(a.v) > reinterpret_cast<std::uintptr_t>(b.v)) { ::std::swap(a, b); }
+                    return {a, b};
+                };
+                t0 = canon(t0[0], t0[1]);
+                t1 = canon(t1[0], t1[1]);
+                if(t0[0].v == nullptr || t0[1].v == nullptr || t1[0].v == nullptr || t1[1].v == nullptr) { continue; }
+                if(t0[0].v != t1[0].v || t0[1].v != t1[1].v) { continue; }
+
+                bool const same0 = (t0[0].neg == t1[0].neg);
+                bool const same1 = (t0[1].neg == t1[1].neg);
+                if(same0 == same1) { continue; }
+
+                ::phy_engine::model::node_t* rep{};
+                bool rep_neg{};
+                if(same0) { rep = t0[0].v; rep_neg = t0[0].neg; }
+                else { rep = t0[1].v; rep_neg = t0[1].neg; }
+                if(rep == nullptr) { continue; }
+                if(rep_neg)
+                {
+                    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOT{});
+                    (void)pos;
+                    if(m == nullptr) { continue; }
+                    auto& nref = ::phy_engine::netlist::create_node(nl);
+                    auto* nout = __builtin_addressof(nref);
+                    if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *rep) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *nout))
+                    {
+                        (void)::phy_engine::netlist::delete_model(nl, pos);
+                        continue;
+                    }
+                    rep = nout;
+                }
+
+                if(!move_consumers(ag.out, rep)) { continue; }
+                (void)::phy_engine::netlist::delete_model(nl, ag.pos);
+                if(is_single_use_internal(o0.out, o0.out_pin)) { (void)::phy_engine::netlist::delete_model(nl, o0.pos); }
+                if(is_single_use_internal(o1.out, o1.out_pin)) { (void)::phy_engine::netlist::delete_model(nl, o1.pos); }
+                changed = true;
+            }
+
+            // Complement tautologies/contradictions: (x|~x)->1, (x&~x)->0 when expressed as OR/AND of a literal and its negation.
+            for(auto const& og : ors)
+            {
+                if(og.a == nullptr || og.b == nullptr || og.out == nullptr || og.out_pin == nullptr) { continue; }
+                if(is_protected(og.out)) { continue; }
+                if(!has_unique_driver_pin(og.out, og.out_pin, fan.pin_out)) { continue; }
+                auto la = get_lit(og.a);
+                auto lb = get_lit(og.b);
+                if(la.v != nullptr && la.v == lb.v && la.neg != lb.neg)
+                {
+                    auto* rep = make_const(true);
+                    if(rep == nullptr) { continue; }
+                    if(!move_consumers(og.out, rep)) { continue; }
+                    (void)::phy_engine::netlist::delete_model(nl, og.pos);
+                    changed = true;
+                }
+            }
+            for(auto const& ag : ands)
+            {
+                if(ag.a == nullptr || ag.b == nullptr || ag.out == nullptr || ag.out_pin == nullptr) { continue; }
+                if(is_protected(ag.out)) { continue; }
+                if(!has_unique_driver_pin(ag.out, ag.out_pin, fan.pin_out)) { continue; }
+                auto la = get_lit(ag.a);
+                auto lb = get_lit(ag.b);
+                if(la.v != nullptr && la.v == lb.v && la.neg != lb.neg)
+                {
+                    auto* rep = make_const(false);
+                    if(rep == nullptr) { continue; }
+                    if(!move_consumers(ag.out, rep)) { continue; }
+                    (void)::phy_engine::netlist::delete_model(nl, ag.pos);
+                    changed = true;
+                }
+            }
+
+            return changed;
+        }
+
+        [[nodiscard]] inline bool optimize_flatten_associative_and_or_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                                    ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
+                                                                                    pe_synth_options const& opt) noexcept
+        {
+            // Flatten AND/OR trees, remove duplicates, and fold constants.
+            // - Safe 4-valued rules: x&0=0, x&1=x, x|1=1, x|0=x, idempotence x&x=x, x|x=x
+            // - Binary-only (assume_binary_inputs): x&~x=0, x|~x=1 across the whole flattened set
+            //
+            // This is a multi-level optimization: it can reduce gate count even when duplicates/constants are not adjacent.
+
+            enum class k2 : std::uint8_t
+            {
+                and_gate,
+                or_gate,
+            };
+
+            struct not_gate
+            {
+                ::phy_engine::netlist::model_pos pos{};
+                ::phy_engine::model::node_t* in{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::model::pin const* out_pin{};
+            };
+
+            struct bin_gate
+            {
+                k2 k{};
+                ::phy_engine::netlist::model_pos pos{};
+                ::phy_engine::model::node_t* in0{};
+                ::phy_engine::model::node_t* in1{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::model::pin const* out_pin{};
+            };
+
+            struct leaf
+            {
+                ::phy_engine::model::node_t* node{};  // actual node in netlist
+                ::phy_engine::model::node_t* base{};  // underlying (for NOT literals: input of NOT)
+                bool neg{};
+            };
+
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
+            protected_map.reserve(protected_nodes.size() * 2u + 1u);
+            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
+
+            auto const fan = build_gate_opt_fanout(nl);
+
+            using dns = ::phy_engine::model::digital_node_statement_t;
+            ::std::unordered_map<::phy_engine::model::node_t*, dns> node_const{};
+            node_const.reserve(1 << 14);
+            for(auto& blk : nl.models)
+            {
+                for(auto* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    if(m->name.size() != 0) { continue; }
+                    if(model_name_u8(*m) != u8"INPUT") { continue; }
+                    auto vi = m->ptr->get_attribute(0);
+                    if(vi.type != ::phy_engine::model::variant_type::digital) { continue; }
+                    if(vi.digital != dns::false_state && vi.digital != dns::true_state) { continue; }
+                    auto pv = m->ptr->generate_pin_view();
+                    if(pv.size != 1) { continue; }
+                    auto* n = pv.pins[0].nodes;
+                    if(n == nullptr) { continue; }
+                    node_const.emplace(n, vi.digital);
+                }
+            }
+
+            auto get_const = [&](::phy_engine::model::node_t* n, bool& out) noexcept -> bool
+            {
+                if(n == nullptr) { return false; }
+                if(auto it = node_const.find(n); it != node_const.end())
+                {
+                    out = (it->second == dns::true_state);
+                    return true;
+                }
+                return false;
+            };
+
+            ::std::unordered_map<::phy_engine::model::node_t*, not_gate> not_by_out{};
+            not_by_out.reserve(1 << 14);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, bin_gate> gate_by_out{};
+            gate_by_out.reserve(1 << 14);
+
+            ::std::vector<bin_gate> roots{};
+            roots.reserve(1 << 14);
+
+            for(std::size_t chunk_pos{}; chunk_pos < nl.models.size(); ++chunk_pos)
+            {
+                auto& blk = nl.models.index_unchecked(chunk_pos);
+                for(std::size_t vec_pos{}; blk.begin + vec_pos < blk.curr; ++vec_pos)
+                {
+                    auto const& mb = blk.begin[vec_pos];
+                    if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { continue; }
+                    auto const name = model_name_u8(mb);
+                    auto pv = mb.ptr->generate_pin_view();
+
+                    if(name == u8"NOT")
+                    {
+                        if(pv.size != 2) { continue; }
+                        not_gate ng{};
+                        ng.pos = {vec_pos, chunk_pos};
+                        ng.in = pv.pins[0].nodes;
+                        ng.out = pv.pins[1].nodes;
+                        ng.out_pin = __builtin_addressof(pv.pins[1]);
+                        if(ng.out != nullptr) { not_by_out.emplace(ng.out, ng); }
+                        continue;
+                    }
+
+                    if(name != u8"AND" && name != u8"OR") { continue; }
+                    if(pv.size != 3) { continue; }
+
+                    bin_gate g{};
+                    g.pos = {vec_pos, chunk_pos};
+                    g.in0 = pv.pins[0].nodes;
+                    g.in1 = pv.pins[1].nodes;
+                    g.out = pv.pins[2].nodes;
+                    g.out_pin = __builtin_addressof(pv.pins[2]);
+                    g.k = (name == u8"AND") ? k2::and_gate : k2::or_gate;
+                    if(g.out == nullptr || g.out_pin == nullptr) { continue; }
+                    gate_by_out.emplace(g.out, g);
+                    roots.push_back(g);
+                }
+            }
+
+            auto is_exclusive_internal = [&](bin_gate const& g) noexcept -> bool
+            {
+                if(g.out == nullptr || g.out_pin == nullptr) { return false; }
+                if(is_protected(g.out)) { return false; }
+                auto itd = fan.driver_count.find(g.out);
+                auto itc = fan.consumer_count.find(g.out);
+                if(itd == fan.driver_count.end() || itc == fan.consumer_count.end()) { return false; }
+                if(itd->second != 1 || itc->second != 1) { return false; }
+                return has_unique_driver_pin(g.out, g.out_pin, fan.pin_out);
+            };
+
+            auto as_leaf = [&](::phy_engine::model::node_t* n) noexcept -> leaf
+            {
+                if(auto it = not_by_out.find(n); it != not_by_out.end() && it->second.in != nullptr)
+                {
+                    return leaf{.node = n, .base = it->second.in, .neg = true};
+                }
+                return leaf{.node = n, .base = n, .neg = false};
+            };
+
+            auto move_consumers = [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to) noexcept -> bool
+            {
+                if(from == nullptr || to == nullptr || from == to) { return false; }
+                if(is_protected(from)) { return false; }
+                ::std::vector<::phy_engine::model::pin*> pins_to_move{};
+                pins_to_move.reserve(from->pins.size());
+                for(auto* p : from->pins)
+                {
+                    auto it = fan.pin_out.find(p);
+                    bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
+                    if(is_out) { continue; }
+                    pins_to_move.push_back(p);
+                }
+                for(auto* p : pins_to_move)
+                {
+                    from->pins.erase(p);
+                    p->nodes = to;
+                    to->pins.insert(p);
+                }
+                return true;
+            };
+
+            auto make_bin = [&](k2 k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b, ::phy_engine::model::node_t* out) noexcept
+                -> ::std::optional<::phy_engine::netlist::model_pos>
+            {
+                if(a == nullptr || b == nullptr || out == nullptr) { return ::std::nullopt; }
+                if(k == k2::and_gate)
+                {
+                    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{});
+                    (void)pos;
+                    if(m == nullptr) { return ::std::nullopt; }
+                    if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *b) ||
+                       !::phy_engine::netlist::add_to_node(nl, *m, 2, *out))
+                    {
+                        (void)::phy_engine::netlist::delete_model(nl, pos);
+                        return ::std::nullopt;
+                    }
+                    return pos;
+                }
+                auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{});
+                (void)pos;
+                if(m == nullptr) { return ::std::nullopt; }
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *b) ||
+                   !::phy_engine::netlist::add_to_node(nl, *m, 2, *out))
+                {
+                    (void)::phy_engine::netlist::delete_model(nl, pos);
+                    return ::std::nullopt;
+                }
+                return pos;
+            };
+
+            auto make_const_node = [&](bool v) noexcept -> ::phy_engine::model::node_t*
+            {
+                return find_or_make_const_node(nl, v ? dns::true_state : dns::false_state);
+            };
+
+            bool changed{};
+            for(auto const& root : roots)
+            {
+                if(root.in0 == nullptr || root.in1 == nullptr || root.out == nullptr || root.out_pin == nullptr) { continue; }
+                if(is_protected(root.out)) { continue; }
+                if(!has_unique_driver_pin(root.out, root.out_pin, fan.pin_out)) { continue; }
+
+                // Ensure root still exists and matches.
+                {
+                    auto* mb = ::phy_engine::netlist::get_model(nl, root.pos);
+                    if(mb == nullptr || mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
+                    auto const nm = model_name_u8(*mb);
+                    if((root.k == k2::and_gate && nm != u8"AND") || (root.k == k2::or_gate && nm != u8"OR")) { continue; }
+                }
+
+                ::std::vector<leaf> leaves{};
+                leaves.reserve(32);
+                ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
+                to_delete.reserve(64);
+
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> visited{};
+                visited.reserve(64);
+
+                auto collect = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> void
+                {
+                    if(n == nullptr) { return; }
+                    if(visited.contains(n)) { leaves.push_back(as_leaf(n)); return; }
+                    visited.emplace(n, true);
+
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end() || itg->second.k != root.k)
+                    {
+                        leaves.push_back(as_leaf(n));
+                        return;
+                    }
+                    auto const& g = itg->second;
+                    if(!is_exclusive_internal(g))
+                    {
+                        leaves.push_back(as_leaf(n));
+                        return;
+                    }
+                    to_delete.push_back(g.pos);
+                    self(self, g.in0);
+                    self(self, g.in1);
+                };
+
+                collect(collect, root.in0);
+                collect(collect, root.in1);
+                if(leaves.empty()) { continue; }
+
+                // Remove duplicates and fold constants.
+                bool any_const{};
+                bool const_value{};
+                ::std::unordered_map<::std::uint64_t, leaf> uniq{};
+                uniq.reserve(leaves.size() * 2u);
+
+                auto key_of = [](leaf const& l) noexcept -> ::std::uint64_t
+                {
+                    auto const p = static_cast<::std::uint64_t>(reinterpret_cast<::std::uintptr_t>(l.base));
+                    return (p >> 4) ^ (static_cast<::std::uint64_t>(l.neg) << 1);
+                };
+
+                bool force_const{};
+                bool force_const_value{};
+
+                for(auto const& l : leaves)
+                {
+                    if(l.node == nullptr || l.base == nullptr) { continue; }
+
+                    bool cv{};
+                    if(get_const(l.node, cv))
+                    {
+                        any_const = true;
+                        const_value = cv;
+                        if(root.k == k2::and_gate)
+                        {
+                            if(!cv) { force_const = true; force_const_value = false; break; }
+                            // true leaf can be dropped
+                            continue;
+                        }
+                        else
+                        {
+                            if(cv) { force_const = true; force_const_value = true; break; }
+                            // false leaf can be dropped
+                            continue;
+                        }
+                    }
+
+                    uniq.emplace(key_of(l), l);
+                }
+
+                if(force_const)
+                {
+                    auto* rep = make_const_node(force_const_value);
+                    if(rep == nullptr) { continue; }
+                    if(!move_consumers(root.out, rep)) { continue; }
+                    (void)::phy_engine::netlist::delete_model(nl, root.pos);
+                    for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    changed = true;
+                    continue;
+                }
+
+                // Binary-only complement check across uniq set.
+                bool did_root_rewrite{};
+                if(opt.assume_binary_inputs)
+                {
+                    ::std::unordered_map<::phy_engine::model::node_t*, unsigned> seen_mask{};
+                    seen_mask.reserve(uniq.size() * 2u);
+                    for(auto const& kv : uniq)
+                    {
+                        auto const& l = kv.second;
+                        if(l.base == nullptr) { continue; }
+                        auto& m = seen_mask[l.base];
+                        m |= l.neg ? 2u : 1u;
+                        if(m == 3u)
+                        {
+                            bool const v = (root.k == k2::or_gate);
+                            auto* rep = make_const_node(v);
+                            if(rep == nullptr) { did_root_rewrite = false; break; }
+                            if(!move_consumers(root.out, rep)) { did_root_rewrite = false; break; }
+                            (void)::phy_engine::netlist::delete_model(nl, root.pos);
+                            for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                            changed = true;
+                            did_root_rewrite = true;
+                            break;
+                        }
+                    }
+                }
+                if(did_root_rewrite) { continue; }
+
+                {
+                    ::std::vector<leaf> flat{};
+                    flat.reserve(uniq.size());
+                    for(auto const& kv : uniq) { flat.push_back(kv.second); }
+
+                    // If everything dropped (e.g. AND of 1's, OR of 0's), reduce to identity constant.
+                    if(flat.empty())
+                    {
+                        bool const v = (root.k == k2::and_gate);
+                        auto* rep = make_const_node(v);
+                        if(rep == nullptr) { continue; }
+                        if(!move_consumers(root.out, rep)) { continue; }
+                        (void)::phy_engine::netlist::delete_model(nl, root.pos);
+                        for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        changed = true;
+                        continue;
+                    }
+
+                    // Canonical order: sort by (base ptr, neg).
+                    ::std::sort(flat.begin(), flat.end(), [](leaf const& x, leaf const& y) noexcept {
+                        if(x.base != y.base) { return reinterpret_cast<std::uintptr_t>(x.base) < reinterpret_cast<std::uintptr_t>(y.base); }
+                        return x.neg < y.neg;
+                    });
+
+                    auto const old_cost = 1u + to_delete.size();
+                    auto const new_cost = (flat.size() <= 1) ? 0u : static_cast<std::size_t>(flat.size() - 1);
+                    if(new_cost >= old_cost) { continue; }
+
+                    if(flat.size() == 1)
+                    {
+                        auto* rep = flat[0].node;
+                        if(rep == nullptr) { continue; }
+                        if(!move_consumers(root.out, rep)) { continue; }
+                        (void)::phy_engine::netlist::delete_model(nl, root.pos);
+                        for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        changed = true;
+                        continue;
+                    }
+
+                    // Build a balanced-ish chain from leaves.
+                    auto* acc = flat[0].node;
+                    if(acc == nullptr) { continue; }
+                    ::std::vector<::phy_engine::netlist::model_pos> new_models{};
+                    new_models.reserve(flat.size());
+
+                    for(std::size_t i{1}; i + 1 < flat.size(); ++i)
+                    {
+                        auto& nref = ::phy_engine::netlist::create_node(nl);
+                        auto* nout = __builtin_addressof(nref);
+                        auto mp = make_bin(root.k, acc, flat[i].node, nout);
+                        if(!mp) { goto rollback_new; }
+                        new_models.push_back(*mp);
+                        acc = nout;
+                    }
+
+                    // Final gate drives root.out node.
+                    {
+                        auto mp = make_bin(root.k, acc, flat.back().node, root.out);
+                        if(!mp) { goto rollback_new; }
+                        new_models.push_back(*mp);
+                    }
+
+                    // Delete old root + internal.
+                    (void)::phy_engine::netlist::delete_model(nl, root.pos);
+                    for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    changed = true;
+                    continue;
+
+                rollback_new:
+                    for(auto const mp : new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                }
+
             }
 
             return changed;
@@ -6184,6 +7014,8 @@ namespace phy_engine::verilog::digital
         bool const do_double_not = (lvl >= 1);
         bool const do_constprop = (lvl >= 1);
         bool const do_absorption = (lvl >= 2);
+        bool const do_flatten = (lvl >= 2);
+        bool const do_binary_simplify = (lvl >= 2) && opt.assume_binary_inputs;
 
         auto run_once = [&]() noexcept -> void {
             if(do_wires) { details::optimize_eliminate_yes_buffers(nl, top_port_nodes); }
@@ -6194,6 +7026,9 @@ namespace phy_engine::verilog::digital
             if(do_factoring) { (void)details::optimize_factor_common_terms_in_pe_netlist(nl, top_port_nodes); }
             if(do_absorption) { (void)details::optimize_absorption_in_pe_netlist(nl, top_port_nodes); }
             if(do_xor_rewrite) { (void)details::optimize_rewrite_xor_xnor_in_pe_netlist(nl, top_port_nodes); }
+            if(do_flatten) { (void)details::optimize_flatten_associative_and_or_in_pe_netlist(nl, top_port_nodes, opt); }
+            if(do_binary_simplify) { (void)details::optimize_binary_complement_simplify_in_pe_netlist(nl, top_port_nodes); }
+            if(do_binary_simplify) { (void)details::optimize_constant_propagation_in_pe_netlist(nl, top_port_nodes, opt); }
             if(do_qm) { (void)details::optimize_qm_two_level_minimize_in_pe_netlist(nl, top_port_nodes, opt); }
             if(do_input_inv_map) { (void)details::optimize_push_input_inverters_in_pe_netlist(nl, top_port_nodes); }
             if(do_double_not) { (void)details::optimize_eliminate_double_not_in_pe_netlist(nl, top_port_nodes); }

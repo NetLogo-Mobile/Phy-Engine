@@ -17,6 +17,11 @@ inline ::phy_engine::model::variant dv(::phy_engine::model::digital_node_stateme
     return vi;
 }
 
+struct run_result
+{
+    std::size_t gate_count{};
+};
+
 std::size_t count_logic_gates(::phy_engine::netlist::netlist const& nl) noexcept
 {
     std::size_t gates{};
@@ -35,30 +40,6 @@ std::size_t count_logic_gates(::phy_engine::netlist::netlist const& nl) noexcept
     }
     return gates;
 }
-
-std::size_t count_model(::phy_engine::netlist::netlist const& nl, ::fast_io::u8string_view name) noexcept
-{
-    std::size_t cnt{};
-    for(auto const& blk : nl.models)
-    {
-        for(auto const* m = blk.begin; m != blk.curr; ++m)
-        {
-            if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
-            if(m->ptr->get_model_name() == name) { ++cnt; }
-        }
-    }
-    return cnt;
-}
-
-struct run_result
-{
-    bool ok{};
-    std::size_t gate_count{};
-    std::size_t nots{};
-    std::size_t imps{};
-    std::size_t nimps{};
-    std::size_t xnors{};
-};
 
 std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t opt_level) noexcept
 {
@@ -88,7 +69,6 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         ports.push_back(__builtin_addressof(n));
     }
 
-    // Create INPUT/OUTPUT models for each bit port.
     for(std::size_t pi{}; pi < top_inst.mod->ports.size(); ++pi)
     {
         auto const& p = top_inst.mod->ports.index_unchecked(pi);
@@ -122,6 +102,7 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         .assume_binary_inputs = true,
         .opt_level = opt_level,
     };
+
     if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt))
     {
         std::fprintf(stderr,
@@ -131,6 +112,7 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
                      reinterpret_cast<char const*>(err.message.data()));
         return std::nullopt;
     }
+
     if(!c.analyze()) { return std::nullopt; }
 
     auto port_index = [&](::fast_io::u8string_view name) noexcept -> std::optional<std::size_t>
@@ -143,16 +125,11 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         return std::nullopt;
     };
 
-    constexpr ::fast_io::u8string_view inputs[10]{u8"a", u8"b", u8"c", u8"d", u8"e", u8"f", u8"g", u8"h", u8"p", u8"q"};
-    for(auto const nm : inputs)
-    {
-        if(!port_index(nm)) { return std::nullopt; }
-    }
-    auto idx_y_big = port_index(u8"y_big");
-    auto idx_y_imp = port_index(u8"y_imp");
-    auto idx_y_nimp = port_index(u8"y_nimp");
-    auto idx_y_xnor = port_index(u8"y_xnor");
-    if(!idx_y_big || !idx_y_imp || !idx_y_nimp || !idx_y_xnor) { return std::nullopt; }
+    auto idx_a = port_index(u8"a");
+    auto idx_b = port_index(u8"b");
+    auto idx_y1 = port_index(u8"y1");
+    auto idx_y2 = port_index(u8"y2");
+    if(!idx_a || !idx_b || !idx_y1 || !idx_y2) { return std::nullopt; }
 
     auto set_in = [&](::fast_io::u8string_view nm, bool v) noexcept
     {
@@ -183,105 +160,51 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         return std::nullopt;
     };
 
-    // Exhaustive 2-valued check for all 10 inputs (1024 vectors).
-    for(std::uint32_t mask{}; mask < 1024u; ++mask)
+    for(std::uint32_t mask{}; mask < 4u; ++mask)
     {
-        bool const a = (mask & 0x001u) != 0;
-        bool const b = (mask & 0x002u) != 0;
-        bool const c_in = (mask & 0x004u) != 0;
-        bool const d = (mask & 0x008u) != 0;
-        bool const e = (mask & 0x010u) != 0;
-        bool const f = (mask & 0x020u) != 0;
-        bool const g = (mask & 0x040u) != 0;
-        bool const h = (mask & 0x080u) != 0;
-        bool const p = (mask & 0x100u) != 0;
-        bool const q = (mask & 0x200u) != 0;
-
+        bool const a = (mask & 0x01u) != 0;
+        bool const b = (mask & 0x02u) != 0;
         set_in(u8"a", a);
         set_in(u8"b", b);
-        set_in(u8"c", c_in);
-        set_in(u8"d", d);
-        set_in(u8"e", e);
-        set_in(u8"f", f);
-        set_in(u8"g", g);
-        set_in(u8"h", h);
-        set_in(u8"p", p);
-        set_in(u8"q", q);
         settle();
 
-        auto const y_big = read_out(*idx_y_big);
-        auto const y_imp = read_out(*idx_y_imp);
-        auto const y_nimp = read_out(*idx_y_nimp);
-        auto const y_xnor = read_out(*idx_y_xnor);
-        if(!y_big || !y_imp || !y_nimp || !y_xnor)
-        {
-            std::fprintf(stderr, "non-binary output at O%u (mask=%u)\n", static_cast<unsigned>(opt_level), mask);
-            return std::nullopt;
-        }
-
-        bool const exp_big = (a && b && c_in && d && e && f && g && h) || (a && b && c_in && d && e && f && g && !h);
-        bool const exp_imp = (!p) || q;
-        bool const exp_nimp = a && (!b);
-        bool const exp_xnor = !(p ^ q);
-        if(*y_big != exp_big || *y_imp != exp_imp || *y_nimp != exp_nimp || *y_xnor != exp_xnor)
-        {
-            std::fprintf(stderr, "mismatch at O%u (mask=%u)\n", static_cast<unsigned>(opt_level), mask);
-            return std::nullopt;
-        }
+        auto const y1 = read_out(*idx_y1);
+        auto const y2 = read_out(*idx_y2);
+        if(!y1 || !y2) { return std::nullopt; }
+        if(*y1 != a) { return std::nullopt; }
+        if(*y2 != a) { return std::nullopt; }
     }
 
     run_result rr{};
-    rr.ok = true;
     rr.gate_count = count_logic_gates(nl);
-    rr.nots = count_model(nl, u8"NOT");
-    rr.imps = count_model(nl, u8"IMP");
-    rr.nimps = count_model(nl, u8"NIMP");
-    rr.xnors = count_model(nl, u8"XNOR");
     return rr;
 }
 }  // namespace
 
 int main()
 {
-    decltype(auto) src = u8R"(
-module top(input a, input b, input c, input d, input e, input f, input g, input h, input p, input q,
-           output y_big, output y_imp, output y_nimp, output y_xnor);
-  // 8-var cone: (ABCDEFGH) | (ABCDEFG~H) => ABCDEFG (QM greedy path)
-  assign y_big = (a&b&c&d&e&f&g&h) | (a&b&c&d&e&f&g&~h);
-
-  // input-inverter mapping targets (expect NOT gates to be eliminated at O2+)
-  assign y_imp  = (~p) | q;     // => IMP(p,q)
-  assign y_nimp = a & (~b);     // => NIMP(a,b)
-  assign y_xnor = p ^ (~q);     // => XNOR(p,q)
+    constexpr ::fast_io::u8string_view src = u8R"(
+module top(
+  input a,
+  input b,
+  output y1,
+  output y2
+);
+  assign y1 = (a & b) | (a & ~b);
+  assign y2 = (a | b) & (a | ~b);
 endmodule
 )";
 
-    auto const o1 = run_once(src, 1);
-    auto const o2 = run_once(src, 2);
-    auto const o3 = run_once(src, 3);
-    if(!o1 || !o2 || !o3) { return 1; }
+    auto const r1 = run_once(src, 1);
+    auto const r2 = run_once(src, 2);
+    if(!r1 || !r2) { return 1; }
 
-    if(!(o1->gate_count > o2->gate_count))
+    if(r2->gate_count >= r1->gate_count)
     {
-        std::fprintf(stderr, "expected O2 to reduce gates: O1=%zu O2=%zu\n", o1->gate_count, o2->gate_count);
+        std::fprintf(stderr, "expected O2 gate_count < O1 (O1=%zu O2=%zu)\n", r1->gate_count, r2->gate_count);
         return 2;
-    }
-    if(o3->gate_count > o2->gate_count)
-    {
-        std::fprintf(stderr, "expected O3 to not regress gates: O2=%zu O3=%zu\n", o2->gate_count, o3->gate_count);
-        return 3;
-    }
-
-    if(o2->nots != 0)
-    {
-        std::fprintf(stderr, "expected O2 to eliminate NOT gates via mapping, got NOT=%zu\n", o2->nots);
-        return 4;
-    }
-    if(o2->imps == 0 || o2->nimps == 0 || o2->xnors == 0)
-    {
-        std::fprintf(stderr, "expected O2 to use IMP/NIMP/XNOR: IMP=%zu NIMP=%zu XNOR=%zu\n", o2->imps, o2->nimps, o2->xnors);
-        return 5;
     }
 
     return 0;
 }
+

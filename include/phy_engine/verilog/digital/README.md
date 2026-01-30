@@ -91,6 +91,7 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Inverter optimization (double-NOT, inverter fusion into NAND/NOR/XNOR/…)
 - [x] Input inverter push / “primitive selection” mapping (IMP/NIMP/NAND/NOR/XNOR, etc.)
 - [x] Constant propagation (safe 4-valued identities; `assume_binary_inputs` enables extra identities)
+- [x] AND/OR tree flattening (associativity), duplicate removal (idempotence), and constant folding (binary-only `x|~x` / `x&~x` when `assume_binary_inputs`)
 - [x] Multi-term factoring on OR-trees-of-ANDs and AND-trees-of-ORs
 - [x] Absorption / redundant-level elimination (`a&(a|b)->a`, `a|(a&b)->a`, etc.)
 - [x] Local XOR/XNOR rewriting from SOP patterns
@@ -98,6 +99,30 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Tests validating correctness + gate-count improvement under `test/0015.verilog_compile/`
 
 ### TODO (not yet implemented)
+#### `-Omax` / “budgeted fixpoint” mode (beyond `O3`)
+- [ ] Add an `Omax` mode conceptually defined as: run the existing `O3` optimization pipeline in a loop until a **budget** is exhausted, trying to monotonically reduce gate count (or at least never regress).
+- [ ] Budgets must be explicit and user-configurable (examples; pick a minimal, coherent set):
+  - [ ] Global wall-clock timeout (e.g. `--opt-timeout-ms`)
+  - [ ] Max outer iterations / restarts (e.g. `--opt-max-iter`)
+  - [ ] Per-pass budgets (e.g. `--qm-max-vars`, `--qm-max-minterms`, `--resub-max-window`, `--rewrite-max-candidates`)
+  - [ ] Max memory / node growth limits (avoid “blow up then recover” strategies unless guarded)
+- [ ] Make `Omax` deterministic by default (stable seeds / stable traversal order), with an opt-in randomized mode for “search” (e.g. `--opt-rand-seed`).
+- [ ] Define an “acceptance policy”:
+  - [ ] Default: only accept transformations that strictly reduce a cost metric (gate count / literal count), or accept equal-cost only if it enables later reductions (requires bookkeeping).
+  - [ ] Always prevent regressions unless explicitly allowed (e.g. `--opt-allow-regress` for research).
+- [ ] Add a cost model abstraction:
+  - [ ] `gate_count` (default)
+  - [ ] `literal_count` (optional; useful for 2-level)
+  - [ ] weighted costs per primitive (optional; to approximate “area”)
+- [ ] Add correctness strategy for `Omax` (must be testable and fast):
+  - [ ] For small cones: exact truth-table equivalence check after local rewrite/minimize.
+  - [ ] For larger graphs: bounded/random vector simulation as a regression guardrail (still keep per-pass soundness where possible).
+- [ ] Add reporting/telemetry:
+  - [ ] Per-iteration delta (models/gates) and per-pass deltas
+  - [ ] Optional dump of “best-so-far” netlist
+  - [ ] A reproducible summary line (seed, budgets, final cost)
+- [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
+
 #### Two-level minimization (Espresso / full cover)
 - [ ] Espresso-style heuristic minimization (expand/reduce/irredundant) with ON/DC/OFF sets
 - [ ] Better prime implicant selection (e.g. Petrick/exact cover for larger-but-bounded cases)
