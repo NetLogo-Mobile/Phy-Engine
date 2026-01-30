@@ -4097,186 +4097,6 @@ namespace phy_engine::verilog::digital
                 return ::std::nullopt;
             };
 
-            struct dc_group_view
-            {
-                ::std::vector<std::size_t> leaf_pos{};
-                ::std::vector<bool> allowed{};
-            };
-
-            auto build_dc_group_views = [&](::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept -> ::std::vector<dc_group_view>
-            {
-                ::std::vector<dc_group_view> views{};
-                if(dc == nullptr || dc->groups.empty()) { return views; }
-                for(auto const& g: dc->groups)
-                {
-                    if(g.nodes.empty() || g.allowed.empty() || g.nodes.size() > 16u) { continue; }
-                    ::std::vector<std::size_t> pos{};
-                    pos.reserve(g.nodes.size());
-                    bool ok{true};
-                    for(auto* n: g.nodes)
-                    {
-                        std::size_t idx = SIZE_MAX;
-                        for(std::size_t i{}; i < leaves.size(); ++i)
-                        {
-                            if(leaves[i] == n)
-                            {
-                                idx = i;
-                                break;
-                            }
-                        }
-                        if(idx == SIZE_MAX)
-                        {
-                            ok = false;
-                            break;
-                        }
-                        pos.push_back(idx);
-                    }
-                    if(!ok) { continue; }
-                    dc_group_view view{};
-                    view.leaf_pos = ::std::move(pos);
-                    view.allowed.assign(1u << g.nodes.size(), false);
-                    for(auto const v: g.allowed)
-                    {
-                        if(v < view.allowed.size()) { view.allowed[v] = true; }
-                    }
-                    views.push_back(::std::move(view));
-                }
-                return views;
-            };
-
-            auto apply_dc_constraints = [&](::std::vector<::std::uint16_t>& dc_list,
-                                            ::std::vector<::std::uint16_t> const& on_list,
-                                            std::size_t var_count,
-                                            ::std::vector<dc_group_view> const& views) noexcept
-            {
-                if(views.empty() || var_count == 0u || var_count > 16u) { return; }
-                auto const U = static_cast<std::size_t>(1u << var_count);
-                ::std::vector<bool> is_on{};
-                ::std::vector<bool> is_dc{};
-                is_on.assign(U, false);
-                is_dc.assign(U, false);
-                for(auto const m: on_list)
-                {
-                    if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
-                }
-                for(auto const m: dc_list)
-                {
-                    if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
-                }
-                for(::std::size_t m{}; m < U; ++m)
-                {
-                    if(is_on[m] || is_dc[m]) { continue; }
-                    bool dc_hit{false};
-                    for(auto const& v: views)
-                    {
-                        ::std::uint16_t sub{};
-                        for(std::size_t bi{}; bi < v.leaf_pos.size(); ++bi)
-                        {
-                            auto const lp = v.leaf_pos[bi];
-                            if(((m >> lp) & 1u) != 0u) { sub = static_cast<::std::uint16_t>(sub | (1u << bi)); }
-                        }
-                        if(sub < v.allowed.size() && !v.allowed[sub])
-                        {
-                            dc_hit = true;
-                            break;
-                        }
-                    }
-                    if(dc_hit) { is_dc[m] = true; }
-                }
-                dc_list.clear();
-                dc_list.reserve(U);
-                for(::std::size_t m{}; m < U; ++m)
-                {
-                    if(is_dc[m]) { dc_list.push_back(static_cast<::std::uint16_t>(m)); }
-                }
-            };
-
-            struct odc_condition
-            {
-                std::size_t leaf_idx{};
-                bool value{};
-            };
-
-            auto build_odc_conditions =
-                [&](::phy_engine::model::node_t* root,
-                    ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> const& leaf_index) noexcept -> ::std::vector<odc_condition>
-            {
-                ::std::vector<odc_condition> conds{};
-                if(!opt.infer_dc_from_odc || root == nullptr) { return conds; }
-                auto itc = fan.consumer_count.find(root);
-                if(itc == fan.consumer_count.end() || itc->second != 1u) { return conds; }
-                auto it = consumers.find(root);
-                if(it == consumers.end() || it->second.size() != 1u) { return conds; }
-                auto const& cg = it->second.front();
-                if(cg.other == nullptr) { return conds; }
-                auto it_leaf = leaf_index.find(cg.other);
-                if(it_leaf == leaf_index.end()) { return conds; }
-
-                bool ok{true};
-                bool val{};
-                switch(cg.k)
-                {
-                    case gkind::and_gate:
-                    case gkind::nand_gate: val = false; break;
-                    case gkind::or_gate:
-                    case gkind::nor_gate: val = true; break;
-                    case gkind::imp_gate: val = cg.root_is_in0 ? true : false; break;
-                    case gkind::nimp_gate: val = cg.root_is_in0 ? true : false; break;
-                    default: ok = false; break;
-                }
-                if(!ok) { return conds; }
-                conds.push_back(odc_condition{it_leaf->second, val});
-                return conds;
-            };
-
-            auto apply_odc_conditions = [&](::std::vector<::std::uint16_t>& on_list,
-                                            ::std::vector<::std::uint16_t>& dc_list,
-                                            std::size_t var_count,
-                                            ::std::vector<odc_condition> const& conds) noexcept
-            {
-                if(conds.empty() || var_count == 0u || var_count > 16u) { return; }
-                auto const U = static_cast<std::size_t>(1u << var_count);
-                ::std::vector<bool> is_on{};
-                ::std::vector<bool> is_dc{};
-                is_on.assign(U, false);
-                is_dc.assign(U, false);
-                for(auto const m: on_list)
-                {
-                    if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
-                }
-                for(auto const m: dc_list)
-                {
-                    if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
-                }
-                for(::std::size_t m{}; m < U; ++m)
-                {
-                    if(is_dc[m]) { continue; }
-                    bool dc_hit{false};
-                    for(auto const& c: conds)
-                    {
-                        if(((m >> c.leaf_idx) & 1u) == (c.value ? 1u : 0u))
-                        {
-                            dc_hit = true;
-                            break;
-                        }
-                    }
-                    if(dc_hit)
-                    {
-                        is_dc[m] = true;
-                        is_on[m] = false;
-                    }
-                }
-                on_list.clear();
-                dc_list.clear();
-                on_list.reserve(U);
-                dc_list.reserve(U);
-                for(::std::size_t m{}; m < U; ++m)
-                {
-                    if(is_on[m]) { on_list.push_back(static_cast<::std::uint16_t>(m)); }
-                    else if(is_dc[m]) { dc_list.push_back(static_cast<::std::uint16_t>(m)); }
-                }
-            };
-
             auto move_consumers =
                 [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to, ::phy_engine::model::pin const* from_driver_pin) noexcept -> bool
             {
@@ -6105,6 +5925,179 @@ namespace phy_engine::verilog::digital
                 if(g.in0 != nullptr) { consumers[g.in0].push_back(consumer_gate{g.k, g.in1, true}); }
                 if(g.k != gkind::not_gate && g.in1 != nullptr) { consumers[g.in1].push_back(consumer_gate{g.k, g.in0, false}); }
             }
+
+            struct dc_group_view
+            {
+                ::std::vector<std::size_t> leaf_pos{};
+                ::std::vector<bool> allowed{};
+            };
+
+            auto build_dc_group_views = [&](::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept
+                -> ::std::vector<dc_group_view>
+            {
+                ::std::vector<dc_group_view> views{};
+                if(dc == nullptr || dc->groups.empty()) { return views; }
+                for(auto const& g : dc->groups)
+                {
+                    if(g.nodes.empty() || g.allowed.empty() || g.nodes.size() > 16u) { continue; }
+                    ::std::vector<std::size_t> pos{};
+                    pos.reserve(g.nodes.size());
+                    bool ok{true};
+                    for(auto* n : g.nodes)
+                    {
+                        std::size_t idx = SIZE_MAX;
+                        for(std::size_t i{}; i < leaves.size(); ++i)
+                        {
+                            if(leaves[i] == n) { idx = i; break; }
+                        }
+                        if(idx == SIZE_MAX) { ok = false; break; }
+                        pos.push_back(idx);
+                    }
+                    if(!ok) { continue; }
+                    dc_group_view view{};
+                    view.leaf_pos = ::std::move(pos);
+                    view.allowed.assign(1u << g.nodes.size(), false);
+                    for(auto const v : g.allowed)
+                    {
+                        if(v < view.allowed.size()) { view.allowed[v] = true; }
+                    }
+                    views.push_back(::std::move(view));
+                }
+                return views;
+            };
+
+            auto apply_dc_constraints = [&](::std::vector<::std::uint16_t>& dc_list,
+                                            ::std::vector<::std::uint16_t> const& on_list,
+                                            std::size_t var_count,
+                                            ::std::vector<dc_group_view> const& views) noexcept
+            {
+                if(views.empty() || var_count == 0u || var_count > 16u) { return; }
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                ::std::vector<bool> is_on{};
+                ::std::vector<bool> is_dc{};
+                is_on.assign(U, false);
+                is_dc.assign(U, false);
+                for(auto const m : on_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
+                }
+                for(auto const m : dc_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
+                }
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_on[m] || is_dc[m]) { continue; }
+                    bool dc_hit{false};
+                    for(auto const& v : views)
+                    {
+                        ::std::uint16_t sub{};
+                        for(std::size_t bi{}; bi < v.leaf_pos.size(); ++bi)
+                        {
+                            auto const lp = v.leaf_pos[bi];
+                            if(((m >> lp) & 1u) != 0u) { sub = static_cast<::std::uint16_t>(sub | (1u << bi)); }
+                        }
+                        if(sub < v.allowed.size() && !v.allowed[sub])
+                        {
+                            dc_hit = true;
+                            break;
+                        }
+                    }
+                    if(dc_hit) { is_dc[m] = true; }
+                }
+                dc_list.clear();
+                dc_list.reserve(U);
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_dc[m]) { dc_list.push_back(static_cast<::std::uint16_t>(m)); }
+                }
+            };
+
+            struct odc_condition
+            {
+                std::size_t leaf_idx{};
+                bool value{};
+            };
+
+            auto build_odc_conditions = [&](::phy_engine::model::node_t* root,
+                                            ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> const& leaf_index) noexcept
+                -> ::std::vector<odc_condition>
+            {
+                ::std::vector<odc_condition> conds{};
+                if(!opt.infer_dc_from_odc || root == nullptr) { return conds; }
+                auto itc = fan.consumer_count.find(root);
+                if(itc == fan.consumer_count.end() || itc->second != 1u) { return conds; }
+                auto it = consumers.find(root);
+                if(it == consumers.end() || it->second.size() != 1u) { return conds; }
+                auto const& cg = it->second.front();
+                if(cg.other == nullptr) { return conds; }
+                auto it_leaf = leaf_index.find(cg.other);
+                if(it_leaf == leaf_index.end()) { return conds; }
+
+                bool ok{true};
+                bool val{};
+                switch(cg.k)
+                {
+                    case gkind::and_gate:
+                    case gkind::nand_gate: val = false; break;
+                    case gkind::or_gate:
+                    case gkind::nor_gate: val = true; break;
+                    case gkind::imp_gate: val = cg.root_is_in0 ? true : false; break;
+                    case gkind::nimp_gate: val = cg.root_is_in0 ? true : false; break;
+                    default: ok = false; break;
+                }
+                if(!ok) { return conds; }
+                conds.push_back(odc_condition{it_leaf->second, val});
+                return conds;
+            };
+
+            auto apply_odc_conditions = [&](::std::vector<::std::uint16_t>& on_list,
+                                            ::std::vector<::std::uint16_t>& dc_list,
+                                            std::size_t var_count,
+                                            ::std::vector<odc_condition> const& conds) noexcept
+            {
+                if(conds.empty() || var_count == 0u || var_count > 16u) { return; }
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                ::std::vector<bool> is_on{};
+                ::std::vector<bool> is_dc{};
+                is_on.assign(U, false);
+                is_dc.assign(U, false);
+                for(auto const m : on_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
+                }
+                for(auto const m : dc_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
+                }
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_dc[m]) { continue; }
+                    bool dc_hit{false};
+                    for(auto const& c : conds)
+                    {
+                        if(((m >> c.leaf_idx) & 1u) == (c.value ? 1u : 0u))
+                        {
+                            dc_hit = true;
+                            break;
+                        }
+                    }
+                    if(dc_hit)
+                    {
+                        is_dc[m] = true;
+                        is_on[m] = false;
+                    }
+                }
+                on_list.clear();
+                dc_list.clear();
+                on_list.reserve(U);
+                dc_list.reserve(U);
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_on[m]) { on_list.push_back(static_cast<::std::uint16_t>(m)); }
+                    else if(is_dc[m]) { dc_list.push_back(static_cast<::std::uint16_t>(m)); }
+                }
+            };
 
             auto eval_gate = [&](auto&& self,
                                  ::phy_engine::model::node_t* node,
