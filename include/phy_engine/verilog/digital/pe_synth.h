@@ -1906,6 +1906,18 @@ namespace phy_engine::verilog::digital
                                                                         ::std::uint64_t const* off_blocks,
                                                                         ::std::uint32_t off_words,
                                                                         ::std::uint8_t* out_hits) noexcept;
+
+        // Optional optimization: keep OFF-set resident on device(s) across many hits-off queries.
+        // This is particularly important for Espresso-style loops which may do many incremental checks.
+        extern "C" void* phy_engine_pe_synth_cuda_espresso_off_create(::std::uint32_t device_mask,
+                                                                      ::std::uint32_t var_count,
+                                                                      ::std::uint64_t const* off_blocks,
+                                                                      ::std::uint32_t off_words) noexcept;
+        extern "C" void phy_engine_pe_synth_cuda_espresso_off_destroy(void* handle) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_espresso_off_hits(void* handle,
+                                                                   cuda_cube_desc const* cubes,
+                                                                   ::std::size_t cube_count,
+                                                                   ::std::uint8_t* out_hits) noexcept;
 #endif
 
         [[nodiscard]] inline bool
@@ -2121,6 +2133,103 @@ namespace phy_engine::verilog::digital
             (void)off_words;
             (void)out_hits;
             cuda_trace_add(u8"espresso_hits_off", cube_count, off_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        struct cuda_espresso_off_raii
+        {
+            void* handle{};
+            ::std::uint32_t off_words{};
+
+            cuda_espresso_off_raii() noexcept = default;
+            cuda_espresso_off_raii(cuda_espresso_off_raii const&) = delete;
+            cuda_espresso_off_raii& operator=(cuda_espresso_off_raii const&) = delete;
+
+            cuda_espresso_off_raii(cuda_espresso_off_raii&& o) noexcept : handle(o.handle), off_words(o.off_words)
+            {
+                o.handle = nullptr;
+                o.off_words = 0u;
+            }
+            cuda_espresso_off_raii& operator=(cuda_espresso_off_raii&& o) noexcept
+            {
+                if(this == &o) { return *this; }
+                reset();
+                handle = o.handle;
+                off_words = o.off_words;
+                o.handle = nullptr;
+                o.off_words = 0u;
+                return *this;
+            }
+
+            ~cuda_espresso_off_raii() noexcept { reset(); }
+
+            void reset() noexcept
+            {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+                if(handle != nullptr) { phy_engine_pe_synth_cuda_espresso_off_destroy(handle); }
+#endif
+                handle = nullptr;
+                off_words = 0u;
+            }
+        };
+
+        [[nodiscard]] inline cuda_espresso_off_raii cuda_espresso_off_create(::std::uint32_t device_mask,
+                                                                             ::std::uint32_t var_count,
+                                                                             ::std::uint64_t const* off_blocks,
+                                                                             ::std::uint32_t off_words) noexcept
+        {
+            cuda_espresso_off_raii r{};
+            r.off_words = off_words;
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(off_blocks == nullptr || off_words == 0u || var_count == 0u || var_count > 16u) { return r; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            r.handle = phy_engine_pe_synth_cuda_espresso_off_create(device_mask, var_count, off_blocks, off_words);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"espresso_off_create",
+                           0u,
+                           off_words,
+                           static_cast<std::size_t>(off_words) * sizeof(::std::uint64_t),
+                           0u,
+                           us,
+                           r.handle != nullptr);
+#else
+            (void)device_mask;
+            (void)var_count;
+            (void)off_blocks;
+            (void)off_words;
+            cuda_trace_add(u8"espresso_off_create", 0u, off_words, 0u, 0u, 0u, false, u8"not_built");
+#endif
+            return r;
+        }
+
+        [[nodiscard]] inline bool cuda_espresso_off_hits(cuda_espresso_off_raii const& off,
+                                                         cuda_cube_desc const* cubes,
+                                                         ::std::size_t cube_count,
+                                                         ::std::uint8_t* out_hits) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(off.handle == nullptr || cubes == nullptr || out_hits == nullptr || cube_count == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_espresso_off_hits(off.handle, cubes, cube_count, out_hits);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            // OFF-set already resident, so H2D is just the cubes; D2H is the hits vector.
+            cuda_trace_add(u8"espresso_hits_off",
+                           cube_count,
+                           off.off_words,
+                           cube_count * sizeof(cuda_cube_desc),
+                           cube_count * sizeof(::std::uint8_t),
+                           us,
+                           ok);
+            return ok;
+#else
+            (void)off;
+            (void)cubes;
+            (void)cube_count;
+            (void)out_hits;
+            cuda_trace_add(u8"espresso_hits_off", cube_count, off.off_words, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -10501,6 +10610,16 @@ namespace phy_engine::verilog::digital
                 return false;
             };
 
+            // Optional: keep OFF-set resident on GPU across the Espresso loop to avoid re-uploading it for each query.
+            // This matters because Espresso can generate a very large number of incremental "hits-off" checks.
+            cuda_espresso_off_raii off_gpu{};
+            bool use_off_gpu{};
+            if(opt.cuda_enable && blocksU != 0u && var_count <= 16u)
+            {
+                off_gpu = cuda_espresso_off_create(opt.cuda_device_mask, static_cast<::std::uint32_t>(var_count), off_bits.data(), static_cast<::std::uint32_t>(blocksU));
+                use_off_gpu = (off_gpu.handle != nullptr);
+            }
+
             auto cube_hits_off_batch = [&](::std::vector<qm_implicant> const& cubes, ::std::vector<std::uint8_t>& out_hits) noexcept -> void
             {
                 out_hits.assign(cubes.size(), 0u);
@@ -10519,13 +10638,20 @@ namespace phy_engine::verilog::digital
                             desc[i].value = cubes[i].value;
                             desc[i].mask = cubes[i].mask;
                         }
-                        used_cuda = cuda_espresso_cube_hits_off(opt.cuda_device_mask,
-                                                                desc.data(),
-                                                                desc.size(),
-                                                                static_cast<std::uint32_t>(var_count),
-                                                                off_bits.data(),
-                                                                static_cast<std::uint32_t>(blocksU),
-                                                                out_hits.data());
+                        if(use_off_gpu)
+                        {
+                            used_cuda = cuda_espresso_off_hits(off_gpu, desc.data(), desc.size(), out_hits.data());
+                        }
+                        else
+                        {
+                            used_cuda = cuda_espresso_cube_hits_off(opt.cuda_device_mask,
+                                                                    desc.data(),
+                                                                    desc.size(),
+                                                                    static_cast<std::uint32_t>(var_count),
+                                                                    off_bits.data(),
+                                                                    static_cast<std::uint32_t>(blocksU),
+                                                                    out_hits.data());
+                        }
                     }
                     else
                     {
@@ -10569,46 +10695,106 @@ namespace phy_engine::verilog::digital
             auto expand_cover_batch = [&]() noexcept -> bool
             {
                 if(cover.empty() || var_order.empty()) { return false; }
+                // GPU-friendly structural batching:
+                // The classic per-variable expand loop creates millions of tiny "hits-off" batches.
+                // Here we generate a larger pool per round (single- and double-literal relaxations),
+                // query hits-off in one batched call, then apply the best safe candidate per cube.
                 bool any{};
-                bool changed{true};
-                ::std::vector<std::size_t> idx{};
+                constexpr std::size_t max_rounds = 3;
+                auto const var_limit = ::std::min<std::size_t>(var_order.size(), 12u);
+
+                struct cand_meta
+                {
+                    std::size_t cube_idx{};
+                    std::uint8_t drop_cnt{};
+                };
+
+                ::std::vector<cand_meta> meta{};
                 ::std::vector<qm_implicant> cands{};
                 ::std::vector<std::uint8_t> hits{};
 
-                while(changed)
+                for(std::size_t round{}; round < max_rounds; ++round)
                 {
-                    changed = false;
-                    for(auto const v: var_order)
-                    {
-                        idx.clear();
-                        cands.clear();
-                        idx.reserve(cover.size() / 2u + 1u);
-                        cands.reserve(cover.size() / 2u + 1u);
+                    meta.clear();
+                    cands.clear();
 
-                        auto const bit = static_cast<::std::uint16_t>(1u << v);
-                        for(std::size_t i{}; i < cover.size(); ++i)
+                    // Conservative reserve; still bounded.
+                    meta.reserve(cover.size() * (var_limit + (var_limit * (var_limit - 1u)) / 2u));
+                    cands.reserve(cover.size() * (var_limit + (var_limit * (var_limit - 1u)) / 2u));
+
+                    for(std::size_t ci{}; ci < cover.size(); ++ci)
+                    {
+                        auto const& c0 = cover[ci];
+                        ::std::vector<::std::uint16_t> bits{};
+                        bits.reserve(var_limit);
+                        for(std::size_t oi{}; oi < var_limit; ++oi)
                         {
-                            auto const& c = cover[i];
-                            if((c.mask >> v) & 1u) { continue; }  // already don't care
-                            qm_implicant cand = c;
-                            cand.mask = static_cast<::std::uint16_t>(cand.mask | bit);
-                            cand.value = static_cast<::std::uint16_t>(cand.value & static_cast<::std::uint16_t>(~bit));
-                            idx.push_back(i);
+                            auto const v = var_order[oi];
+                            auto const bit = static_cast<::std::uint16_t>(1u << v);
+                            if(((c0.mask >> v) & 1u) != 0u) { continue; }
+                            bits.push_back(bit);
+                        }
+                        if(bits.empty()) { continue; }
+
+                        for(auto const b1 : bits)
+                        {
+                            qm_implicant cand = c0;
+                            cand.mask = static_cast<::std::uint16_t>(cand.mask | b1);
+                            cand.value = static_cast<::std::uint16_t>(cand.value & static_cast<::std::uint16_t>(~b1));
+                            meta.push_back(cand_meta{ci, 1u});
                             cands.push_back(cand);
                         }
-                        if(cands.empty()) { continue; }
 
-                        cube_hits_off_batch(cands, hits);
-                        if(hits.size() != cands.size()) { continue; }
-
-                        for(std::size_t k{}; k < cands.size(); ++k)
+                        for(std::size_t i{}; i < bits.size(); ++i)
                         {
-                            if(hits[k]) { continue; }
-                            cover[idx[k]] = cands[k];
-                            changed = true;
-                            any = true;
+                            for(std::size_t j{i + 1u}; j < bits.size(); ++j)
+                            {
+                                auto const b = static_cast<::std::uint16_t>(bits[i] | bits[j]);
+                                qm_implicant cand = c0;
+                                cand.mask = static_cast<::std::uint16_t>(cand.mask | b);
+                                cand.value = static_cast<::std::uint16_t>(cand.value & static_cast<::std::uint16_t>(~b));
+                                meta.push_back(cand_meta{ci, 2u});
+                                cands.push_back(cand);
+                            }
                         }
                     }
+
+                    if(cands.empty()) { break; }
+
+                    cube_hits_off_batch(cands, hits);
+                    if(hits.size() != cands.size()) { break; }
+
+                    ::std::vector<int> best{};
+                    ::std::vector<std::uint8_t> best_drop{};
+                    best.assign(cover.size(), -1);
+                    best_drop.assign(cover.size(), 0u);
+
+                    for(std::size_t k{}; k < cands.size(); ++k)
+                    {
+                        if(hits[k]) { continue; }
+                        auto const ci = meta[k].cube_idx;
+                        if(ci >= cover.size()) { continue; }
+                        auto const dcnt = meta[k].drop_cnt;
+                        if(dcnt > best_drop[ci])
+                        {
+                            best_drop[ci] = dcnt;
+                            best[ci] = static_cast<int>(k);
+                        }
+                    }
+
+                    bool changed{};
+                    for(std::size_t ci{}; ci < cover.size(); ++ci)
+                    {
+                        auto const bi = best[ci];
+                        if(bi < 0) { continue; }
+                        auto const cand = cands[static_cast<std::size_t>(bi)];
+                        if(cand.mask == cover[ci].mask && cand.value == cover[ci].value) { continue; }
+                        cover[ci] = cand;
+                        changed = true;
+                        any = true;
+                    }
+
+                    if(!changed) { break; }
                 }
                 return any;
             };

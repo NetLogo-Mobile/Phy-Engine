@@ -600,6 +600,150 @@ namespace phy_engine::verilog::digital::details
             return ok;
         }
 
+        struct espresso_off_device
+        {
+            int device{-1};
+            cudaStream_t stream{};
+            std::uint64_t* d_off{};
+            cuda_cube_desc* d_cubes{};
+            std::uint32_t* d_hits{};
+            std::size_t cap_cubes{};
+            std::vector<std::uint32_t> h_hits{};
+            bool ok{};
+
+            espresso_off_device() noexcept = default;
+            espresso_off_device(espresso_off_device const&) = delete;
+            espresso_off_device& operator=(espresso_off_device const&) = delete;
+            espresso_off_device(espresso_off_device&& o) noexcept :
+                device(o.device),
+                stream(o.stream),
+                d_off(o.d_off),
+                d_cubes(o.d_cubes),
+                d_hits(o.d_hits),
+                cap_cubes(o.cap_cubes),
+                h_hits(std::move(o.h_hits)),
+                ok(o.ok)
+            {
+                o.device = -1;
+                o.stream = nullptr;
+                o.d_off = nullptr;
+                o.d_cubes = nullptr;
+                o.d_hits = nullptr;
+                o.cap_cubes = 0u;
+                o.ok = false;
+            }
+            espresso_off_device& operator=(espresso_off_device&& o) noexcept
+            {
+                if(this == &o) { return *this; }
+                // Must be destroyed/reset by the owner before move-assigning in.
+                device = o.device;
+                stream = o.stream;
+                d_off = o.d_off;
+                d_cubes = o.d_cubes;
+                d_hits = o.d_hits;
+                cap_cubes = o.cap_cubes;
+                h_hits = std::move(o.h_hits);
+                ok = o.ok;
+                o.device = -1;
+                o.stream = nullptr;
+                o.d_off = nullptr;
+                o.d_cubes = nullptr;
+                o.d_hits = nullptr;
+                o.cap_cubes = 0u;
+                o.ok = false;
+                return *this;
+            }
+        };
+
+        struct espresso_off_handle
+        {
+            std::uint32_t var_count{};
+            std::uint32_t off_words{};
+            std::vector<espresso_off_device> devs{};
+        };
+
+        inline void destroy_espresso_off_device(espresso_off_device& d) noexcept
+        {
+            if(d.d_hits != nullptr) { (void)cudaFree(d.d_hits); }
+            if(d.d_cubes != nullptr) { (void)cudaFree(d.d_cubes); }
+            if(d.d_off != nullptr) { (void)cudaFree(d.d_off); }
+            if(d.stream != nullptr) { (void)cudaStreamDestroy(d.stream); }
+            d.device = -1;
+            d.stream = nullptr;
+            d.d_off = nullptr;
+            d.d_cubes = nullptr;
+            d.d_hits = nullptr;
+            d.cap_cubes = 0u;
+            d.h_hits.clear();
+            d.ok = false;
+        }
+
+        [[nodiscard]] inline bool init_espresso_off_device(espresso_off_device& d,
+                                                           int device,
+                                                           std::uint32_t var_count,
+                                                           std::uint64_t const* off_blocks,
+                                                           std::uint32_t off_words) noexcept
+        {
+            d.ok = false;
+            d.device = device;
+            if(cudaSetDevice(device) != cudaSuccess) { return false; }
+            if(cudaStreamCreateWithFlags(&d.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
+            auto const off_bytes = static_cast<std::size_t>(off_words) * sizeof(std::uint64_t);
+            if(cudaMalloc(reinterpret_cast<void**>(&d.d_off), off_bytes) != cudaSuccess) { return false; }
+            if(cudaMemcpyAsync(d.d_off, off_blocks, off_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { return false; }
+            if(cudaStreamSynchronize(d.stream) != cudaSuccess) { return false; }
+            d.ok = true;
+            return true;
+        }
+
+        [[nodiscard]] inline bool ensure_espresso_off_cubes(espresso_off_device& d, std::size_t n) noexcept
+        {
+            if(n <= d.cap_cubes) { return true; }
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+            if(d.d_hits != nullptr) { (void)cudaFree(d.d_hits); d.d_hits = nullptr; }
+            if(d.d_cubes != nullptr) { (void)cudaFree(d.d_cubes); d.d_cubes = nullptr; }
+            d.cap_cubes = 0u;
+            if(cudaMalloc(reinterpret_cast<void**>(&d.d_cubes), n * sizeof(cuda_cube_desc)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&d.d_hits), n * sizeof(std::uint32_t)) != cudaSuccess) { return false; }
+            d.h_hits.resize(n);
+            d.cap_cubes = n;
+            return true;
+        }
+
+        [[nodiscard]] inline bool enqueue_espresso_off_hits_on_device(espresso_off_device& d,
+                                                                      std::size_t begin,
+                                                                      std::size_t end,
+                                                                      cuda_cube_desc const* cubes,
+                                                                      std::uint32_t var_count,
+                                                                      std::uint32_t off_words) noexcept
+        {
+            if(end <= begin) { d.ok = true; return true; }
+            if(cubes == nullptr) { return false; }
+            auto const n = end - begin;
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+            if(!ensure_espresso_off_cubes(d, n)) { return false; }
+
+            auto const cubes_bytes = n * sizeof(cuda_cube_desc);
+            auto const hits_bytes = n * sizeof(std::uint32_t);
+
+            bool ok = true;
+            if(cudaMemcpyAsync(d.d_cubes, cubes + begin, cubes_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemsetAsync(d.d_hits, 0, hits_bytes, d.stream) != cudaSuccess) { ok = false; }
+
+            if(ok)
+            {
+                constexpr unsigned threads = 256u;
+                auto const grid_y = static_cast<unsigned>((off_words + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                espresso_cube_hits_off_kernel<<<grid, threads, 0u, d.stream>>>(d.d_cubes, n, var_count, d.d_off, off_words, d.d_hits);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+
+            if(ok && cudaMemcpyAsync(d.h_hits.data(), d.d_hits, hits_bytes, cudaMemcpyDeviceToHost, d.stream) != cudaSuccess) { ok = false; }
+            d.ok = ok;
+            return ok;
+        }
+
         [[nodiscard]] inline bool init_bitset_matrix_device(bitset_matrix_device& d,
                                                             std::uint64_t const* rows,
                                                             std::size_t row_count,
@@ -973,6 +1117,17 @@ namespace phy_engine::verilog::digital::details
         return true;
     }
 
+    // Espresso OFF-set resident handle API (forward decls for older entrypoints).
+    extern "C" void* phy_engine_pe_synth_cuda_espresso_off_create(std::uint32_t device_mask,
+                                                                  std::uint32_t var_count,
+                                                                  std::uint64_t const* off_blocks,
+                                                                  std::uint32_t off_words) noexcept;
+    extern "C" void phy_engine_pe_synth_cuda_espresso_off_destroy(void* handle) noexcept;
+    extern "C" bool phy_engine_pe_synth_cuda_espresso_off_hits(void* handle,
+                                                               cuda_cube_desc const* cubes,
+                                                               std::size_t cube_count,
+                                                               std::uint8_t* out_hits) noexcept;
+
     extern "C" bool phy_engine_pe_synth_cuda_espresso_cube_hits_off(std::uint32_t device_mask,
                                                                     cuda_cube_desc const* cubes,
                                                                     std::size_t cube_count,
@@ -981,12 +1136,26 @@ namespace phy_engine::verilog::digital::details
                                                                     std::uint32_t off_words,
                                                                     std::uint8_t* out_hits) noexcept
     {
-        if(cubes == nullptr || off_blocks == nullptr || out_hits == nullptr) { return false; }
-        if(cube_count == 0u || off_words == 0u) { return false; }
-        if(var_count == 0u || var_count > 16u) { return false; }
+        // Legacy helper: create a per-call OFF-handle and run one hits-off batch.
+        // This avoids per-call thread spawning and keeps the implementation in one place.
+        void* h = phy_engine_pe_synth_cuda_espresso_off_create(device_mask, var_count, off_blocks, off_words);
+        if(h == nullptr) { return false; }
+        bool const ok = phy_engine_pe_synth_cuda_espresso_off_hits(h, cubes, cube_count, out_hits);
+        phy_engine_pe_synth_cuda_espresso_off_destroy(h);
+        return ok;
+    }
+
+    extern "C" void* phy_engine_pe_synth_cuda_espresso_off_create(std::uint32_t device_mask,
+                                                                  std::uint32_t var_count,
+                                                                  std::uint64_t const* off_blocks,
+                                                                  std::uint32_t off_words) noexcept
+    {
+        if(off_blocks == nullptr) { return nullptr; }
+        if(off_words == 0u) { return nullptr; }
+        if(var_count == 0u || var_count > 16u) { return nullptr; }
 
         int dev_count{};
-        if(cudaGetDeviceCount(&dev_count) != cudaSuccess || dev_count <= 0) { return false; }
+        if(cudaGetDeviceCount(&dev_count) != cudaSuccess || dev_count <= 0) { return nullptr; }
 
         std::vector<int> devices{};
         devices.reserve(static_cast<std::size_t>(dev_count));
@@ -1001,43 +1170,94 @@ namespace phy_engine::verilog::digital::details
                 if((device_mask >> static_cast<unsigned>(d)) & 1u) { devices.push_back(d); }
             }
         }
-        if(devices.empty()) { return false; }
+        if(devices.empty()) { return nullptr; }
 
-        // Split cubes across selected devices (contiguous chunks).
-        std::vector<device_chunk> chunks{};
-        chunks.reserve(devices.size());
-        auto const k = devices.size();
+        auto* h = new(std::nothrow) espresso_off_handle{};
+        if(h == nullptr) { return nullptr; }
+        h->var_count = var_count;
+        h->off_words = off_words;
+        h->devs.reserve(devices.size());
+
+        bool ok = true;
+        for(auto const dev : devices)
+        {
+            espresso_off_device d{};
+            if(!init_espresso_off_device(d, dev, var_count, off_blocks, off_words))
+            {
+                ok = false;
+                destroy_espresso_off_device(d);
+                break;
+            }
+            h->devs.push_back(std::move(d));
+        }
+
+        if(!ok)
+        {
+            for(auto& d: h->devs) { destroy_espresso_off_device(d); }
+            delete h;
+            return nullptr;
+        }
+        return reinterpret_cast<void*>(h);
+    }
+
+    extern "C" void phy_engine_pe_synth_cuda_espresso_off_destroy(void* handle) noexcept
+    {
+        if(handle == nullptr) { return; }
+        auto* h = reinterpret_cast<espresso_off_handle*>(handle);
+        for(auto& d: h->devs) { destroy_espresso_off_device(d); }
+        delete h;
+    }
+
+    extern "C" bool phy_engine_pe_synth_cuda_espresso_off_hits(void* handle,
+                                                               cuda_cube_desc const* cubes,
+                                                               std::size_t cube_count,
+                                                               std::uint8_t* out_hits) noexcept
+    {
+        if(handle == nullptr || cubes == nullptr || out_hits == nullptr) { return false; }
+        if(cube_count == 0u) { return false; }
+        auto* h = reinterpret_cast<espresso_off_handle*>(handle);
+        if(h->off_words == 0u || h->var_count == 0u) { return false; }
+        if(h->devs.empty()) { return false; }
+
+        struct chunk
+        {
+            std::size_t begin{};
+            std::size_t end{};
+        };
+
+        // Split cubes across devices (contiguous chunks) and enqueue work on each device stream.
+        auto const k = h->devs.size();
+        std::vector<chunk> chunks{};
+        chunks.reserve(k);
+        bool ok = true;
         for(std::size_t i{}; i < k; ++i)
         {
             auto const begin = (cube_count * i) / k;
             auto const end = (cube_count * (i + 1u)) / k;
-            chunks.push_back(device_chunk{devices[i], begin, end, false});
+            chunks.push_back(chunk{begin, end});
+            auto& d = h->devs[i];
+            if(!enqueue_espresso_off_hits_on_device(d, begin, end, cubes, h->var_count, h->off_words)) { ok = false; }
         }
 
-        std::vector<std::thread> threads{};
-        threads.reserve(chunks.size());
-        for(auto& c: chunks)
+        // Synchronize and scatter results.
+        for(std::size_t i{}; i < k; ++i)
         {
-            auto* cp = &c;
-            threads.emplace_back([cp, cubes, var_count, off_blocks, off_words, out_hits]()
-                                 {
-                                     bool ok = do_espresso_hits_off_on_device(cp->device,
-                                                                             cp->begin,
-                                                                             cp->end,
-                                                                             cubes,
-                                                                             var_count,
-                                                                             off_blocks,
-                                                                             off_words,
-                                                                             out_hits);
-                                     cp->ok = ok;
-                                 });
+            auto& d = h->devs[i];
+            if(!d.ok) { ok = false; continue; }
+            if(chunks[i].end <= chunks[i].begin) { continue; }
+            auto const n = chunks[i].end - chunks[i].begin;
+            if(cudaSetDevice(d.device) != cudaSuccess) { ok = false; d.ok = false; continue; }
+            if(cudaStreamSynchronize(d.stream) != cudaSuccess) { ok = false; d.ok = false; continue; }
+            for(std::size_t j{}; j < n; ++j)
+            {
+                out_hits[chunks[i].begin + j] = static_cast<std::uint8_t>(d.h_hits[j] != 0u);
+            }
         }
-        for(auto& t: threads) { t.join(); }
 
-        for(auto const& c: chunks)
+        for(auto const& d: h->devs)
         {
-            if(!c.ok) { return false; }
+            if(!d.ok) { return false; }
         }
-        return true;
+        return ok;
     }
 }  // namespace phy_engine::verilog::digital::details
