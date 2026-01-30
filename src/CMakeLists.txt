@@ -87,6 +87,8 @@ if(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
     set(_phy_pe_synth_cuda_src "${CMAKE_SOURCE_DIR}/pe_synth_cuda_u64_cones.cu")
     set_source_files_properties("${_phy_pe_synth_cuda_src}" PROPERTIES LANGUAGE CXX)
     add_library(pe_synth_cuda STATIC "${_phy_pe_synth_cuda_src}")
+    # This static library is linked into libphyengine.so; ensure its objects are built with -fPIC.
+    set_property(TARGET pe_synth_cuda PROPERTY POSITION_INDEPENDENT_CODE ON)
     target_include_directories(pe_synth_cuda PRIVATE "${CMAKE_SOURCE_DIR}/../include" "${PHY_ENGINE_CUDA_PATH}/include")
     target_compile_options(pe_synth_cuda PRIVATE -x cuda "--cuda-path=${PHY_ENGINE_CUDA_PATH}" "--cuda-gpu-arch=${PHY_ENGINE_CUDA_PE_SYNTH_ARCH}")
     target_link_options(pe_synth_cuda INTERFACE "--cuda-path=${PHY_ENGINE_CUDA_PATH}" "--cuda-gpu-arch=${PHY_ENGINE_CUDA_PE_SYNTH_ARCH}")
