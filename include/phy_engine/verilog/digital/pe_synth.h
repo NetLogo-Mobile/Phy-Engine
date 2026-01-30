@@ -5463,6 +5463,24 @@ namespace phy_engine::verilog::digital
                 }
             }
 
+            // Detect constant nodes produced by unnamed INPUT models.
+            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const_val{};
+            const_val.reserve(128);
+            for(auto const& blk : nl.models)
+            {
+                for(auto const* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    if(model_name_u8(*m) != u8"INPUT") { continue; }
+                    if(m->name.size() != 0) { continue; }
+                    auto pv = m->ptr->generate_pin_view();
+                    if(pv.size != 1 || pv.pins[0].nodes == nullptr) { continue; }
+                    auto vi = m->ptr->get_attribute(0);
+                    if(vi.type != ::phy_engine::model::variant_type::digital) { continue; }
+                    const_val.emplace(pv.pins[0].nodes, vi.digital);
+                }
+            }
+
             auto truth_mask = [&](std::size_t inputs, auto&& fn) noexcept -> ::std::uint64_t
             {
                 ::std::uint64_t mask{};
@@ -5499,7 +5517,7 @@ namespace phy_engine::verilog::digital
                 patterns.push_back(pattern{pkind::oai22, 4u, truth_mask(4u, [](bool const* a) noexcept { return !((a[0] | a[1]) & (a[2] | a[3])); }), 4u});
             }
 
-            auto eval_gate = [&](auto&& self,
+            [[maybe_unused]] auto eval_gate = [&](auto&& self,
                                  ::phy_engine::model::node_t* node,
                                  ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
                                  ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
@@ -5507,6 +5525,11 @@ namespace phy_engine::verilog::digital
             {
                 if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
                 if(auto it = memo.find(node); it != memo.end()) { return it->second; }
+                if(auto itc = const_val.find(node); itc != const_val.end())
+                {
+                    memo.emplace(node, itc->second);
+                    return itc->second;
+                }
                 if(auto it = leaf_val.find(node); it != leaf_val.end())
                 {
                     memo.emplace(node, it->second);
@@ -5543,33 +5566,77 @@ namespace phy_engine::verilog::digital
                 return r;
             };
 
-            auto compute_mask = [&](::phy_engine::model::node_t* root,
-                                    ::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept -> ::std::optional<::std::uint64_t>
+            auto enc_kind = [](kind k) noexcept -> ::std::uint8_t
+            {
+                switch(k)
+                {
+                    case kind::not_gate: return 0u;
+                    case kind::and_gate: return 1u;
+                    case kind::or_gate: return 2u;
+                    case kind::xor_gate: return 3u;
+                    case kind::xnor_gate: return 4u;
+                    case kind::nand_gate: return 5u;
+                    case kind::nor_gate: return 6u;
+                    case kind::imp_gate: return 7u;
+                    case kind::nimp_gate: return 8u;
+                    default: return 1u;
+                }
+            };
+
+            auto build_u64_mask_cone = [&](::phy_engine::model::node_t* root,
+                                           ::std::vector<::phy_engine::model::node_t*> const& leaves,
+                                           cuda_u64_cone_desc& out) noexcept -> bool
             {
                 auto const n = leaves.size();
-                if(n == 0 || n > 6u) { return ::std::nullopt; }
-                auto const U = static_cast<std::size_t>(1u << n);
-                ::std::uint64_t mask{};
-                for(std::size_t m{}; m < U; ++m)
+                if(n == 0u || n > 6u) { return false; }
+
+                ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> leaf_index{};
+                leaf_index.reserve(n * 2u);
+                for(std::size_t i{}; i < n; ++i) { leaf_index.emplace(leaves[i], static_cast<::std::uint8_t>(i)); }
+
+                cuda_u64_cone_desc cone{};
+                cone.var_count = static_cast<::std::uint8_t>(n);
+                cone.gate_count = 0u;
+
+                ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
+                out_index.reserve(128);
+                bool ok{true};
+
+                auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n0) noexcept -> ::std::uint8_t
                 {
-                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
-                    leaf_val.reserve(n * 2u);
-                    for(std::size_t i{}; i < n; ++i)
+                    if(!ok || n0 == nullptr) { ok = false; return 254u; }
+                    if(auto itc = const_val.find(n0); itc != const_val.end())
                     {
-                        bool const bit = ((m >> i) & 1u) != 0u;
-                        leaf_val.emplace(leaves[i],
-                                         bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                             : ::phy_engine::model::digital_node_statement_t::false_state);
+                        using dns = ::phy_engine::model::digital_node_statement_t;
+                        if(itc->second == dns::false_state) { return 254u; }
+                        if(itc->second == dns::true_state) { return 255u; }
+                        ok = false;
+                        return 254u;
                     }
-                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
-                    memo.reserve(64);
-                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
-                    visiting.reserve(64);
-                    auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
-                    if(r == ::phy_engine::model::digital_node_statement_t::true_state) { mask |= (1ull << m); }
-                    else if(r != ::phy_engine::model::digital_node_statement_t::false_state) { return ::std::nullopt; }
-                }
-                return mask;
+                    if(auto itl = leaf_index.find(n0); itl != leaf_index.end()) { return itl->second; }
+                    if(auto ito = out_index.find(n0); ito != out_index.end()) { return ito->second; }
+
+                    auto itg = gate_by_out.find(n0);
+                    if(itg == gate_by_out.end()) { ok = false; return 254u; }
+                    auto const& gg = itg->second;
+                    auto const a = self(self, gg.in0);
+                    auto const b = (gg.k == kind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
+                    if(!ok) { return 254u; }
+
+                    if(cone.gate_count >= 64u) { ok = false; return 254u; }
+                    auto const gi = static_cast<::std::uint8_t>(cone.gate_count++);
+                    cone.kind[gi] = enc_kind(gg.k);
+                    cone.in0[gi] = a;
+                    cone.in1[gi] = b;
+                    auto const outi = static_cast<::std::uint8_t>(6u + gi);
+                    out_index.emplace(n0, outi);
+                    return outi;
+                };
+
+                (void)dfs2(dfs2, root);
+                if(!ok || cone.gate_count == 0u) { return false; }
+                out = cone;
+                return true;
             };
 
             auto match_best = [&](::std::uint64_t target,
@@ -6003,12 +6070,21 @@ namespace phy_engine::verilog::digital
                     std::size_t best{static_cast<std::size_t>(-1)};
                     choice bestc{};
 
+                    struct mask_task
+                    {
+                        cuda_u64_cone_desc cone{};
+                        ::std::uint64_t mask{};
+                        ::std::vector<::phy_engine::model::node_t*> const* leaves{};
+                        std::size_t leaf_cost{};
+                        bool ok{};
+                    };
+
+                    ::std::vector<mask_task> tasks{};
+                    tasks.reserve(itc->second.size());
+
                     for(auto const& ct: itc->second)
                     {
                         if(ct.leaves.size() == 1u && ct.leaves[0] == n) { continue; }  // unit cut only for parent enumeration
-
-                        auto mask = compute_mask(n, ct.leaves);
-                        if(!mask) { continue; }
 
                         std::size_t leaf_cost{};
                         for(auto* leaf: ct.leaves)
@@ -6026,7 +6102,60 @@ namespace phy_engine::verilog::digital
                         }
                         if(leaf_cost == static_cast<std::size_t>(-1)) { continue; }
 
-                        auto match = match_best(*mask, ct.leaves, leaf_cost);
+                        cuda_u64_cone_desc cone{};
+                        if(!build_u64_mask_cone(n, ct.leaves, cone)) { continue; }
+                        tasks.push_back(mask_task{.cone = cone, .mask = 0ull, .leaves = __builtin_addressof(ct.leaves), .leaf_cost = leaf_cost, .ok = true});
+                    }
+
+                    if(tasks.empty())
+                    {
+                        ok = false;
+                        break;
+                    }
+
+                    // Evaluate masks (CUDA best-effort, batched).
+                    bool used_cuda{};
+                    if(opt.cuda_enable && tasks.size() >= opt.cuda_min_batch)
+                    {
+                        ::std::vector<cuda_u64_cone_desc> cones{};
+                        cones.reserve(tasks.size());
+                        for(auto const& t: tasks)
+                        {
+                            if(!t.ok) { continue; }
+                            cones.push_back(t.cone);
+                        }
+                        ::std::vector<::std::uint64_t> masks{};
+                        masks.resize(cones.size());
+                        if(!cones.empty() && cuda_eval_u64_cones(opt.cuda_device_mask, cones.data(), cones.size(), masks.data()))
+                        {
+                            used_cuda = true;
+                            std::size_t mi{};
+                            for(auto& t: tasks)
+                            {
+                                if(!t.ok) { continue; }
+                                t.mask = masks[mi++];
+                            }
+                        }
+                    }
+                    if(!used_cuda)
+                    {
+                        for(auto& t: tasks)
+                        {
+                            if(!t.ok) { continue; }
+                            t.mask = eval_u64_cone_cpu(t.cone);
+                        }
+                    }
+
+                    for(auto const& t: tasks)
+                    {
+                        if(!t.ok || t.leaves == nullptr) { continue; }
+                        auto const nleaves = t.leaves->size();
+                        if(nleaves == 0u || nleaves > 4u) { continue; }
+                        auto const U = static_cast<std::size_t>(1u << nleaves);
+                        auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
+                        auto const mask = t.mask & all_mask;
+
+                        auto match = match_best(mask, *t.leaves, t.leaf_cost);
                         if(!match) { continue; }
                         auto const& cand_choice = match->first;
                         auto const cand_cost = match->second;
@@ -10747,6 +10876,24 @@ namespace phy_engine::verilog::digital
                 if(g.k != gkind::not_gate && g.in1 != nullptr) { consumers[g.in1].push_back(consumer_gate{g.k, g.in0, false}); }
             }
 
+            // Detect constant nodes produced by unnamed INPUT models. These are treated as constants (not leaf vars).
+            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const_val{};
+            const_val.reserve(128);
+            for(auto const& blk : nl.models)
+            {
+                for(auto const* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    if(model_name_u8(*m) != u8"INPUT") { continue; }
+                    if(m->name.size() != 0) { continue; }
+                    auto pv = m->ptr->generate_pin_view();
+                    if(pv.size != 1 || pv.pins[0].nodes == nullptr) { continue; }
+                    auto vi = m->ptr->get_attribute(0);
+                    if(vi.type != ::phy_engine::model::variant_type::digital) { continue; }
+                    const_val.emplace(pv.pins[0].nodes, vi.digital);
+                }
+            }
+
             struct dc_group_view
             {
                 ::std::vector<std::size_t> leaf_pos{};
@@ -10935,6 +11082,11 @@ namespace phy_engine::verilog::digital
             {
                 if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
                 if(auto it = memo.find(node); it != memo.end()) { return it->second; }
+                if(auto itc = const_val.find(node); itc != const_val.end())
+                {
+                    memo.emplace(node, itc->second);
+                    return itc->second;
+                }
                 if(auto it = leaf_val.find(node); it != leaf_val.end())
                 {
                     memo.emplace(node, it->second);
@@ -10969,6 +11121,177 @@ namespace phy_engine::verilog::digital
                 visiting.erase(node);
                 memo.emplace(node, r);
                 return r;
+            };
+
+            auto enc_kind_tt = [](gkind k) noexcept -> ::std::uint8_t
+            {
+                switch(k)
+                {
+                    case gkind::not_gate: return 0u;
+                    case gkind::and_gate: return 1u;
+                    case gkind::or_gate: return 2u;
+                    case gkind::xor_gate: return 3u;
+                    case gkind::xnor_gate: return 4u;
+                    case gkind::nand_gate: return 5u;
+                    case gkind::nor_gate: return 6u;
+                    case gkind::imp_gate: return 7u;
+                    case gkind::nimp_gate: return 8u;
+                    default: return 1u;
+                }
+            };
+
+            // Best-effort truth-table evaluation (binary only): if the cone depends on non-binary constants (X/Z),
+            // caller should fall back to per-minterm 4-valued evaluation to preserve DC inference semantics.
+            auto eval_binary_cone_on_dc =
+                [&](::phy_engine::model::node_t* root,
+                    ::std::vector<::phy_engine::model::node_t*> const& leaves,
+                    ::std::vector<::std::uint16_t>& on_out,
+                    ::std::vector<::std::uint16_t>& dc_out) noexcept -> bool
+            {
+                on_out.clear();
+                dc_out.clear();
+                auto const var_count = leaves.size();
+                if(var_count == 0u) { return false; }
+                if(var_count > 16u) { return false; }
+
+                if(var_count <= 6u)
+                {
+                    cuda_u64_cone_desc cone{};
+                    cone.var_count = static_cast<::std::uint8_t>(var_count);
+                    cone.gate_count = 0u;
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> leaf_index{};
+                    leaf_index.reserve(var_count * 2u);
+                    for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(leaves[i], static_cast<::std::uint8_t>(i)); }
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
+                    out_index.reserve(128);
+                    bool ok2{true};
+
+                    auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
+                    {
+                        if(!ok2 || n == nullptr) { ok2 = false; return 254u; }
+                        if(auto itc = const_val.find(n); itc != const_val.end())
+                        {
+                            using dns = ::phy_engine::model::digital_node_statement_t;
+                            if(itc->second == dns::false_state) { return 254u; }
+                            if(itc->second == dns::true_state) { return 255u; }
+                            ok2 = false;
+                            return 254u;
+                        }
+                        if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+                        if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+
+                        auto itg = gate_by_out.find(n);
+                        if(itg == gate_by_out.end()) { ok2 = false; return 254u; }
+                        auto const& gg = itg->second;
+                        auto const a = self(self, gg.in0);
+                        auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
+                        if(!ok2) { return 254u; }
+
+                        if(cone.gate_count >= 64u) { ok2 = false; return 254u; }
+                        auto const gi = static_cast<::std::uint8_t>(cone.gate_count++);
+                        cone.kind[gi] = enc_kind_tt(gg.k);
+                        cone.in0[gi] = a;
+                        cone.in1[gi] = b;
+                        auto const out = static_cast<::std::uint8_t>(6u + gi);
+                        out_index.emplace(n, out);
+                        return out;
+                    };
+
+                    (void)dfs2(dfs2, root);
+                    if(!ok2 || cone.gate_count == 0u) { return false; }
+
+                    ::std::uint64_t mask{};
+                    if(opt.cuda_enable)
+                    {
+                        ::std::uint64_t out_mask{};
+                        if(cuda_eval_u64_cones(opt.cuda_device_mask, __builtin_addressof(cone), 1u, __builtin_addressof(out_mask))) { mask = out_mask; }
+                        else { mask = eval_u64_cone_cpu(cone); }
+                    }
+                    else { mask = eval_u64_cone_cpu(cone); }
+
+                    auto const U = static_cast<::std::size_t>(1u << var_count);
+                    auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
+                    mask &= all_mask;
+
+                    on_out.reserve(U);
+                    for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(U); ++m)
+                    {
+                        if((mask >> m) & 1ull) { on_out.push_back(m); }
+                    }
+                    return true;
+                }
+
+                // var_count > 6u
+                cuda_tt_cone_desc cone{};
+                cone.var_count = static_cast<::std::uint8_t>(var_count);
+                cone.gate_count = 0u;
+                ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> leaf_index{};
+                leaf_index.reserve(var_count * 2u);
+                for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(leaves[i], static_cast<::std::uint16_t>(i)); }
+                ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> out_index{};
+                out_index.reserve(256);
+                bool ok2{true};
+
+                auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
+                {
+                    if(!ok2 || n == nullptr) { ok2 = false; return 65534u; }
+                    if(auto itc = const_val.find(n); itc != const_val.end())
+                    {
+                        using dns = ::phy_engine::model::digital_node_statement_t;
+                        if(itc->second == dns::false_state) { return 65534u; }
+                        if(itc->second == dns::true_state) { return 65535u; }
+                        ok2 = false;
+                        return 65534u;
+                    }
+                    if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+                    if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end()) { ok2 = false; return 65534u; }
+                    auto const& gg = itg->second;
+                    auto const a = self(self, gg.in0);
+                    auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
+                    if(!ok2) { return 65534u; }
+
+                    if(cone.gate_count >= 256u) { ok2 = false; return 65534u; }
+                    auto const gi = static_cast<::std::uint16_t>(cone.gate_count++);
+                    cone.kind[gi] = enc_kind_tt(gg.k);
+                    cone.in0[gi] = a;
+                    cone.in1[gi] = b;
+                    auto const out = static_cast<::std::uint16_t>(16u + gi);
+                    out_index.emplace(n, out);
+                    return out;
+                };
+
+                (void)dfs2(dfs2, root);
+                if(!ok2 || cone.gate_count == 0u) { return false; }
+
+                auto const U = static_cast<::std::size_t>(1u << var_count);
+                auto const blocks = static_cast<::std::uint32_t>((U + 63u) / 64u);
+                ::std::vector<::std::uint64_t> tt{};
+                tt.assign(blocks, 0ull);
+                if(opt.cuda_enable)
+                {
+                    if(!cuda_eval_tt_cones(opt.cuda_device_mask, __builtin_addressof(cone), 1u, blocks, tt.data()))
+                    {
+                        eval_tt_cone_cpu(cone, blocks, tt.data());
+                    }
+                }
+                else { eval_tt_cone_cpu(cone, blocks, tt.data()); }
+
+                on_out.reserve(U);
+                for(::std::uint32_t bi{}; bi < blocks; ++bi)
+                {
+                    auto w = tt[bi];
+                    while(w)
+                    {
+                        auto const b = static_cast<::std::uint32_t>(__builtin_ctzll(w));
+                        auto const m = static_cast<::std::size_t>(bi * 64u + b);
+                        if(m < U) { on_out.push_back(static_cast<::std::uint16_t>(m)); }
+                        w &= (w - 1ull);
+                    }
+                }
+                return true;
             };
 
             auto make_not = [&](::phy_engine::model::node_t* in) noexcept -> ::phy_engine::model::node_t*
@@ -11123,6 +11446,7 @@ namespace phy_engine::verilog::digital
                         auto itg = gate_by_out.find(n);
                         if(itg == gate_by_out.end())
                         {
+                            if(const_val.contains(n)) { return; }
                             if(!leaf_seen.contains(n))
                             {
                                 if(out.leaves.size() >= max_vars)
@@ -11181,31 +11505,32 @@ namespace phy_engine::verilog::digital
                     auto const var_count = out.leaves.size();
                     if(var_count == 0 || var_count > 16) { return false; }
 
-                    out.on.reserve(1u << var_count);
-                    for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << var_count); ++m)
+                    if(!eval_binary_cone_on_dc(root, out.leaves, out.on, out.dc))
                     {
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
-                        leaf_val.reserve(var_count * 2u);
-                        for(std::size_t i{}; i < var_count; ++i)
+                        // Fallback: per-minterm 4-valued evaluation (preserves X/Z -> DC inference semantics).
+                        out.on.reserve(1u << var_count);
+                        for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << var_count); ++m)
                         {
-                            auto const bit = ((m >> i) & 1u) != 0;
-                            leaf_val.emplace(out.leaves[i],
-                                             bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                 : ::phy_engine::model::digital_node_statement_t::false_state);
-                        }
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
-                        memo.reserve(out.to_delete.size() * 2u + 8u);
-                        ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
-                        visiting.reserve(out.to_delete.size() * 2u + 8u);
-                        auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
-                        if(r == ::phy_engine::model::digital_node_statement_t::true_state) { out.on.push_back(m); }
-                        else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
-                        else
-                        {
-                            if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { out.dc.push_back(m); }
+                            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
+                            leaf_val.reserve(var_count * 2u);
+                            for(std::size_t i{}; i < var_count; ++i)
+                            {
+                                auto const bit = ((m >> i) & 1u) != 0;
+                                leaf_val.emplace(out.leaves[i],
+                                                 bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                     : ::phy_engine::model::digital_node_statement_t::false_state);
+                            }
+                            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
+                            memo.reserve(out.to_delete.size() * 2u + 8u);
+                            ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                            visiting.reserve(out.to_delete.size() * 2u + 8u);
+                            auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
+                            if(r == ::phy_engine::model::digital_node_statement_t::true_state) { out.on.push_back(m); }
+                            else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
                             else
                             {
-                                return false;
+                                if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { out.dc.push_back(m); }
+                                else { return false; }
                             }
                         }
                     }
@@ -11623,6 +11948,7 @@ namespace phy_engine::verilog::digital
                     auto itg = gate_by_out.find(n);
                     if(itg == gate_by_out.end())
                     {
+                        if(const_val.contains(n)) { return; }
                         if(!leaf_index.contains(n))
                         {
                             if(leaves.size() >= max_vars)
@@ -11677,39 +12003,40 @@ namespace phy_engine::verilog::digital
                 // Build ON/DC sets by truth-table enumeration on leaf vars (binary only).
                 ::std::vector<::std::uint16_t> on{};
                 ::std::vector<::std::uint16_t> dc{};
-                on.reserve(1u << leaves.size());
-
-                for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << leaves.size()); ++m)
+                if(!eval_binary_cone_on_dc(root, leaves, on, dc))
                 {
-                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
-                    leaf_val.reserve(leaves.size() * 2u);
-                    for(std::size_t i{}; i < leaves.size(); ++i)
+                    // Slow fallback: per-minterm evaluation with 4-valued semantics (preserves X/Z -> DC inference).
+                    on.reserve(1u << leaves.size());
+                    for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << leaves.size()); ++m)
                     {
-                        auto const bit = ((m >> i) & 1u) != 0;
-                        leaf_val.emplace(leaves[i],
-                                         bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                             : ::phy_engine::model::digital_node_statement_t::false_state);
-                    }
-                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
-                    memo.reserve(to_delete.size() * 2u + 8u);
-                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
-                    visiting.reserve(to_delete.size() * 2u + 8u);
-                    auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
-                    if(r == ::phy_engine::model::digital_node_statement_t::true_state) { on.push_back(m); }
-                    else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
-                    else
-                    {
-                        // Conservative: treat X/Z as don't-care only if user opted out of X-propagation.
-                        // (This is a best-effort DC-set exploitation.)
-                        if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { dc.push_back(m); }
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
+                        leaf_val.reserve(leaves.size() * 2u);
+                        for(std::size_t i{}; i < leaves.size(); ++i)
+                        {
+                            auto const bit = ((m >> i) & 1u) != 0;
+                            leaf_val.emplace(leaves[i],
+                                             bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                 : ::phy_engine::model::digital_node_statement_t::false_state);
+                        }
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
+                        memo.reserve(to_delete.size() * 2u + 8u);
+                        ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                        visiting.reserve(to_delete.size() * 2u + 8u);
+                        auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
+                        if(r == ::phy_engine::model::digital_node_statement_t::true_state) { on.push_back(m); }
+                        else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
                         else
                         {
-                            ok = false;
-                            break;
+                            if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { dc.push_back(m); }
+                            else
+                            {
+                                ok = false;
+                                break;
+                            }
                         }
                     }
+                    if(!ok) { continue; }
                 }
-                if(!ok) { continue; }
 
                 if(opt.infer_dc_from_fsm)
                 {
@@ -12605,6 +12932,7 @@ namespace phy_engine::verilog::digital
                     return;
                 }
                 case stmt_node::kind::block:
+                case stmt_node::kind::subprogram_block:
                 {
                     for(auto const s: n.stmts) { collect_vector_assignments(b, arena, s, vecs, vec_by_signal); }
                     return;
@@ -12631,6 +12959,7 @@ namespace phy_engine::verilog::digital
                     return;
                 }
                 case stmt_node::kind::while_stmt:
+                case stmt_node::kind::do_while_stmt:
                 {
                     if(n.body_stmt != SIZE_MAX) { collect_vector_assignments(b, arena, n.body_stmt, vecs, vec_by_signal); }
                     return;
@@ -12744,6 +13073,7 @@ namespace phy_engine::verilog::digital
                     return;
                 }
                 case stmt_node::kind::block:
+                case stmt_node::kind::subprogram_block:
                 {
                     for(auto const s: n.stmts) { collect_assigned_signals(arena, s, out); }
                     return;
@@ -12770,6 +13100,7 @@ namespace phy_engine::verilog::digital
                     return;
                 }
                 case stmt_node::kind::while_stmt:
+                case stmt_node::kind::do_while_stmt:
                 {
                     if(n.body_stmt != SIZE_MAX) { collect_assigned_signals(arena, n.body_stmt, out); }
                     return;
@@ -12957,6 +13288,7 @@ namespace phy_engine::verilog::digital
             {
                 case stmt_node::kind::empty: return true;
                 case stmt_node::kind::block:
+                case stmt_node::kind::subprogram_block:
                 {
                     for(auto const s: n.stmts)
                     {
@@ -13253,6 +13585,72 @@ namespace phy_engine::verilog::digital
                     }
                     return true;
                 }
+                case stmt_node::kind::do_while_stmt:
+                {
+                    auto const max_iter{b.ctx.opt.loop_unroll_limit};
+                    if(max_iter == 0)
+                    {
+                        b.ctx.set_error("pe_synth: loop_unroll_limit is 0 (loops disabled)");
+                        return false;
+                    }
+
+                    // Execute the body at least once.
+                    if(n.body_stmt != SIZE_MAX)
+                    {
+                        if(!synth_stmt_ff(b, arena, n.body_stmt, cur, next, targets)) { return false; }
+                    }
+
+                    // Then behave like a bounded while loop.
+                    for(::std::size_t iter{1}; iter < max_iter; ++iter)
+                    {
+                        auto* raw_cond = b.expr_in_env(n.expr_root, cur, nullptr);
+                        auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        ::phy_engine::verilog::digital::logic_t cv{};
+                        if(b.ctx.try_get_const(cond, cv))
+                        {
+                            if(cv == ::phy_engine::verilog::digital::logic_t::false_state) { break; }
+                            if(cv == ::phy_engine::verilog::digital::logic_t::true_state)
+                            {
+                                if(n.body_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_ff(b, arena, n.body_stmt, cur, next, targets)) { return false; }
+                                }
+                                continue;
+                            }
+                        }
+
+                        auto then_cur = cur;
+                        auto then_next = next;
+                        if(n.body_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_ff(b, arena, n.body_stmt, then_cur, then_next, targets)) { return false; }
+                        }
+
+                        auto else_cur = cur;
+                        auto else_next = next;
+
+                        for(::std::size_t sig{}; sig < cur.size() && sig < then_cur.size() && sig < else_cur.size(); ++sig)
+                        {
+                            cur[sig] = b.ctx.mux2(cond, else_cur[sig], then_cur[sig]);
+                        }
+                        for(::std::size_t sig{}; sig < targets.size() && sig < next.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            next[sig] = b.ctx.mux2(cond, else_next[sig], then_next[sig]);
+                        }
+                    }
+
+                    return true;
+                }
+                case stmt_node::kind::return_stmt:
+                case stmt_node::kind::break_stmt:
+                case stmt_node::kind::continue_stmt:
+                {
+                    // Best-effort: these control-flow statements are accepted, but full early-exit semantics
+                    // are not modeled in the sequential subset.
+                    return true;
+                }
                 default:
                 {
                     b.ctx.set_error("pe_synth: unsupported statement in always_ff");
@@ -13279,6 +13677,7 @@ namespace phy_engine::verilog::digital
             {
                 case stmt_node::kind::empty: return true;
                 case stmt_node::kind::block:
+                case stmt_node::kind::subprogram_block:
                 {
                     for(auto const s: n.stmts)
                     {
@@ -13556,6 +13955,67 @@ namespace phy_engine::verilog::digital
                     }
                     return true;
                 }
+                case stmt_node::kind::do_while_stmt:
+                {
+                    auto const max_iter{b.ctx.opt.loop_unroll_limit};
+                    if(max_iter == 0)
+                    {
+                        b.ctx.set_error("pe_synth: loop_unroll_limit is 0 (loops disabled)");
+                        return false;
+                    }
+
+                    // Execute the body at least once.
+                    if(n.body_stmt != SIZE_MAX)
+                    {
+                        if(!synth_stmt_comb(b, arena, n.body_stmt, value, assigned_cond, targets)) { return false; }
+                    }
+
+                    for(::std::size_t iter{1}; iter < max_iter; ++iter)
+                    {
+                        auto* raw_cond = b.expr_in_env(n.expr_root, value, nullptr);
+                        auto* cond = b.ctx.gate_case_eq(raw_cond, b.ctx.const_node(::phy_engine::verilog::digital::logic_t::true_state));
+
+                        ::phy_engine::verilog::digital::logic_t cv{};
+                        if(b.ctx.try_get_const(cond, cv))
+                        {
+                            if(cv == ::phy_engine::verilog::digital::logic_t::false_state) { break; }
+                            if(cv == ::phy_engine::verilog::digital::logic_t::true_state)
+                            {
+                                if(n.body_stmt != SIZE_MAX)
+                                {
+                                    if(!synth_stmt_comb(b, arena, n.body_stmt, value, assigned_cond, targets)) { return false; }
+                                }
+                                continue;
+                            }
+                        }
+
+                        auto then_value = value;
+                        auto then_assigned = assigned_cond;
+                        if(n.body_stmt != SIZE_MAX)
+                        {
+                            if(!synth_stmt_comb(b, arena, n.body_stmt, then_value, then_assigned, targets)) { return false; }
+                        }
+
+                        auto else_value = value;
+                        auto else_assigned = assigned_cond;
+
+                        for(::std::size_t sig{}; sig < targets.size() && sig < value.size(); ++sig)
+                        {
+                            if(!targets[sig]) { continue; }
+                            value[sig] = b.ctx.mux2(cond, else_value[sig], then_value[sig]);
+                            assigned_cond[sig] = b.ctx.mux2(cond, else_assigned[sig], then_assigned[sig]);
+                        }
+                    }
+                    return true;
+                }
+                case stmt_node::kind::return_stmt:
+                case stmt_node::kind::break_stmt:
+                case stmt_node::kind::continue_stmt:
+                {
+                    // Best-effort: accept these statements so inlined SV functions using `subprogram_block`
+                    // can synthesize. Full early-exit semantics are not modeled.
+                    return true;
+                }
                 default:
                 {
                     b.ctx.set_error("pe_synth: unsupported statement in always_comb");
@@ -13705,10 +14165,10 @@ namespace phy_engine::verilog::digital
             // Note: `instance_state::bindings` only covers input (and inout-as-input) ports.
             if(parent != nullptr)
             {
-                for(auto const& d: inst.output_drives)
-                {
-                    if(!ok()) { return false; }
-                    if(d.parent_signal == SIZE_MAX) { continue; }
+            for(auto const& d: inst.output_drives)
+            {
+                if(!ok()) { return false; }
+                if(d.parent_signal == SIZE_MAX) { continue; }
 
                     auto* dst = parent->signal(d.parent_signal);
                     if(dst == nullptr)
@@ -13738,6 +14198,157 @@ namespace phy_engine::verilog::digital
                 }
             }
 
+            // Heuristic: avoid materializing drivers (YES/DLATCH) for purely-local temporary signals that are:
+            // - written in an always_comb, and
+            // - only read within the same always block.
+            //
+            // This massively reduces netlist size for datapath-heavy SV that uses many block-scoped temporaries
+            // (including the inlined function-call always_comb blocks generated by the frontend).
+            //
+            // Correctness note: we still model the temporaries internally via `value[...]` substitution when building
+            // expression DAGs; we just avoid emitting external drivers for temps that are not observed elsewhere.
+            ::std::vector<bool> port_out{};
+            port_out.assign(m.signal_names.size(), false);
+            for(auto const& p : m.ports)
+            {
+                if(p.signal >= port_out.size()) { continue; }
+                if(p.dir == ::phy_engine::verilog::digital::port_dir::output || p.dir == ::phy_engine::verilog::digital::port_dir::inout) { port_out[p.signal] = true; }
+            }
+
+            ::std::vector<bool> assigns_read{};
+            assigns_read.assign(m.signal_names.size(), false);
+
+            ::std::vector<::std::uint32_t> read_block_count{};
+            read_block_count.assign(m.signal_names.size(), 0u);
+
+            ::std::vector<::std::uint32_t> expr_seen{};
+            expr_seen.assign(m.expr_nodes.size(), 0u);
+            ::std::vector<::std::uint32_t> sig_seen{};
+            sig_seen.assign(m.signal_names.size(), 0u);
+            ::std::uint32_t stamp{1u};
+
+            auto collect_expr_reads = [&](::std::size_t root, ::std::uint32_t cur_stamp, ::std::vector<::std::size_t>& out_sigs) noexcept
+            {
+                if(root == SIZE_MAX || root >= m.expr_nodes.size()) { return; }
+                ::std::vector<::std::size_t> st{};
+                st.reserve(64);
+                st.push_back(root);
+                while(!st.empty())
+                {
+                    auto const r = st.back();
+                    st.pop_back();
+                    if(r == SIZE_MAX || r >= m.expr_nodes.size()) { continue; }
+                    if(expr_seen[r] == cur_stamp) { continue; }
+                    expr_seen[r] = cur_stamp;
+                    auto const& en = m.expr_nodes.index_unchecked(r);
+                    using ek = ::phy_engine::verilog::digital::expr_kind;
+                    if(en.kind == ek::signal)
+                    {
+                        auto const s = en.signal;
+                        if(s < sig_seen.size() && sig_seen[s] != cur_stamp)
+                        {
+                            sig_seen[s] = cur_stamp;
+                            out_sigs.push_back(s);
+                        }
+                        continue;
+                    }
+                    if(en.a != SIZE_MAX) { st.push_back(en.a); }
+                    if(en.b != SIZE_MAX) { st.push_back(en.b); }
+                }
+            };
+
+            auto collect_stmt_reads = [&](auto&& self,
+                                          ::fast_io::vector<stmt_node> const& arena,
+                                          ::std::size_t stmt_idx,
+                                          ::std::uint32_t cur_stamp,
+                                          ::std::vector<::std::size_t>& out_sigs) noexcept -> void
+            {
+                if(stmt_idx == SIZE_MAX || stmt_idx >= arena.size()) { return; }
+                auto const& sn = arena.index_unchecked(stmt_idx);
+                switch(sn.k)
+                {
+                    case stmt_node::kind::blocking_assign:
+                    case stmt_node::kind::nonblocking_assign: collect_expr_reads(sn.expr_root, cur_stamp, out_sigs); break;
+                    case stmt_node::kind::blocking_assign_vec:
+                    case stmt_node::kind::nonblocking_assign_vec:
+                    {
+                        for(auto const r : sn.rhs_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
+                        break;
+                    }
+                    case stmt_node::kind::if_stmt:
+                    {
+                        collect_expr_reads(sn.expr_root, cur_stamp, out_sigs);
+                        for(auto const s : sn.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        for(auto const s : sn.else_stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        break;
+                    }
+                    case stmt_node::kind::case_stmt:
+                    {
+                        for(auto const r : sn.case_expr_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
+                        for(auto const& ci : sn.case_items)
+                        {
+                            for(auto const r : ci.match_roots) { collect_expr_reads(r, cur_stamp, out_sigs); }
+                            for(auto const s : ci.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        }
+                        break;
+                    }
+                    case stmt_node::kind::block:
+                    case stmt_node::kind::subprogram_block:
+                    {
+                        for(auto const s : sn.stmts) { self(self, arena, s, cur_stamp, out_sigs); }
+                        break;
+                    }
+                    case stmt_node::kind::for_stmt:
+                    {
+                        if(sn.init_stmt != SIZE_MAX) { self(self, arena, sn.init_stmt, cur_stamp, out_sigs); }
+                        if(sn.step_stmt != SIZE_MAX) { self(self, arena, sn.step_stmt, cur_stamp, out_sigs); }
+                        collect_expr_reads(sn.expr_root, cur_stamp, out_sigs);
+                        if(sn.body_stmt != SIZE_MAX) { self(self, arena, sn.body_stmt, cur_stamp, out_sigs); }
+                        break;
+                    }
+                    case stmt_node::kind::while_stmt:
+                    case stmt_node::kind::do_while_stmt:
+                    {
+                        collect_expr_reads(sn.expr_root, cur_stamp, out_sigs);
+                        if(sn.body_stmt != SIZE_MAX) { self(self, arena, sn.body_stmt, cur_stamp, out_sigs); }
+                        break;
+                    }
+                    default: break;
+                }
+            };
+
+            // Reads from continuous assigns (treated as a separate reader context).
+            {
+                ::std::vector<::std::size_t> sigs{};
+                sigs.reserve(128);
+                auto const cur_stamp = ++stamp;
+                for(auto const& a : m.assigns)
+                {
+                    collect_expr_reads(a.expr_root, cur_stamp, sigs);
+                    if(a.guard_root != SIZE_MAX) { collect_expr_reads(a.guard_root, cur_stamp, sigs); }
+                }
+                for(auto const s : sigs)
+                {
+                    if(s < assigns_read.size()) { assigns_read[s] = true; }
+                }
+            }
+
+            // Reads from always blocks (counted per-block, not per-reference).
+            auto add_reader_block = [&](::fast_io::vector<stmt_node> const& arena, ::fast_io::vector<::std::size_t> const& roots) noexcept
+            {
+                ::std::vector<::std::size_t> sigs{};
+                sigs.reserve(256);
+                auto const cur_stamp = ++stamp;
+                for(auto const r : roots) { collect_stmt_reads(collect_stmt_reads, arena, r, cur_stamp, sigs); }
+                for(auto const s : sigs)
+                {
+                    if(s < read_block_count.size()) { ++read_block_count[s]; }
+                }
+            };
+            for(auto const& ac : m.always_combs) { add_reader_block(ac.stmt_nodes, ac.roots); }
+            for(auto const& ff : m.always_ffs) { add_reader_block(ff.stmt_nodes, ff.roots); }
+            for(auto const& ib : m.initials) { add_reader_block(ib.stmt_nodes, ib.roots); }
+
             // always_comb blocks (restricted subset).
             if(opt.support_always_comb)
             {
@@ -13746,6 +14357,12 @@ namespace phy_engine::verilog::digital
                     (void)comb;
                     ::std::vector<bool> targets(m.signal_names.size(), false);
                     for(auto const root: comb.roots) { collect_assigned_signals(comb.stmt_nodes, root, targets); }
+
+                    // Track which signals are read in this always block (for drive pruning).
+                    auto const cur_stamp = ++stamp;
+                    ::std::vector<::std::size_t> read_sigs{};
+                    read_sigs.reserve(256);
+                    for(auto const root: comb.roots) { collect_stmt_reads(collect_stmt_reads, comb.stmt_nodes, root, cur_stamp, read_sigs); }
 
                     ::std::vector<::phy_engine::model::node_t*> values = b.sig_nodes;
                     ::std::vector<::phy_engine::model::node_t*> assigned_cond(m.signal_names.size(),
@@ -13758,6 +14375,12 @@ namespace phy_engine::verilog::digital
                     for(::std::size_t sig{}; sig < targets.size(); ++sig)
                     {
                         if(!targets[sig]) { continue; }
+                        bool const read_here = (sig < sig_seen.size()) && (sig_seen[sig] == cur_stamp);
+                        bool const read_elsewhere =
+                            (sig < assigns_read.size() && assigns_read[sig]) ||
+                            (sig < read_block_count.size() && read_block_count[sig] > (read_here ? 1u : 0u));
+                        bool const drive = (sig < port_out.size() && port_out[sig]) || read_elsewhere;
+                        if(!drive) { continue; }
                         auto* lhs = b.sig_nodes[sig];
                         auto* rhs = values[sig];
                         if(lhs == nullptr || rhs == nullptr) { continue; }
