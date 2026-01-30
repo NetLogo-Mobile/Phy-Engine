@@ -143,10 +143,10 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Mutual-exclusion / predicate-based DC inference from conditionals (via one-hot FSM inference from constant `if/case` assignments)
 
 #### AIG-style rewriting / resubstitution (beyond local patterns)
-- [ ] More rewrite templates (AOI/OAI-like decompositions using existing primitive library)
-- [ ] Resubstitution using existing nodes in the DAG (replace a node with a cheaper function of existing signals)
-- [ ] Sweeping / redundancy removal beyond DCE (SAT-free local equivalence checks, bounded)
-- [ ] Iterative “area recovery” scheduling (interleave rewrite/strash/sweep to reach better fixpoints)
+- [x] More rewrite templates (consensus-style AIG rewrites; AOI/OAI-like factoring using existing primitive library)
+- [x] Resubstitution using existing nodes in the DAG (bounded truth-table matching with complemented reuse)
+- [x] Sweeping / redundancy removal beyond DCE (SAT-free bounded cone truth-table hashing)
+- [x] Iterative “area recovery” scheduling (rewrite/strash/resub/sweep inside O3 fixpoint loop)
 
 #### Technology mapping (general)
 - [ ] Cost-driven DAG covering (“subject graph” → library patterns) for minimum gate count
