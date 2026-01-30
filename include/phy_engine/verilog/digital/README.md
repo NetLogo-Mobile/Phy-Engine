@@ -95,7 +95,9 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Multi-term factoring on OR-trees-of-ANDs and AND-trees-of-ORs
 - [x] Absorption / redundant-level elimination (`a&(a|b)->a`, `a|(a&b)->a`, etc.)
 - [x] Local XOR/XNOR rewriting from SOP patterns
-- [x] Bounded Quine–McCluskey-style two-level minimization on small, exclusive cones (exact on very small vars; greedy cover on moderate vars)
+- [x] Two-level minimization on small, exclusive cones:
+  - [x] Quine–McCluskey prime implicants + exact cover (very small) / greedy cover (moderate)
+  - [x] Espresso-style heuristic minimization (expand + irredundant) with ON/DC/OFF sets (bounded truth-table cones)
 - [x] Tests validating correctness + gate-count improvement under `test/0015.verilog_compile/`
 
 ### TODO (not yet implemented)
@@ -124,8 +126,8 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
 
 #### Two-level minimization (Espresso / full cover)
-- [ ] Espresso-style heuristic minimization (expand/reduce/irredundant) with ON/DC/OFF sets
-- [ ] Better prime implicant selection (e.g. Petrick/exact cover for larger-but-bounded cases)
+- [ ] Espresso “full” loop (add REDUCE step + last-gasp/perturbation passes for better results)
+- [ ] Better prime implicant selection (e.g. Petrick/exact cover for larger-but-bounded cases) when not using Espresso path
 - [ ] Multi-output sharing (shared product terms across multiple outputs), not “per-output cone” only
 - [ ] Stronger cost model (literal count vs gate count; optional weights per primitive)
 

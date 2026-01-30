@@ -4132,7 +4132,8 @@ namespace phy_engine::verilog::digital
                                                        std::size_t var_count) noexcept
         {
             // Cost model (2-input gates only): NOTs for negated literals + AND trees + OR tree.
-            bool neg_used[8]{};
+            ::std::vector<bool> neg_used{};
+            neg_used.assign(var_count, false);
             std::size_t terms{};
             std::size_t and_cost{};
 
@@ -4162,6 +4163,241 @@ namespace phy_engine::verilog::digital
             if(terms >= 2) { or_cost = terms - 1u; }
 
             return not_cost + and_cost + or_cost;
+        }
+
+        [[nodiscard]] inline std::size_t two_level_cover_cost(::std::vector<qm_implicant> const& cover, std::size_t var_count) noexcept
+        {
+            // Cost model (2-input gates only): NOTs for negated literals + AND trees + OR tree.
+            ::std::vector<bool> neg_used{};
+            neg_used.assign(var_count, false);
+
+            std::size_t terms{};
+            std::size_t and_cost{};
+
+            for(auto const& imp : cover)
+            {
+                std::size_t lits{};
+                for(std::size_t v{}; v < var_count; ++v)
+                {
+                    if((imp.mask >> v) & 1u) { continue; }
+                    ++lits;
+                    bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
+                    if(!bit_is_1) { neg_used[v] = true; }
+                }
+                ++terms;
+                if(lits >= 2) { and_cost += (lits - 1u); }
+            }
+
+            std::size_t not_cost{};
+            for(std::size_t v{}; v < var_count; ++v)
+            {
+                if(neg_used[v]) { ++not_cost; }
+            }
+
+            std::size_t or_cost{};
+            if(terms >= 2) { or_cost = terms - 1u; }
+
+            return not_cost + and_cost + or_cost;
+        }
+
+        [[nodiscard]] inline bool two_level_cover_covers_all_on(::std::vector<qm_implicant> const& cover,
+                                                                ::std::vector<::std::uint16_t> const& on) noexcept
+        {
+            for(auto const m : on)
+            {
+                bool hit{};
+                for(auto const& c : cover)
+                {
+                    if(implicant_covers(c, m))
+                    {
+                        hit = true;
+                        break;
+                    }
+                }
+                if(!hit) { return false; }
+            }
+            return true;
+        }
+
+        [[nodiscard]] inline bool two_level_cover_hits_off(::std::vector<qm_implicant> const& cover,
+                                                           ::std::vector<bool> const& is_on,
+                                                           ::std::vector<bool> const& is_dc) noexcept
+        {
+            // Universe is implicit: [0, is_on.size()).
+            auto const U = is_on.size();
+            for(std::size_t m{}; m < U; ++m)
+            {
+                if(is_on[m] || is_dc[m]) { continue; }
+                auto const mm = static_cast<::std::uint16_t>(m);
+                for(auto const& c : cover)
+                {
+                    if(implicant_covers(c, mm)) { return true; }
+                }
+            }
+            return false;
+        }
+
+        struct espresso_solution
+        {
+            ::std::vector<qm_implicant> cover{};
+            std::size_t cost{static_cast<std::size_t>(-1)};
+        };
+
+        [[nodiscard]] inline espresso_solution espresso_two_level_minimize(::std::vector<::std::uint16_t> const& on,
+                                                                           ::std::vector<::std::uint16_t> const& dc,
+                                                                           std::size_t var_count) noexcept
+        {
+            // A small, deterministic Espresso-style loop:
+            // - start from minterm cover (ON-set)
+            // - iteratively EXPAND (w.r.t. OFF-set), then IRREDUNDANT (drop redundant cubes)
+            //
+            // This is still subject to bounded truth-table enumeration; it is intended for small exclusive cones.
+
+            espresso_solution sol{};
+            if(var_count == 0)
+            {
+                sol.cost = on.empty() ? 0u : 0u;
+                if(!on.empty()) { sol.cover.push_back(qm_implicant{0u, 0u, false}); }
+                return sol;
+            }
+            if(var_count > 16) { return sol; }
+
+            auto const U = static_cast<std::size_t>(1u << var_count);
+
+            ::std::vector<bool> is_on{};
+            ::std::vector<bool> is_dc{};
+            is_on.assign(U, false);
+            is_dc.assign(U, false);
+            for(auto const m : on)
+            {
+                if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
+            }
+            for(auto const m : dc)
+            {
+                if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
+            }
+
+            // Initial cover: one cube per ON minterm.
+            ::std::vector<qm_implicant> cover{};
+            cover.reserve(on.size());
+            for(auto const m : on) { cover.push_back(qm_implicant{m, 0u, false}); }
+
+            auto cube_hits_off = [&](qm_implicant const& c) noexcept -> bool
+            {
+                for(std::size_t m{}; m < U; ++m)
+                {
+                    if(is_on[m] || is_dc[m]) { continue; }
+                    if(implicant_covers(c, static_cast<::std::uint16_t>(m))) { return true; }
+                }
+                return false;
+            };
+
+            auto expand_one = [&](qm_implicant const& c0) noexcept -> qm_implicant
+            {
+                auto c = c0;
+                bool changed{true};
+                while(changed)
+                {
+                    changed = false;
+                    for(std::size_t v{}; v < var_count; ++v)
+                    {
+                        if((c.mask >> v) & 1u) { continue; }
+                        qm_implicant cand = c;
+                        cand.mask = static_cast<::std::uint16_t>(cand.mask | static_cast<::std::uint16_t>(1u << v));
+                        cand.value = static_cast<::std::uint16_t>(cand.value & static_cast<::std::uint16_t>(~(1u << v)));
+                        if(!cube_hits_off(cand))
+                        {
+                            c = cand;
+                            changed = true;
+                        }
+                    }
+                }
+                return c;
+            };
+
+            auto irredundant = [&]() noexcept -> bool
+            {
+                if(cover.empty()) { return false; }
+                ::std::vector<::std::uint16_t> cnt{};
+                cnt.assign(U, 0u);
+
+                for(auto const& c : cover)
+                {
+                    for(auto const m : on)
+                    {
+                        if(implicant_covers(c, m))
+                        {
+                            auto& x = cnt[static_cast<std::size_t>(m)];
+                            if(x != ::std::numeric_limits<::std::uint16_t>::max()) { ++x; }
+                        }
+                    }
+                }
+
+                bool changed{};
+                for(std::size_t i{}; i < cover.size();)
+                {
+                    auto const c = cover[i];
+                    bool redundant{true};
+                    bool covers_any{};
+                    for(auto const m : on)
+                    {
+                        if(!implicant_covers(c, m)) { continue; }
+                        covers_any = true;
+                        if(cnt[static_cast<std::size_t>(m)] <= 1u)
+                        {
+                            redundant = false;
+                            break;
+                        }
+                    }
+
+                    if(!covers_any) { redundant = true; }
+
+                    if(!redundant)
+                    {
+                        ++i;
+                        continue;
+                    }
+
+                    // Remove cube and update counts.
+                    for(auto const m : on)
+                    {
+                        if(!implicant_covers(c, m)) { continue; }
+                        auto& x = cnt[static_cast<std::size_t>(m)];
+                        if(x) { --x; }
+                    }
+                    cover[i] = cover.back();
+                    cover.pop_back();
+                    changed = true;
+                }
+                return changed;
+            };
+
+            // A few deterministic expand/irredundant rounds.
+            for(std::size_t iter{}; iter < 8u; ++iter)
+            {
+                for(auto& c : cover) { c = expand_one(c); }
+
+                // Deduplicate identical cubes (can happen after expansion).
+                ::std::sort(cover.begin(), cover.end(), [](qm_implicant const& a, qm_implicant const& b) noexcept {
+                    if(a.mask != b.mask) { return a.mask < b.mask; }
+                    return a.value < b.value;
+                });
+                cover.erase(::std::unique(cover.begin(),
+                                          cover.end(),
+                                          [](qm_implicant const& a, qm_implicant const& b) noexcept { return a.mask == b.mask && a.value == b.value; }),
+                            cover.end());
+
+                auto const changed = irredundant();
+                if(!changed) { break; }
+            }
+
+            // Validate cover (best-effort). If something went wrong, bail.
+            if(!two_level_cover_covers_all_on(cover, on)) { return sol; }
+            if(two_level_cover_hits_off(cover, is_on, is_dc)) { return sol; }
+
+            sol.cover = ::std::move(cover);
+            sol.cost = two_level_cover_cost(sol.cover, var_count);
+            return sol;
         }
 
         [[nodiscard]] inline qm_solution qm_exact_minimum_cover(::std::vector<qm_implicant> const& primes,
@@ -4468,7 +4704,9 @@ namespace phy_engine::verilog::digital
                                                                                ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
                                                                                pe_synth_options const& opt) noexcept
         {
-            // Exact Quine–McCluskey minimization on small binary cones (<=6 vars, <=32 gates).
+            // Two-level minimization on small binary cones (exclusive fanout):
+            // - Quine–McCluskey prime implicants + exact cover (very small) / greedy cover (moderate)
+            // - Espresso-style expand+irredundant heuristic (moderate), choose the best cost
             // Only safe when the cone's internal nets have fanout=1 (exclusive to the cone).
             constexpr std::size_t exact_vars = 6;
             constexpr std::size_t max_vars = 10;
@@ -4764,9 +5002,29 @@ namespace phy_engine::verilog::digital
 
                 auto const primes = qm_prime_implicants(on, dc, leaves.size());
                 if(primes.size() > max_primes) { continue; }
-                auto sol = (leaves.size() <= exact_vars) ? qm_exact_minimum_cover(primes, on, leaves.size())
-                                                         : qm_greedy_cover(primes, on, leaves.size());
-                if(sol.cost == static_cast<std::size_t>(-1)) { continue; }
+                auto const qm_sol = (leaves.size() <= exact_vars) ? qm_exact_minimum_cover(primes, on, leaves.size())
+                                                                  : qm_greedy_cover(primes, on, leaves.size());
+                if(qm_sol.cost == static_cast<std::size_t>(-1)) { continue; }
+
+                enum class best_kind : std::uint8_t
+                {
+                    qm,
+                    espresso,
+                };
+                best_kind best{best_kind::qm};
+                std::size_t best_cost{qm_sol.cost};
+                espresso_solution esp{};
+
+                // Espresso-style heuristic (still bounded by enumeration). Skip tiny cases where QM exact cover is already optimal.
+                if(leaves.size() > exact_vars)
+                {
+                    esp = espresso_two_level_minimize(on, dc, leaves.size());
+                    if(esp.cost != static_cast<std::size_t>(-1) && esp.cost < best_cost)
+                    {
+                        best = best_kind::espresso;
+                        best_cost = esp.cost;
+                    }
+                }
 
                 // Normalize deletion list and only apply if we estimate a gate-count win.
                 ::std::sort(to_delete.begin(),
@@ -4780,7 +5038,7 @@ namespace phy_engine::verilog::digital
                                               [](auto const& a, auto const& b) noexcept { return a.chunk_pos == b.chunk_pos && a.vec_pos == b.vec_pos; }),
                                 to_delete.end());
 
-                if(sol.cost >= to_delete.size()) { continue; }
+                if(best_cost >= to_delete.size()) { continue; }
 
                 // Delete old cone (descending order).
                 for(auto const& mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
@@ -4804,15 +5062,10 @@ namespace phy_engine::verilog::digital
                 }
 
                 // Cache negations used.
-                ::phy_engine::model::node_t* neg[8]{};
-                for(std::size_t v{}; v < leaves.size(); ++v)
+                ::std::vector<::phy_engine::model::node_t*> neg{};
+                neg.assign(leaves.size(), nullptr);
+                auto ensure_neg_for = [&](qm_implicant const& imp) noexcept
                 {
-                    neg[v] = nullptr;
-                }
-                for(auto const pi : sol.pick)
-                {
-                    if(pi >= primes.size()) { continue; }
-                    auto const& imp = primes[pi];
                     for(std::size_t v{}; v < leaves.size(); ++v)
                     {
                         if((imp.mask >> v) & 1u) { continue; }
@@ -4820,14 +5073,24 @@ namespace phy_engine::verilog::digital
                         if(bit_is_1) { continue; }
                         if(neg[v] == nullptr) { neg[v] = make_not(leaves[v]); }
                     }
+                };
+                if(best == best_kind::qm)
+                {
+                    for(auto const pi : qm_sol.pick)
+                    {
+                        if(pi >= primes.size()) { continue; }
+                        ensure_neg_for(primes[pi]);
+                    }
+                }
+                else
+                {
+                    for(auto const& imp : esp.cover) { ensure_neg_for(imp); }
                 }
 
                 ::std::vector<::phy_engine::model::node_t*> terms{};
-                terms.reserve(sol.pick.size());
-                for(auto const pi : sol.pick)
+                terms.reserve(best == best_kind::qm ? qm_sol.pick.size() : esp.cover.size());
+                auto add_term_from = [&](qm_implicant const& imp) noexcept -> void
                 {
-                    if(pi >= primes.size()) { continue; }
-                    auto const& imp = primes[pi];
 
                     ::phy_engine::model::node_t* term = nullptr;
                     std::size_t lits{};
@@ -4841,9 +5104,26 @@ namespace phy_engine::verilog::digital
                         if(term == nullptr) { term = lit; }
                         else { term = make_and(term, lit); }
                     }
-                    if(!ok) { break; }
+                    if(!ok) { return; }
                     if(lits == 0) { term = const1; }  // covers all
                     if(term != nullptr) { terms.push_back(term); }
+                };
+                if(best == best_kind::qm)
+                {
+                    for(auto const pi : qm_sol.pick)
+                    {
+                        if(pi >= primes.size()) { continue; }
+                        add_term_from(primes[pi]);
+                        if(!ok) { break; }
+                    }
+                }
+                else
+                {
+                    for(auto const& imp : esp.cover)
+                    {
+                        add_term_from(imp);
+                        if(!ok) { break; }
+                    }
                 }
                 if(!ok || terms.empty()) { continue; }
 
