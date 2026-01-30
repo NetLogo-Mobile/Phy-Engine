@@ -8,7 +8,6 @@
 #include <deque>
 #include <mutex>
 #include <new>
-#include <thread>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -393,82 +392,9 @@ namespace phy_engine::verilog::digital::details
             return true;
         }
 
-        [[nodiscard]] inline bool do_eval_on_device(device_chunk& chunk,
-                                                    cuda_u64_cone_desc const* cones,
-                                                    std::uint64_t* out_masks) noexcept
-        {
-            chunk.ok = false;
-
-            if(chunk.end <= chunk.begin) { chunk.ok = true; return true; }
-
-            auto const n = chunk.end - chunk.begin;
-            auto const cones_bytes = n * sizeof(cuda_u64_cone_desc);
-            auto const out_bytes = n * sizeof(std::uint64_t);
-
-            auto& ctx = get_u64_ctx(chunk.device);
-            std::scoped_lock lk(ctx.mu);
-            bool ok = ensure_u64_ctx_ready(ctx, n);
-            if(ok && cudaMemcpyAsync(ctx.d_cones, cones + chunk.begin, cones_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
-
-            if(ok)
-            {
-                constexpr unsigned threads = 256u;
-                auto const blocks = static_cast<unsigned>((n + threads - 1u) / threads);
-                eval_u64_cones_kernel<<<blocks, threads, 0u, ctx.stream>>>(ctx.d_cones, n, ctx.d_out);
-                if(cudaGetLastError() != cudaSuccess) { ok = false; }
-            }
-
-            if(ok && cudaMemcpyAsync(out_masks + chunk.begin, ctx.d_out, out_bytes, cudaMemcpyDeviceToHost, ctx.stream) != cudaSuccess) { ok = false; }
-            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
-
-            chunk.ok = ok;
-            return ok;
-        }
-
-        [[nodiscard]] inline bool do_eval_tt_on_device(device_chunk& chunk,
-                                                       cuda_tt_cone_desc const* cones,
-                                                       std::size_t cone_count,
-                                                       std::uint32_t stride_blocks,
-                                                       std::uint64_t* out_blocks) noexcept
-        {
-            chunk.ok = false;
-
-            if(chunk.end <= chunk.begin) { chunk.ok = true; return true; }
-            if(stride_blocks == 0u) { return false; }
-
-            auto const n = chunk.end - chunk.begin;
-            auto const cones_bytes = n * sizeof(cuda_tt_cone_desc);
-            auto const out_words = n * static_cast<std::size_t>(stride_blocks);
-            auto const out_bytes = out_words * sizeof(std::uint64_t);
-
-            auto& ctx = get_tt_ctx(chunk.device);
-            std::scoped_lock lk(ctx.mu);
-            bool ok = ensure_tt_ctx_ready(ctx, n, stride_blocks);
-            if(ok && cudaMemcpyAsync(ctx.d_cones, cones + chunk.begin, cones_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
-
-            if(ok)
-            {
-                constexpr unsigned threads = 128u;
-                auto const grid_y = static_cast<unsigned>((stride_blocks + threads - 1u) / threads);
-                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
-                eval_tt_cones_kernel<<<grid, threads, 0u, ctx.stream>>>(ctx.d_cones, n, stride_blocks, ctx.d_out);
-                if(cudaGetLastError() != cudaSuccess) { ok = false; }
-            }
-
-            if(ok && cudaMemcpyAsync(out_blocks + chunk.begin * static_cast<std::size_t>(stride_blocks),
-                                     ctx.d_out,
-                                     out_bytes,
-                                     cudaMemcpyDeviceToHost,
-                                     ctx.stream) != cudaSuccess)
-            {
-                ok = false;
-            }
-
-            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
-
-            chunk.ok = ok;
-            return ok;
-        }
+        // Note: multi-GPU entrypoints should avoid per-call std::thread creation.
+        // We enqueue work to each device's non-blocking stream from the caller thread, then synchronize streams.
+        // This reduces CPU overhead dramatically while still allowing both GPUs to run concurrently.
 
         struct bitset_matrix_device
         {
@@ -483,7 +409,65 @@ namespace phy_engine::verilog::digital::details
             std::uint32_t* d_popc{};
             std::uint32_t* d_any{};
 
+            // Host staging buffer for row_any (u32 per row), reused across calls to avoid reallocations.
+            std::vector<std::uint32_t> h_tmp{};
+
             bool ok{};
+
+            bitset_matrix_device() noexcept = default;
+            bitset_matrix_device(bitset_matrix_device const&) = delete;
+            bitset_matrix_device& operator=(bitset_matrix_device const&) = delete;
+            bitset_matrix_device(bitset_matrix_device&& o) noexcept :
+                device(o.device),
+                begin(o.begin),
+                end(o.end),
+                stride_words(o.stride_words),
+                stream(o.stream),
+                d_rows(o.d_rows),
+                d_mask(o.d_mask),
+                d_popc(o.d_popc),
+                d_any(o.d_any),
+                h_tmp(std::move(o.h_tmp)),
+                ok(o.ok)
+            {
+                o.device = 0;
+                o.begin = 0;
+                o.end = 0;
+                o.stride_words = 0;
+                o.stream = nullptr;
+                o.d_rows = nullptr;
+                o.d_mask = nullptr;
+                o.d_popc = nullptr;
+                o.d_any = nullptr;
+                o.ok = false;
+            }
+            bitset_matrix_device& operator=(bitset_matrix_device&& o) noexcept
+            {
+                if(this == &o) { return *this; }
+                // Must be destroyed/reset by the owner before move-assigning in.
+                device = o.device;
+                begin = o.begin;
+                end = o.end;
+                stride_words = o.stride_words;
+                stream = o.stream;
+                d_rows = o.d_rows;
+                d_mask = o.d_mask;
+                d_popc = o.d_popc;
+                d_any = o.d_any;
+                h_tmp = std::move(o.h_tmp);
+                ok = o.ok;
+                o.device = 0;
+                o.begin = 0;
+                o.end = 0;
+                o.stride_words = 0;
+                o.stream = nullptr;
+                o.d_rows = nullptr;
+                o.d_mask = nullptr;
+                o.d_popc = nullptr;
+                o.d_any = nullptr;
+                o.ok = false;
+                return *this;
+            }
         };
 
         struct bitset_matrix_handle
@@ -789,7 +773,17 @@ namespace phy_engine::verilog::digital::details
             if(d.d_mask != nullptr) { (void)cudaFree(d.d_mask); }
             if(d.d_rows != nullptr) { (void)cudaFree(d.d_rows); }
             if(d.stream != nullptr) { (void)cudaStreamDestroy(d.stream); }
-            d = bitset_matrix_device{};
+            d.device = 0;
+            d.begin = 0;
+            d.end = 0;
+            d.stride_words = 0;
+            d.stream = nullptr;
+            d.d_rows = nullptr;
+            d.d_mask = nullptr;
+            d.d_popc = nullptr;
+            d.d_any = nullptr;
+            d.h_tmp.clear();
+            d.ok = false;
         }
 
         [[nodiscard]] inline bool bitset_matrix_row_and_popcount_on_device(bitset_matrix_device& d,
@@ -916,20 +910,61 @@ namespace phy_engine::verilog::digital::details
             chunks.push_back(device_chunk{devices[i], begin, end, false});
         }
 
-        std::vector<std::thread> threads{};
-        threads.reserve(chunks.size());
+        struct work
+        {
+            device_chunk* chunk{};
+            eval_u64_ctx* ctx{};
+            std::unique_lock<std::mutex> lk{};
+        };
+
+        std::vector<work> worklist{};
+        worklist.reserve(chunks.size());
+
+        // Enqueue on all selected devices first.
         for(auto& c: chunks)
         {
-            auto* cp = &c;
-            threads.emplace_back([cp, cones, out_masks]() { (void)do_eval_on_device(*cp, cones, out_masks); });
-        }
-        for(auto& t: threads) { t.join(); }
+            c.ok = false;
+            if(c.end <= c.begin) { c.ok = true; continue; }
 
+            auto const n = c.end - c.begin;
+            auto const cones_bytes = n * sizeof(cuda_u64_cone_desc);
+            auto const out_bytes = n * sizeof(std::uint64_t);
+
+            auto& ctx = get_u64_ctx(c.device);
+            worklist.push_back(work{__builtin_addressof(c), __builtin_addressof(ctx), std::unique_lock<std::mutex>(ctx.mu)});
+
+            bool ok = ensure_u64_ctx_ready(ctx, n);
+            if(ok && cudaMemcpyAsync(ctx.d_cones, cones + c.begin, cones_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok)
+            {
+                constexpr unsigned threads = 256u;
+                auto const blocks = static_cast<unsigned>((n + threads - 1u) / threads);
+                eval_u64_cones_kernel<<<blocks, threads, 0u, ctx.stream>>>(ctx.d_cones, n, ctx.d_out);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+            if(ok && cudaMemcpyAsync(out_masks + c.begin, ctx.d_out, out_bytes, cudaMemcpyDeviceToHost, ctx.stream) != cudaSuccess) { ok = false; }
+            ctx.ok = ok;
+        }
+
+        // Synchronize streams (still overlapped across devices).
+        bool all_ok = true;
+        for(auto& w: worklist)
+        {
+            auto& c = *w.chunk;
+            auto& ctx = *w.ctx;
+            bool ok = ctx.ok;
+            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
+            c.ok = ok;
+            ctx.ok = ok;
+            if(!ok) { all_ok = false; }
+            // unlock ctx.mu here via w.lk destructor when worklist is destroyed
+        }
+
+        if(!all_ok) { return false; }
         for(auto const& c: chunks)
         {
             if(!c.ok) { return false; }
         }
-
         return true;
     }
 
@@ -971,21 +1006,63 @@ namespace phy_engine::verilog::digital::details
             chunks.push_back(device_chunk{devices[i], begin, end, false});
         }
 
-        std::vector<std::thread> threads{};
-        threads.reserve(chunks.size());
+        struct work
+        {
+            device_chunk* chunk{};
+            eval_tt_ctx* ctx{};
+            std::unique_lock<std::mutex> lk{};
+        };
+
+        std::vector<work> worklist{};
+        worklist.reserve(chunks.size());
+
         for(auto& c: chunks)
         {
-            auto* cp = &c;
-            threads.emplace_back([cp, cones, cone_count, stride_blocks, out_blocks]()
-                                 { (void)do_eval_tt_on_device(*cp, cones, cone_count, stride_blocks, out_blocks); });
-        }
-        for(auto& t: threads) { t.join(); }
+            c.ok = false;
+            if(c.end <= c.begin) { c.ok = true; continue; }
 
+            auto const n = c.end - c.begin;
+            auto const cones_bytes = n * sizeof(cuda_tt_cone_desc);
+            auto const out_words = n * static_cast<std::size_t>(stride_blocks);
+            auto const out_bytes = out_words * sizeof(std::uint64_t);
+
+            auto& ctx = get_tt_ctx(c.device);
+            worklist.push_back(work{__builtin_addressof(c), __builtin_addressof(ctx), std::unique_lock<std::mutex>(ctx.mu)});
+
+            bool ok = ensure_tt_ctx_ready(ctx, n, stride_blocks);
+            if(ok && cudaMemcpyAsync(ctx.d_cones, cones + c.begin, cones_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok)
+            {
+                constexpr unsigned threads = 128u;
+                auto const grid_y = static_cast<unsigned>((stride_blocks + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                eval_tt_cones_kernel<<<grid, threads, 0u, ctx.stream>>>(ctx.d_cones, n, stride_blocks, ctx.d_out);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+            if(ok && cudaMemcpyAsync(out_blocks + c.begin * static_cast<std::size_t>(stride_blocks), ctx.d_out, out_bytes, cudaMemcpyDeviceToHost, ctx.stream) != cudaSuccess)
+            {
+                ok = false;
+            }
+            ctx.ok = ok;
+        }
+
+        bool all_ok = true;
+        for(auto& w: worklist)
+        {
+            auto& c = *w.chunk;
+            auto& ctx = *w.ctx;
+            bool ok = ctx.ok;
+            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
+            c.ok = ok;
+            ctx.ok = ok;
+            if(!ok) { all_ok = false; }
+        }
+
+        if(!all_ok) { return false; }
         for(auto const& c: chunks)
         {
             if(!c.ok) { return false; }
         }
-
         return true;
     }
 
@@ -1075,18 +1152,38 @@ namespace phy_engine::verilog::digital::details
         if(h->stride_words == 0u || h->row_count == 0u) { return false; }
         if(mask_words != h->stride_words) { return false; }
 
-        std::vector<std::thread> threads{};
-        threads.reserve(h->devs.size());
+        // Enqueue work on each device stream (single host thread), then sync.
         for(auto& d: h->devs)
         {
-            auto* dp = &d;
-            threads.emplace_back([dp, mask, mask_words, out_counts]() { (void)bitset_matrix_row_and_popcount_on_device(*dp, mask, mask_words, out_counts); });
-        }
-        for(auto& t: threads) { t.join(); }
+            d.ok = false;
+            if(d.end <= d.begin) { d.ok = true; continue; }
+            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
 
-        for(auto const& d: h->devs)
+            auto const n = d.end - d.begin;
+            auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
+            auto const popc_bytes = n * sizeof(std::uint32_t);
+
+            bool ok = true;
+            if(cudaMemcpyAsync(d.d_mask, mask, mask_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemsetAsync(d.d_popc, 0, popc_bytes, d.stream) != cudaSuccess) { ok = false; }
+            if(ok)
+            {
+                constexpr unsigned threads = 128u;
+                auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                bitset_row_and_popcount_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(
+                    d.d_rows, n, d.stride_words, d.d_mask, d.d_popc);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+            if(ok && cudaMemcpyAsync(out_counts + d.begin, d.d_popc, popc_bytes, cudaMemcpyDeviceToHost, d.stream) != cudaSuccess) { ok = false; }
+            d.ok = ok;
+        }
+
+        for(auto& d: h->devs)
         {
             if(!d.ok) { return false; }
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+            if(cudaStreamSynchronize(d.stream) != cudaSuccess) { return false; }
         }
         return true;
     }
@@ -1101,19 +1198,45 @@ namespace phy_engine::verilog::digital::details
         if(h->stride_words == 0u || h->row_count == 0u) { return false; }
         if(mask_words != h->stride_words) { return false; }
 
-        std::vector<std::thread> threads{};
-        threads.reserve(h->devs.size());
+        // Enqueue work on each device stream (single host thread), then sync.
+        // We use a per-device host staging buffer (std::vector<u32>) for the ANY result.
         for(auto& d: h->devs)
         {
-            auto* dp = &d;
-            threads.emplace_back([dp, mask, mask_words, out_any]() { (void)bitset_matrix_row_any_and_on_device(*dp, mask, mask_words, out_any); });
-        }
-        for(auto& t: threads) { t.join(); }
+            d.ok = false;
+            if(d.end <= d.begin) { d.ok = true; continue; }
+            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
 
-        for(auto const& d: h->devs)
+            auto const n = d.end - d.begin;
+            auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
+            auto const any_bytes = n * sizeof(std::uint32_t);
+
+            bool ok = true;
+            if(cudaMemcpyAsync(d.d_mask, mask, mask_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemsetAsync(d.d_any, 0, any_bytes, d.stream) != cudaSuccess) { ok = false; }
+            if(ok)
+            {
+                constexpr unsigned threads = 256u;
+                auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                bitset_row_any_and_kernel<<<grid, threads, 0u, d.stream>>>(d.d_rows, n, d.stride_words, d.d_mask, d.d_any);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+            // Reuse d.h_tmp as staging; allocate on demand.
+            if(d.h_tmp.size() < n) { d.h_tmp.resize(n); }
+            if(ok && cudaMemcpyAsync(d.h_tmp.data(), d.d_any, any_bytes, cudaMemcpyDeviceToHost, d.stream) != cudaSuccess) { ok = false; }
+            d.ok = ok;
+        }
+
+        for(auto& d: h->devs)
         {
             if(!d.ok) { return false; }
+            if(d.end <= d.begin) { continue; }
+            if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
+            if(cudaStreamSynchronize(d.stream) != cudaSuccess) { return false; }
+            auto const n = d.end - d.begin;
+            for(std::size_t i{}; i < n; ++i) { out_any[d.begin + i] = static_cast<std::uint8_t>(d.h_tmp[i] != 0u); }
         }
+
         return true;
     }
 
