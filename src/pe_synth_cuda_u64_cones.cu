@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <mutex>
 #include <new>
 #include <thread>
 #include <vector>
@@ -242,6 +244,38 @@ namespace phy_engine::verilog::digital::details
             if(threadIdx.x == 0u && sh8[0] != 0u) { atomicOr(out_any + row, 1u); }
         }
 
+        __global__ void espresso_cube_hits_off_kernel(cuda_cube_desc const* cubes,
+                                                      std::size_t cube_count,
+                                                      std::uint32_t var_count,
+                                                      std::uint64_t const* off_blocks,
+                                                      std::uint32_t off_words,
+                                                      std::uint32_t* out_hits) noexcept
+        {
+            auto const cube_idx = static_cast<std::size_t>(blockIdx.x);
+            auto const word_idx = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
+                                  static_cast<std::uint32_t>(threadIdx.x);
+            if(cube_idx >= cube_count) { return; }
+            if(word_idx >= off_words) { return; }
+            if(var_count == 0u || var_count > 16u) { return; }
+
+            auto const offw = off_blocks[word_idx];
+            if(offw == 0ull) { return; }
+
+            auto const c = cubes[cube_idx];
+            std::uint64_t cov = ~0ull;
+            #pragma unroll
+            for(unsigned v = 0u; v < 16u; ++v)
+            {
+                if(v >= var_count) { break; }
+                if(((c.mask >> v) & 1u) != 0u) { continue; }
+                auto const pat = leaf_word16(v, word_idx);
+                bool const bit_is_1 = ((c.value >> v) & 1u) != 0u;
+                cov &= bit_is_1 ? pat : ~pat;
+                if(cov == 0ull) { break; }
+            }
+            if((cov & offw) != 0ull) { atomicOr(out_hits + cube_idx, 1u); }
+        }
+
         struct device_chunk
         {
             int device{};
@@ -249,6 +283,112 @@ namespace phy_engine::verilog::digital::details
             std::size_t end{};
             bool ok{};
         };
+
+        // Reuse per-device allocations/streams to avoid cudaMalloc/cudaFree overhead dominating small batches.
+        // This significantly improves throughput and GPU utilization for the many small-ish launches typical in synthesis.
+        struct eval_u64_ctx
+        {
+            int device{-1};
+            std::mutex mu{};
+            cudaStream_t stream{};
+            cuda_u64_cone_desc* d_cones{};
+            std::uint64_t* d_out{};
+            std::size_t cap_cones{};
+            bool ok{};
+        };
+
+        struct eval_tt_ctx
+        {
+            int device{-1};
+            std::mutex mu{};
+            cudaStream_t stream{};
+            cuda_tt_cone_desc* d_cones{};
+            std::uint64_t* d_out{};
+            std::size_t cap_cones{};
+            std::uint32_t cap_stride_blocks{};
+            bool ok{};
+        };
+
+        [[nodiscard]] inline eval_u64_ctx& get_u64_ctx(int device) noexcept
+        {
+            static std::mutex g_mu{};
+            static std::deque<eval_u64_ctx> g_ctx{};
+            std::scoped_lock lk(g_mu);
+            for(auto& c: g_ctx)
+            {
+                if(c.device == device) { return c; }
+            }
+            g_ctx.push_back(eval_u64_ctx{});
+            g_ctx.back().device = device;
+            return g_ctx.back();
+        }
+
+        [[nodiscard]] inline eval_tt_ctx& get_tt_ctx(int device) noexcept
+        {
+            static std::mutex g_mu{};
+            static std::deque<eval_tt_ctx> g_ctx{};
+            std::scoped_lock lk(g_mu);
+            for(auto& c: g_ctx)
+            {
+                if(c.device == device) { return c; }
+            }
+            g_ctx.push_back(eval_tt_ctx{});
+            g_ctx.back().device = device;
+            return g_ctx.back();
+        }
+
+        [[nodiscard]] inline bool ensure_u64_ctx_ready(eval_u64_ctx& ctx, std::size_t n) noexcept
+        {
+            ctx.ok = false;
+            if(cudaSetDevice(ctx.device) != cudaSuccess) { return false; }
+            if(ctx.stream == nullptr)
+            {
+                if(cudaStreamCreateWithFlags(&ctx.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
+            }
+            if(n <= ctx.cap_cones)
+            {
+                ctx.ok = true;
+                return true;
+            }
+            // Grow (free+malloc). Keep it simple and deterministic.
+            if(ctx.d_out != nullptr) { (void)cudaFree(ctx.d_out); ctx.d_out = nullptr; }
+            if(ctx.d_cones != nullptr) { (void)cudaFree(ctx.d_cones); ctx.d_cones = nullptr; }
+            ctx.cap_cones = 0u;
+
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_cones), n * sizeof(cuda_u64_cone_desc)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_out), n * sizeof(std::uint64_t)) != cudaSuccess) { return false; }
+            ctx.cap_cones = n;
+            ctx.ok = true;
+            return true;
+        }
+
+        [[nodiscard]] inline bool ensure_tt_ctx_ready(eval_tt_ctx& ctx, std::size_t n, std::uint32_t stride_blocks) noexcept
+        {
+            ctx.ok = false;
+            if(stride_blocks == 0u) { return false; }
+            if(cudaSetDevice(ctx.device) != cudaSuccess) { return false; }
+            if(ctx.stream == nullptr)
+            {
+                if(cudaStreamCreateWithFlags(&ctx.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
+            }
+            if(n <= ctx.cap_cones && stride_blocks <= ctx.cap_stride_blocks)
+            {
+                ctx.ok = true;
+                return true;
+            }
+            if(ctx.d_out != nullptr) { (void)cudaFree(ctx.d_out); ctx.d_out = nullptr; }
+            if(ctx.d_cones != nullptr) { (void)cudaFree(ctx.d_cones); ctx.d_cones = nullptr; }
+            ctx.cap_cones = 0u;
+            ctx.cap_stride_blocks = 0u;
+
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_cones), n * sizeof(cuda_tt_cone_desc)) != cudaSuccess) { return false; }
+            auto const out_words = n * static_cast<std::size_t>(stride_blocks);
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_out), out_words * sizeof(std::uint64_t)) != cudaSuccess) { return false; }
+            ctx.cap_cones = n;
+            ctx.cap_stride_blocks = stride_blocks;
+            ctx.ok = true;
+            return true;
+        }
 
         [[nodiscard]] inline bool do_eval_on_device(device_chunk& chunk,
                                                     cuda_u64_cone_desc const* cones,
@@ -258,36 +398,25 @@ namespace phy_engine::verilog::digital::details
 
             if(chunk.end <= chunk.begin) { chunk.ok = true; return true; }
 
-            if(cudaSetDevice(chunk.device) != cudaSuccess) { return false; }
-
-            cudaStream_t stream{};
-            if(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
-
-            cuda_u64_cone_desc* d_cones{};
-            std::uint64_t* d_out{};
             auto const n = chunk.end - chunk.begin;
             auto const cones_bytes = n * sizeof(cuda_u64_cone_desc);
             auto const out_bytes = n * sizeof(std::uint64_t);
 
-            bool ok = true;
-            if(cudaMalloc(reinterpret_cast<void**>(&d_cones), cones_bytes) != cudaSuccess) { ok = false; }
-            if(ok && cudaMalloc(reinterpret_cast<void**>(&d_out), out_bytes) != cudaSuccess) { ok = false; }
-            if(ok && cudaMemcpyAsync(d_cones, cones + chunk.begin, cones_bytes, cudaMemcpyHostToDevice, stream) != cudaSuccess) { ok = false; }
+            auto& ctx = get_u64_ctx(chunk.device);
+            std::scoped_lock lk(ctx.mu);
+            bool ok = ensure_u64_ctx_ready(ctx, n);
+            if(ok && cudaMemcpyAsync(ctx.d_cones, cones + chunk.begin, cones_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
 
             if(ok)
             {
                 constexpr unsigned threads = 256u;
                 auto const blocks = static_cast<unsigned>((n + threads - 1u) / threads);
-                eval_u64_cones_kernel<<<blocks, threads, 0u, stream>>>(d_cones, n, d_out);
+                eval_u64_cones_kernel<<<blocks, threads, 0u, ctx.stream>>>(ctx.d_cones, n, ctx.d_out);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
 
-            if(ok && cudaMemcpyAsync(out_masks + chunk.begin, d_out, out_bytes, cudaMemcpyDeviceToHost, stream) != cudaSuccess) { ok = false; }
-            if(ok && cudaStreamSynchronize(stream) != cudaSuccess) { ok = false; }
-
-            if(d_out != nullptr) { (void)cudaFree(d_out); }
-            if(d_cones != nullptr) { (void)cudaFree(d_cones); }
-            (void)cudaStreamDestroy(stream);
+            if(ok && cudaMemcpyAsync(out_masks + chunk.begin, ctx.d_out, out_bytes, cudaMemcpyDeviceToHost, ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
 
             chunk.ok = ok;
             return ok;
@@ -304,47 +433,35 @@ namespace phy_engine::verilog::digital::details
             if(chunk.end <= chunk.begin) { chunk.ok = true; return true; }
             if(stride_blocks == 0u) { return false; }
 
-            if(cudaSetDevice(chunk.device) != cudaSuccess) { return false; }
-
-            cudaStream_t stream{};
-            if(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
-
-            cuda_tt_cone_desc* d_cones{};
-            std::uint64_t* d_out{};
-
             auto const n = chunk.end - chunk.begin;
             auto const cones_bytes = n * sizeof(cuda_tt_cone_desc);
             auto const out_words = n * static_cast<std::size_t>(stride_blocks);
             auto const out_bytes = out_words * sizeof(std::uint64_t);
 
-            bool ok = true;
-            if(cudaMalloc(reinterpret_cast<void**>(&d_cones), cones_bytes) != cudaSuccess) { ok = false; }
-            if(ok && cudaMalloc(reinterpret_cast<void**>(&d_out), out_bytes) != cudaSuccess) { ok = false; }
-            if(ok && cudaMemcpyAsync(d_cones, cones + chunk.begin, cones_bytes, cudaMemcpyHostToDevice, stream) != cudaSuccess) { ok = false; }
+            auto& ctx = get_tt_ctx(chunk.device);
+            std::scoped_lock lk(ctx.mu);
+            bool ok = ensure_tt_ctx_ready(ctx, n, stride_blocks);
+            if(ok && cudaMemcpyAsync(ctx.d_cones, cones + chunk.begin, cones_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
 
             if(ok)
             {
                 constexpr unsigned threads = 128u;
                 auto const grid_y = static_cast<unsigned>((stride_blocks + threads - 1u) / threads);
                 dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
-                eval_tt_cones_kernel<<<grid, threads, 0u, stream>>>(d_cones, n, stride_blocks, d_out);
+                eval_tt_cones_kernel<<<grid, threads, 0u, ctx.stream>>>(ctx.d_cones, n, stride_blocks, ctx.d_out);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
 
             if(ok && cudaMemcpyAsync(out_blocks + chunk.begin * static_cast<std::size_t>(stride_blocks),
-                                     d_out,
+                                     ctx.d_out,
                                      out_bytes,
                                      cudaMemcpyDeviceToHost,
-                                     stream) != cudaSuccess)
+                                     ctx.stream) != cudaSuccess)
             {
                 ok = false;
             }
 
-            if(ok && cudaStreamSynchronize(stream) != cudaSuccess) { ok = false; }
-
-            if(d_out != nullptr) { (void)cudaFree(d_out); }
-            if(d_cones != nullptr) { (void)cudaFree(d_cones); }
-            (void)cudaStreamDestroy(stream);
+            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
 
             chunk.ok = ok;
             return ok;
@@ -373,6 +490,111 @@ namespace phy_engine::verilog::digital::details
             std::uint32_t stride_words{};
             std::vector<bitset_matrix_device> devs{};
         };
+
+        struct espresso_hits_ctx
+        {
+            int device{-1};
+            std::mutex mu{};
+            cudaStream_t stream{};
+            cuda_cube_desc* d_cubes{};
+            std::uint64_t* d_off{};
+            std::uint32_t* d_hits{};
+            std::size_t cap_cubes{};
+            std::uint32_t cap_words{};
+            bool ok{};
+        };
+
+        [[nodiscard]] inline espresso_hits_ctx& get_espresso_ctx(int device) noexcept
+        {
+            static std::mutex g_mu{};
+            static std::deque<espresso_hits_ctx> g_ctx{};
+            std::scoped_lock lk(g_mu);
+            for(auto& c: g_ctx)
+            {
+                if(c.device == device) { return c; }
+            }
+            g_ctx.push_back(espresso_hits_ctx{});
+            g_ctx.back().device = device;
+            return g_ctx.back();
+        }
+
+        [[nodiscard]] inline bool ensure_espresso_ctx_ready(espresso_hits_ctx& ctx, std::size_t cubes, std::uint32_t words) noexcept
+        {
+            ctx.ok = false;
+            if(cubes == 0u || words == 0u) { return false; }
+            if(cudaSetDevice(ctx.device) != cudaSuccess) { return false; }
+            if(ctx.stream == nullptr)
+            {
+                if(cudaStreamCreateWithFlags(&ctx.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
+            }
+            if(cubes <= ctx.cap_cubes && words <= ctx.cap_words)
+            {
+                ctx.ok = true;
+                return true;
+            }
+
+            if(ctx.d_hits != nullptr) { (void)cudaFree(ctx.d_hits); ctx.d_hits = nullptr; }
+            if(ctx.d_off != nullptr) { (void)cudaFree(ctx.d_off); ctx.d_off = nullptr; }
+            if(ctx.d_cubes != nullptr) { (void)cudaFree(ctx.d_cubes); ctx.d_cubes = nullptr; }
+            ctx.cap_cubes = 0u;
+            ctx.cap_words = 0u;
+
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_cubes), cubes * sizeof(cuda_cube_desc)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_hits), cubes * sizeof(std::uint32_t)) != cudaSuccess) { return false; }
+            if(cudaMalloc(reinterpret_cast<void**>(&ctx.d_off), static_cast<std::size_t>(words) * sizeof(std::uint64_t)) != cudaSuccess) { return false; }
+            ctx.cap_cubes = cubes;
+            ctx.cap_words = words;
+            ctx.ok = true;
+            return true;
+        }
+
+        [[nodiscard]] inline bool do_espresso_hits_off_on_device(int device,
+                                                                 std::size_t begin,
+                                                                 std::size_t end,
+                                                                 cuda_cube_desc const* cubes,
+                                                                 std::uint32_t var_count,
+                                                                 std::uint64_t const* off_blocks,
+                                                                 std::uint32_t off_words,
+                                                                 std::uint8_t* out_hits) noexcept
+        {
+            if(end <= begin) { return true; }
+            if(cubes == nullptr || off_blocks == nullptr || out_hits == nullptr) { return false; }
+
+            auto const n = end - begin;
+            auto& ctx = get_espresso_ctx(device);
+            std::scoped_lock lk(ctx.mu);
+            bool ok = ensure_espresso_ctx_ready(ctx, n, off_words);
+            if(!ok) { ctx.ok = false; return false; }
+
+            auto const cubes_bytes = n * sizeof(cuda_cube_desc);
+            auto const off_bytes = static_cast<std::size_t>(off_words) * sizeof(std::uint64_t);
+            auto const hits_bytes = n * sizeof(std::uint32_t);
+
+            if(cudaMemcpyAsync(ctx.d_cubes, cubes + begin, cubes_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemcpyAsync(ctx.d_off, off_blocks, off_bytes, cudaMemcpyHostToDevice, ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemsetAsync(ctx.d_hits, 0, hits_bytes, ctx.stream) != cudaSuccess) { ok = false; }
+
+            if(ok)
+            {
+                constexpr unsigned threads = 256u;
+                auto const grid_y = static_cast<unsigned>((off_words + threads - 1u) / threads);
+                dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
+                espresso_cube_hits_off_kernel<<<grid, threads, 0u, ctx.stream>>>(ctx.d_cubes, n, var_count, ctx.d_off, off_words, ctx.d_hits);
+                if(cudaGetLastError() != cudaSuccess) { ok = false; }
+            }
+
+            std::vector<std::uint32_t> tmp{};
+            tmp.resize(n);
+            if(ok && cudaMemcpyAsync(tmp.data(), ctx.d_hits, hits_bytes, cudaMemcpyDeviceToHost, ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaStreamSynchronize(ctx.stream) != cudaSuccess) { ok = false; }
+            if(ok)
+            {
+                for(std::size_t i{}; i < n; ++i) { out_hits[begin + i] = static_cast<std::uint8_t>(tmp[i] != 0u); }
+            }
+
+            ctx.ok = ok;
+            return ok;
+        }
 
         [[nodiscard]] inline bool init_bitset_matrix_device(bitset_matrix_device& d,
                                                             std::uint64_t const* rows,
@@ -743,6 +965,74 @@ namespace phy_engine::verilog::digital::details
         for(auto const& d: h->devs)
         {
             if(!d.ok) { return false; }
+        }
+        return true;
+    }
+
+    extern "C" bool phy_engine_pe_synth_cuda_espresso_cube_hits_off(std::uint32_t device_mask,
+                                                                    cuda_cube_desc const* cubes,
+                                                                    std::size_t cube_count,
+                                                                    std::uint32_t var_count,
+                                                                    std::uint64_t const* off_blocks,
+                                                                    std::uint32_t off_words,
+                                                                    std::uint8_t* out_hits) noexcept
+    {
+        if(cubes == nullptr || off_blocks == nullptr || out_hits == nullptr) { return false; }
+        if(cube_count == 0u || off_words == 0u) { return false; }
+        if(var_count == 0u || var_count > 16u) { return false; }
+
+        int dev_count{};
+        if(cudaGetDeviceCount(&dev_count) != cudaSuccess || dev_count <= 0) { return false; }
+
+        std::vector<int> devices{};
+        devices.reserve(static_cast<std::size_t>(dev_count));
+        if(device_mask == 0u)
+        {
+            for(int d = 0; d < dev_count; ++d) { devices.push_back(d); }
+        }
+        else
+        {
+            for(int d = 0; d < dev_count; ++d)
+            {
+                if((device_mask >> static_cast<unsigned>(d)) & 1u) { devices.push_back(d); }
+            }
+        }
+        if(devices.empty()) { return false; }
+
+        // Split cubes across selected devices (contiguous chunks).
+        std::vector<device_chunk> chunks{};
+        chunks.reserve(devices.size());
+        auto const k = devices.size();
+        for(std::size_t i{}; i < k; ++i)
+        {
+            auto const begin = (cube_count * i) / k;
+            auto const end = (cube_count * (i + 1u)) / k;
+            chunks.push_back(device_chunk{devices[i], begin, end, false});
+        }
+
+        std::vector<std::thread> threads{};
+        threads.reserve(chunks.size());
+        for(auto& c: chunks)
+        {
+            auto* cp = &c;
+            threads.emplace_back([cp, cubes, var_count, off_blocks, off_words, out_hits]()
+                                 {
+                                     bool ok = do_espresso_hits_off_on_device(cp->device,
+                                                                             cp->begin,
+                                                                             cp->end,
+                                                                             cubes,
+                                                                             var_count,
+                                                                             off_blocks,
+                                                                             off_words,
+                                                                             out_hits);
+                                     cp->ok = ok;
+                                 });
+        }
+        for(auto& t: threads) { t.join(); }
+
+        for(auto const& c: chunks)
+        {
+            if(!c.ok) { return false; }
         }
         return true;
     }

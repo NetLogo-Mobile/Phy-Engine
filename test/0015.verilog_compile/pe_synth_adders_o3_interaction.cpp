@@ -97,7 +97,7 @@ endmodule
         .allow_inout = false,
         .allow_multi_driver = false,
         .assume_binary_inputs = true,
-        .opt_level = 3,
+        .opt_level = 4,
         .optimize_adders = true,
         .techmap_enable = true,
     };

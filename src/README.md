@@ -28,11 +28,13 @@ Use `--top TOP_MODULE` to override this behavior explicitly.
 Both tools share the PE synthesis optimization pipeline and accept the same optimization levels:
 
 - `-O0`: Minimal / baseline synthesis.
-- `-O1`, `-O2`, `-O3`: Increasingly aggressive optimization passes.
-- `-Omax` / `-O4`: "Budgeted fixpoint" mode. Runs the `O3` pipeline repeatedly under budgets (timeout / iteration count / per-pass caps), keeping the best solution found.
-- `-Ocuda`: Shorthand for `-Omax` + enabling CUDA-assisted optimization. It also increases some default bounded windows to improve quality (see CUDA sections).
+- `-O1`, `-O2`: Increasingly aggressive "cheap" optimization passes.
+- `-O3`: Fast medium-strength tier (bounded rewrites/resub/sweep; no QM/techmap/decompose fixpoint). Intended as a ~seconds-level option between `O2` and `O4`.
+- `-O4`: Strong tier (full fixpoint-ish pipeline; historically this was the old `O3`).
+- `-Omax` / `-O5`: "Budgeted multi-start search" mode. Runs the `O4` pipeline repeatedly under budgets (timeout / iteration count / per-pass caps), keeping the best solution found.
+- `-Ocuda`: Shorthand for `-Omax` (i.e. `-O5`) + enabling CUDA-assisted optimization. It may also increase some default bounded windows to improve quality (see CUDA sections).
 
-You can also specify `--opt-level N` where `N` is `0..4`. If present, `--opt-level` overrides `-O*`.
+You can also specify `--opt-level N` where `N` is `0..5`. If present, `--opt-level` overrides `-O*`.
 
 ### Safety vs. Aggressiveness: `assume_binary_inputs`
 
@@ -75,7 +77,7 @@ Note: This is a guardrail, not a formal proof for large sequential designs.
 
 ### Pass Budgets (performance/quality controls)
 
-These flags cap the expensive inner loops. They apply to `O3` and therefore also affect `Omax/-Ocuda`.
+These flags cap the expensive inner loops. They apply to `O3`/`O4` and therefore also affect `Omax/-Ocuda`.
 
 - `--qm-max-vars N`
   - Two-level minimization window size. `0` disables QM/Espresso.
@@ -293,4 +295,3 @@ verilog2penl out.penl design.v --synth -Ocuda --cuda-device-mask 3 --report
 - If `-Omax` is too slow: start by lowering `--opt-max-iter`, disabling expensive passes (`--qm-max-vars 0`), and/or shrinking window sizes (`--resub-max-vars`, `--sweep-max-vars`).
 - If `-Ocuda` does not appear to use the GPU: reduce `--cuda-min-batch`, and make sure you built with `PHY_ENGINE_ENABLE_CUDA_PE_SYNTH=ON`.
 - If results look "too aggressive" for X/Z-heavy designs: disable `--assume-binary-inputs`.
-

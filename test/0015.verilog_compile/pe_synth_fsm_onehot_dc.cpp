@@ -104,7 +104,7 @@ endmodule
     ::phy_engine::verilog::digital::pe_synth_options opt{
         .allow_inout = false,
         .allow_multi_driver = false,
-        .opt_level = 3,
+        .opt_level = 4,
     };
     opt.infer_dc_from_fsm = infer_dc;
 

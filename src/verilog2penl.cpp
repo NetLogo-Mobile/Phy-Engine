@@ -75,8 +75,8 @@ namespace
                         "  --mode full|structure|checkpoint          Export mode (default: full)\n"
                         "  --no-io                                  Do not generate INPUT/OUTPUT models\n"
                         "  --synth                                  Synthesize to PE primitives (no VERILOG_MODULE)\n"
-                        "  -O0|-O1|-O2|-O3|-O4|-Omax|-Ocuda            PE synth optimization level (default: O0)\n"
-                        "  --opt-level N                             PE synth optimization level (0..4)\n"
+                        "  -O0|-O1|-O2|-O3|-O4|-O5|-Omax|-Ocuda       PE synth optimization level (default: O0)\n"
+                        "  --opt-level N                             PE synth optimization level (0..5)\n"
                         "  --opt-timeout-ms MS                        Omax: wall-clock budget (0 disables; default: 0)\n"
                         "  --opt-max-iter N                           Omax: max restarts/tries (default: 32)\n"
                         "  --opt-randomize                            Omax: enable randomized search variants (default: off)\n"
@@ -86,7 +86,7 @@ namespace
                         "  --opt-verify-exact-max-inputs N            Omax: exhaustive verify threshold (default: 12)\n"
                         "  --opt-verify-rand-vectors N                Omax: random vectors when not exhaustive (default: 256)\n"
                         "  --opt-verify-seed SEED                     Omax: verify RNG seed (default: 1)\n"
-                        "  --cuda-opt                                 Enable CUDA acceleration for some O3/Omax passes (default: off)\n"
+                        "  --cuda-opt                                 Enable CUDA acceleration for some O3/O4/Omax passes (default: off)\n"
                         "  --cuda-device-mask MASK                    CUDA device bitmask (0 = all; e.g. 3 uses GPU0+GPU1)\n"
                         "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
                         "  --opt-cost gate|weighted                   Omax: objective cost model (default: gate)\n"
@@ -176,17 +176,17 @@ namespace
         for(int i = 1; i < argc; ++i)
         {
             auto const a = std::string_view(argv[i]);
-            if(a == "-Omax" || a == "--Omax") { lvl = 4; }
-            if(a == "-Ocuda" || a == "--Ocuda") { lvl = 4; }
+            if(a == "-Omax" || a == "--Omax") { lvl = 5; }
+            if(a == "-Ocuda" || a == "--Ocuda") { lvl = 5; }
             if(a.size() == 3 && a[0] == '-' && a[1] == 'O')
             {
                 char const d = a[2];
-                if(d >= '0' && d <= '4') { lvl = static_cast<std::uint8_t>(d - '0'); }
+                if(d >= '0' && d <= '5') { lvl = static_cast<std::uint8_t>(d - '0'); }
             }
         }
         if(auto s = arg_after(argc, argv, "--opt-level"))
         {
-            if(auto n = parse_size(*s); n && *n <= 4u) { lvl = static_cast<std::uint8_t>(*n); }
+            if(auto n = parse_size(*s); n && *n <= 5u) { lvl = static_cast<std::uint8_t>(*n); }
             else
             {
                 return std::nullopt;

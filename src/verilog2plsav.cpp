@@ -334,8 +334,8 @@ static void usage(char const* argv0)
                         "  - Compiles Verilog (subset), synthesizes to PE netlist with optimizations,\n"
                         "    then exports PhysicsLab .sav with IO auto-placement and auto-layout.\n"
                         "options:\n"
-                        "  -O0|-O1|-O2|-O3|-O4|-Omax|-Ocuda            PE synth optimization level (default: O0)\n"
-                        "  --opt-level N                             PE synth optimization level (0..4)\n"
+                        "  -O0|-O1|-O2|-O3|-O4|-O5|-Omax|-Ocuda       PE synth optimization level (default: O0)\n"
+                        "  --opt-level N                             PE synth optimization level (0..5)\n"
                         "  --opt-timeout-ms MS                        Omax: wall-clock budget (0 disables; default: 0)\n"
                         "  --opt-max-iter N                           Omax: max restarts/tries (default: 32)\n"
                         "  --opt-randomize                            Omax: enable randomized search variants (default: off)\n"
@@ -345,7 +345,7 @@ static void usage(char const* argv0)
                         "  --opt-verify-exact-max-inputs N            Omax: exhaustive verify threshold (default: 12)\n"
                         "  --opt-verify-rand-vectors N                Omax: random vectors when not exhaustive (default: 256)\n"
                         "  --opt-verify-seed SEED                     Omax: verify RNG seed (default: 1)\n"
-                        "  --cuda-opt                                 Enable CUDA acceleration for some O3/Omax passes (default: off)\n"
+                        "  --cuda-opt                                 Enable CUDA acceleration for some O3/O4/Omax passes (default: off)\n"
                         "  --cuda-device-mask MASK                    CUDA device bitmask (0 = all; e.g. 3 uses GPU0+GPU1)\n"
                         "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
                         "  --opt-cost gate|weighted                   Omax: objective cost model (default: gate)\n"
@@ -426,22 +426,22 @@ static std::optional<bool> parse_toggle(int argc, char** argv, std::string_view 
 static std::optional<std::uint8_t> parse_opt_level(int argc, char** argv)
 {
     std::optional<std::uint8_t> lvl{};
-    // -O0 .. -O4 / -Omax / -Ocuda
+    // -O0 .. -O5 / -Omax / -Ocuda
     for(int i = 1; i < argc; ++i)
     {
         auto const a = std::string_view(argv[i]);
-        if(a == "-Omax" || a == "--Omax") { lvl = 4; }
-        if(a == "-Ocuda" || a == "--Ocuda") { lvl = 4; }
+        if(a == "-Omax" || a == "--Omax") { lvl = 5; }
+        if(a == "-Ocuda" || a == "--Ocuda") { lvl = 5; }
         if(a.size() == 3 && a[0] == '-' && a[1] == 'O')
         {
             char const d = a[2];
-            if(d >= '0' && d <= '4') { lvl = static_cast<std::uint8_t>(d - '0'); }
+            if(d >= '0' && d <= '5') { lvl = static_cast<std::uint8_t>(d - '0'); }
         }
     }
     // --opt-level N (overrides if present later)
     if(auto s = arg_after(argc, argv, "--opt-level"))
     {
-        if(auto n = parse_size(*s); n && *n <= 4u) { lvl = static_cast<std::uint8_t>(*n); }
+        if(auto n = parse_size(*s); n && *n <= 5u) { lvl = static_cast<std::uint8_t>(*n); }
         else { return std::nullopt; }
     }
     return lvl ? lvl : std::optional<std::uint8_t>{static_cast<std::uint8_t>(0)};

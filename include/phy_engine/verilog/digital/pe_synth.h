@@ -110,7 +110,12 @@ namespace phy_engine::verilog::digital
         bool support_always_comb{true};
         bool support_always_ff{true};
         bool assume_binary_inputs{false};                // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
-        ::std::uint8_t opt_level{0};                     // 0=O0, 1=O1, 2=O2, 3=O3, 4=Omax (budgeted multi-start search; best-so-far kept)
+        // Optimization level:
+        // - 0=O0, 1=O1, 2=O2
+        // - 3=O3 (fast medium-strength: bounded rewrites/resub/sweep; no QM/techmap/decompose fixpoint)
+        // - 4=O4 (strong: full O4 fixpoint pipeline; historically this was "O3")
+        // - 5=Omax (multi-start search over O4 pipeline; best-so-far kept)
+        ::std::uint8_t opt_level{0};
         ::std::size_t omax_timeout_ms{0};                // Omax only: 0 disables wall-clock budget
         ::std::size_t omax_max_iter{32};                 // Omax only: max restarts/tries (0 disables Omax loop)
         bool omax_randomize{false};                      // Omax only: enable randomized heuristic variants (deterministic if false)
@@ -190,7 +195,7 @@ namespace phy_engine::verilog::digital
     {
         ::std::vector<pe_synth_pass_stat> passes{};
         ::std::vector<::std::size_t> iter_gate_count{};
-        ::std::vector<::std::size_t> omax_best_gate_count{};  // best-so-far cost after each Omax try (empty unless opt_level>=4)
+        ::std::vector<::std::size_t> omax_best_gate_count{};  // best-so-far cost after each Omax try (empty unless opt_level>=5)
         ::std::vector<::std::size_t> omax_best_cost{};        // best-so-far objective cost after each Omax try (matches opt.omax_cost)
         ::fast_io::u8string omax_summary{};                   // single-line, reproducible knobs summary
     };
@@ -1729,6 +1734,14 @@ namespace phy_engine::verilog::digital
             ::std::uint16_t in1[256]{};
         };
 
+        // CUDA Espresso helper: batch "cube hits OFF-set" checks.
+        // Each cube is a (value,mask) over <=16 vars (same encoding as qm_implicant: mask bit 1 = don't-care).
+        struct cuda_cube_desc
+        {
+            ::std::uint16_t value{};
+            ::std::uint16_t mask{};
+        };
+
 #if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
         extern "C" int phy_engine_pe_synth_cuda_get_device_count() noexcept;
         extern "C" bool phy_engine_pe_synth_cuda_eval_u64_cones(::std::uint32_t device_mask,
@@ -1756,6 +1769,14 @@ namespace phy_engine::verilog::digital
                                                                            ::std::uint64_t const* mask,
                                                                            ::std::uint32_t mask_words,
                                                                            ::std::uint8_t* out_any) noexcept;
+
+        extern "C" bool phy_engine_pe_synth_cuda_espresso_cube_hits_off(::std::uint32_t device_mask,
+                                                                        cuda_cube_desc const* cubes,
+                                                                        ::std::size_t cube_count,
+                                                                        ::std::uint32_t var_count,
+                                                                        ::std::uint64_t const* off_blocks,
+                                                                        ::std::uint32_t off_words,
+                                                                        ::std::uint8_t* out_hits) noexcept;
 #endif
 
         [[nodiscard]] inline bool cuda_eval_u64_cones(::std::uint32_t device_mask,
@@ -1873,6 +1894,29 @@ namespace phy_engine::verilog::digital
             (void)mask;
             (void)mask_words;
             (void)out_any;
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_espresso_cube_hits_off(::std::uint32_t device_mask,
+                                                              cuda_cube_desc const* cubes,
+                                                              ::std::size_t cube_count,
+                                                              ::std::uint32_t var_count,
+                                                              ::std::uint64_t const* off_blocks,
+                                                              ::std::uint32_t off_words,
+                                                              ::std::uint8_t* out_hits) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(cubes == nullptr || off_blocks == nullptr || out_hits == nullptr || cube_count == 0u || off_words == 0u) { return false; }
+            return phy_engine_pe_synth_cuda_espresso_cube_hits_off(device_mask, cubes, cube_count, var_count, off_blocks, off_words, out_hits);
+#else
+            (void)device_mask;
+            (void)cubes;
+            (void)cube_count;
+            (void)var_count;
+            (void)off_blocks;
+            (void)off_words;
+            (void)out_hits;
             return false;
 #endif
         }
@@ -10068,17 +10112,121 @@ namespace phy_engine::verilog::digital
             cover.reserve(on.size());
             for(auto const m: on) { cover.push_back(qm_implicant{m, 0u, false}); }
 
-            auto cube_hits_off = [&](qm_implicant const& c) noexcept -> bool
+            // Precompute OFF-set as a u64 bitset over the full universe to make hits-OFF checks fast and batchable.
+            auto const blocksU = (U + 63u) / 64u;
+            ::std::vector<::std::uint64_t> off_bits{};
+            off_bits.assign(blocksU, 0ull);
+            for(std::size_t m{}; m < U; ++m)
             {
-                for(std::size_t m{}; m < U; ++m)
+                if(is_on[m] || is_dc[m]) { continue; }
+                off_bits[m / 64u] |= (1ull << (m % 64u));
+            }
+            if(U % 64u)
+            {
+                auto const rem = U % 64u;
+                auto const mask = (rem == 64u) ? ~0ull : ((1ull << rem) - 1ull);
+                off_bits.back() &= mask;
+            }
+
+            ::std::vector<::std::uint64_t> on_bits{};
+            on_bits.assign(blocksU, 0ull);
+            for(auto const m: on)
+            {
+                auto const mi = static_cast<std::size_t>(m);
+                if(mi >= U) { continue; }
+                on_bits[mi / 64u] |= (1ull << (mi % 64u));
+            }
+
+            auto cube_cover_word = [&](qm_implicant const& c, std::uint32_t word_idx) noexcept -> std::uint64_t
+            {
+                // Compute the cube's coverage mask for this 64-minterm word.
+                std::uint64_t wmask = ~0ull;
+                if(word_idx + 1u == blocksU && (U % 64u))
                 {
-                    if(is_on[m] || is_dc[m]) { continue; }
-                    if(implicant_covers(c, static_cast<::std::uint16_t>(m))) { return true; }
+                    auto const rem = static_cast<unsigned>(U % 64u);
+                    wmask = (rem == 64u) ? ~0ull : ((1ull << rem) - 1ull);
+                }
+
+                auto var_word16 = [&](unsigned v) noexcept -> std::uint64_t
+                {
+                    // v0 toggles every 1 minterm, v1 every 2, ... (same encoding as CUDA helper).
+                    // For v>=6, the word index encodes the higher minterm bits.
+                    if(v < 6u)
+                    {
+                        constexpr std::uint64_t leaf_pat[6] = {
+                            0xAAAAAAAAAAAAAAAAull,
+                            0xCCCCCCCCCCCCCCCCull,
+                            0xF0F0F0F0F0F0F0F0ull,
+                            0xFF00FF00FF00FF00ull,
+                            0xFFFF0000FFFF0000ull,
+                            0xFFFFFFFF00000000ull,
+                        };
+                        return leaf_pat[v];
+                    }
+                    auto const wi = static_cast<unsigned>(word_idx);
+                    return (((wi >> (v - 6u)) & 1u) != 0u) ? ~0ull : 0ull;
+                };
+
+                std::uint64_t r = wmask;
+                for(unsigned v{}; v < static_cast<unsigned>(var_count); ++v)
+                {
+                    if(((c.mask >> v) & 1u) != 0u) { continue; }  // don't care
+                    auto const pat = var_word16(v);
+                    bool const bit_is_1 = ((c.value >> v) & 1u) != 0u;
+                    r &= bit_is_1 ? pat : ~pat;
+                    if(r == 0ull) { break; }
+                }
+                return r & wmask;
+            };
+
+            auto cube_hits_off_fast = [&](qm_implicant const& c) noexcept -> bool
+            {
+                for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
+                {
+                    auto const covw = cube_cover_word(c, w);
+                    if((covw & off_bits[w]) != 0ull) { return true; }
                 }
                 return false;
             };
 
-            auto expand_one = [&](qm_implicant const& c0) noexcept -> qm_implicant
+            auto cube_hits_off_batch = [&](::std::vector<qm_implicant> const& cubes, ::std::vector<std::uint8_t>& out_hits) noexcept -> void
+            {
+                out_hits.assign(cubes.size(), 0u);
+                if(cubes.empty() || blocksU == 0u) { return; }
+
+                bool used_cuda{};
+                if(opt.cuda_enable)
+                {
+                    auto const workload = cubes.size() * blocksU;
+                    if(workload >= opt.cuda_min_batch && var_count <= 16u)
+                    {
+                        ::std::vector<cuda_cube_desc> desc{};
+                        desc.resize(cubes.size());
+                        for(std::size_t i{}; i < cubes.size(); ++i)
+                        {
+                            desc[i].value = cubes[i].value;
+                            desc[i].mask = cubes[i].mask;
+                        }
+                        used_cuda = cuda_espresso_cube_hits_off(opt.cuda_device_mask,
+                                                               desc.data(),
+                                                               desc.size(),
+                                                               static_cast<std::uint32_t>(var_count),
+                                                               off_bits.data(),
+                                                               static_cast<std::uint32_t>(blocksU),
+                                                               out_hits.data());
+                    }
+                }
+
+                if(used_cuda) { return; }
+                for(std::size_t i{}; i < cubes.size(); ++i) { out_hits[i] = cube_hits_off_fast(cubes[i]) ? 1u : 0u; }
+            };
+
+            auto cube_hits_off = [&](qm_implicant const& c) noexcept -> bool
+            {
+                return cube_hits_off_fast(c);
+            };
+
+            [[maybe_unused]] auto expand_one = [&](qm_implicant const& c0) noexcept -> qm_implicant
             {
                 auto c = c0;
                 bool changed{true};
@@ -10099,6 +10247,53 @@ namespace phy_engine::verilog::digital
                     }
                 }
                 return c;
+            };
+
+            auto expand_cover_batch = [&]() noexcept -> bool
+            {
+                if(cover.empty() || var_order.empty()) { return false; }
+                bool any{};
+                bool changed{true};
+                ::std::vector<std::size_t> idx{};
+                ::std::vector<qm_implicant> cands{};
+                ::std::vector<std::uint8_t> hits{};
+
+                while(changed)
+                {
+                    changed = false;
+                    for(auto const v: var_order)
+                    {
+                        idx.clear();
+                        cands.clear();
+                        idx.reserve(cover.size() / 2u + 1u);
+                        cands.reserve(cover.size() / 2u + 1u);
+
+                        auto const bit = static_cast<::std::uint16_t>(1u << v);
+                        for(std::size_t i{}; i < cover.size(); ++i)
+                        {
+                            auto const& c = cover[i];
+                            if((c.mask >> v) & 1u) { continue; }  // already don't care
+                            qm_implicant cand = c;
+                            cand.mask = static_cast<::std::uint16_t>(cand.mask | bit);
+                            cand.value = static_cast<::std::uint16_t>(cand.value & static_cast<::std::uint16_t>(~bit));
+                            idx.push_back(i);
+                            cands.push_back(cand);
+                        }
+                        if(cands.empty()) { continue; }
+
+                        cube_hits_off_batch(cands, hits);
+                        if(hits.size() != cands.size()) { continue; }
+
+                        for(std::size_t k{}; k < cands.size(); ++k)
+                        {
+                            if(hits[k]) { continue; }
+                            cover[idx[k]] = cands[k];
+                            changed = true;
+                            any = true;
+                        }
+                    }
+                }
+                return any;
             };
 
             auto irredundant = [&]() noexcept -> bool
@@ -10275,9 +10470,10 @@ namespace phy_engine::verilog::digital
                 for(auto const& c: cover)
                 {
                     std::size_t cnt{};
-                    for(auto const m: on)
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
                     {
-                        if(implicant_covers(c, m)) { ++cnt; }
+                        auto const covw = cube_cover_word(c, w);
+                        cnt += static_cast<std::size_t>(__builtin_popcountll(covw & on_bits[w]));
                     }
                     ranked.push_back({cnt, c});
                 }
@@ -10286,7 +10482,9 @@ namespace phy_engine::verilog::digital
                 cover.reserve(ranked.size());
                 for(auto& rc: ranked) { cover.push_back(rc.second); }
 
-                for(auto& c: cover) { c = expand_one(c); }
+                // Structural expand: batch hits-OFF checks across cubes for each variable.
+                // This is GPU-friendly when CUDA is enabled and the cover is large.
+                (void)expand_cover_batch();
                 dedupe();
                 (void)irredundant();
             };
@@ -15245,8 +15443,8 @@ namespace phy_engine::verilog::digital
         }
 
         auto const raw_lvl = opt.opt_level;
-        bool const is_omax = (raw_lvl >= 4u);
-        auto const lvl = static_cast<::std::uint8_t>(raw_lvl > 3u ? 3u : raw_lvl);
+        bool const is_omax = (raw_lvl >= 5u);
+        auto const lvl = static_cast<::std::uint8_t>(raw_lvl > 4u ? 4u : raw_lvl);
 
         bool const do_wires = opt.optimize_wires || (lvl >= 1);
         bool const do_mul2 = opt.optimize_mul2 || (lvl >= 2);
@@ -15256,7 +15454,7 @@ namespace phy_engine::verilog::digital
         bool const do_strash = (lvl >= 1);
         bool const do_dce = (lvl >= 1);
         bool const do_factoring = (lvl >= 2);
-        bool const do_qm = (lvl >= 3);
+        bool const do_qm = (lvl >= 4);
         bool const do_input_inv_map = (lvl >= 2);
         bool const do_xor_rewrite = (lvl >= 2);
         bool const do_double_not = (lvl >= 1);
@@ -15269,8 +15467,8 @@ namespace phy_engine::verilog::digital
 	        bool const do_aig_rewrite = (lvl >= 3) && opt.assume_binary_inputs;
 	        bool const do_resub = (lvl >= 3) && opt.assume_binary_inputs;
 	        bool const do_sweep = (lvl >= 3) && opt.assume_binary_inputs;
-	        bool const do_techmap = (lvl >= 3) && opt.assume_binary_inputs && opt.techmap_enable;
-	        bool const do_decompose = (lvl >= 3) && opt.assume_binary_inputs && opt.decompose_large_functions;
+	        bool const do_techmap = (lvl >= 4) && opt.assume_binary_inputs && opt.techmap_enable;
+	        bool const do_decompose = (lvl >= 4) && opt.assume_binary_inputs && opt.decompose_large_functions;
 
         auto run_once = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept -> void
         {
@@ -15350,11 +15548,11 @@ namespace phy_engine::verilog::digital
             run_pass(do_dce, u8"dce", [&]() noexcept { (void)details::optimize_dce_in_pe_netlist(net, top_port_nodes); });
         };
 
-        auto run_o3_fixpoint = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept
+        auto run_o34_fixpoint = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept
         {
-            if(lvl >= 3)
+            if(lvl >= 4)
             {
-                // Best-effort fixpoint-ish pipeline for gate count reduction.
+                // O4: best-effort fixpoint-ish pipeline for gate count reduction.
                 for(::std::size_t iter{}; iter < 8u; ++iter)
                 {
                     auto const before = details::count_logic_gates(net);
@@ -15367,11 +15565,20 @@ namespace phy_engine::verilog::digital
             }
             else
             {
+                // O0..O3: single pass (O3 is the "fast medium-strength" tier).
                 run_once(net, opt_run, rep_run);
             }
         };
 
-        if(!is_omax) { run_o3_fixpoint(nl, opt, rep); }
+        // Small O3 tuning: keep it predictably fast by default.
+        pe_synth_options tuned_opt = opt;
+        if(lvl == 3u)
+        {
+            // AIG rewrite can be the most expensive "fast tier" pass; cap it by default unless user already did.
+            if(tuned_opt.rewrite_max_candidates == 0u) { tuned_opt.rewrite_max_candidates = 4096u; }
+        }
+
+        if(!is_omax) { run_o34_fixpoint(nl, tuned_opt, rep); }
         else
         {
             using clock = ::std::chrono::steady_clock;
@@ -15386,9 +15593,13 @@ namespace phy_engine::verilog::digital
 
             auto make_try_opt = [&](::std::size_t iter) noexcept -> pe_synth_options
             {
-                pe_synth_options o = opt;
-                // Force the O3 pipeline; Omax is the orchestration/search layer.
-                if(o.opt_level > 3u) { o.opt_level = 3u; }
+                pe_synth_options o = tuned_opt;
+                // Force the O4 pipeline; Omax is the orchestration/search layer.
+                if(o.opt_level > 4u) { o.opt_level = 4u; }
+
+                // Iter 0 is the baseline "plain O4" run with exactly the user's knobs.
+                // This guarantees -Omax/-Ocuda won't regress vs a single O4 fixpoint for the same options.
+                if(iter == 0u) { return o; }
 
                 // Gradually relax small internal heuristics where it is cheap and safe.
                 // BDD decomposition can benefit from exploring more variable orders in Omax.
@@ -15432,7 +15643,7 @@ namespace phy_engine::verilog::digital
                 pe_synth_report* cand_rep_ptr = (rep != nullptr) ? __builtin_addressof(cand_rep) : nullptr;
 
                 auto const opt_try = make_try_opt(iter);
-                run_o3_fixpoint(nl, opt_try, cand_rep_ptr);
+                run_o34_fixpoint(nl, opt_try, cand_rep_ptr);
 
                 if(opt.omax_verify)
                 {

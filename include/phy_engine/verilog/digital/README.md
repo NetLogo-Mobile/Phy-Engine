@@ -126,8 +126,8 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Tests validating correctness + gate-count improvement under `test/0015.verilog_compile/`
 
 ### TODO (not yet implemented)
-#### `-Omax` / “budgeted fixpoint” mode (beyond `O3`)
-- [x] Add an `Omax` mode conceptually defined as: run the existing `O3` optimization pipeline in a loop until a **budget** is exhausted, trying to monotonically reduce gate count (or at least never regress).
+#### `-Omax` / “budgeted multi-start” mode (beyond `O4`)
+- [x] Add an `Omax` mode conceptually defined as: run the existing `O4` optimization pipeline in a loop until a **budget** is exhausted, trying to monotonically reduce gate count (or at least never regress).
 - [x] Budgets must be explicit and user-configurable (examples; pick a minimal, coherent set):
   - [x] Global wall-clock timeout (e.g. `--opt-timeout-ms`)
   - [x] Max outer iterations / restarts (e.g. `--opt-max-iter`)
@@ -151,7 +151,7 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
   - [x] CUDA support (best-effort) + multi-GPU (device bitmask), used to accelerate bounded truth-table batching in `resub`/`sweep` when enabled at runtime (`--cuda-opt`).
   - Build example (Clang CUDA, no nvcc):
-    - Recommended optimized build settings (important for `-Omax/-Ocuda` runtime):
+    - Recommended optimized build settings (important for `-Omax/-Ocuda` / `-O5` runtime):
       - `-DCMAKE_BUILD_TYPE=Release` (or `RelWithDebInfo` for profiling)
       - `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` (LTO, if supported by your toolchain)
     - `cmake -S src -B build_cuda -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DPHY_ENGINE_ENABLE_CUDA_PE_SYNTH=ON -DPHY_ENGINE_CUDA_PATH=/usr/local/cuda -DPHY_ENGINE_CUDA_PE_SYNTH_ARCH=sm_70 -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" `
@@ -159,7 +159,7 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
   - Run example (2x V100 -> mask 3):
     - `./build_cuda/verilog2plsav out.sav in.v -Ocuda --cuda-device-mask 3`
   - Notes:
-    - `-Ocuda` is shorthand for `-Omax` + enabling CUDA-assisted optimization, and also increases some default bounded windows (e.g. sweep/resub vars).
+    - `-Ocuda` is shorthand for `-Omax` (aka `-O5`) + enabling CUDA-assisted optimization, and also increases some default bounded windows (e.g. sweep/resub vars).
 
 #### Two-level minimization (Espresso / full cover)
 - [x] Espresso “industrial-strength” loop (additional heuristics beyond EXPAND/REDUCE/IRREDUNDANT, e.g. cube ordering + bounded last-gasp)
@@ -177,7 +177,7 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] More rewrite templates (consensus-style AIG rewrites; AOI/OAI-like factoring using existing primitive library)
 - [x] Resubstitution using existing nodes in the DAG (bounded truth-table matching with complemented reuse)
 - [x] Sweeping / redundancy removal beyond DCE (SAT-free bounded cone truth-table hashing)
-- [x] Iterative “area recovery” scheduling (rewrite/strash/resub/sweep inside O3 fixpoint loop)
+- [x] Iterative “area recovery” scheduling (rewrite/strash/resub/sweep inside O4 fixpoint loop)
 
 #### Technology mapping (general)
 - [x] Cost-driven DAG covering (“subject graph” → library patterns) for minimum gate count (bounded cones, template-based)
