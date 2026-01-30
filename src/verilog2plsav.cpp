@@ -9,6 +9,8 @@
 #include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
 #include <phy_engine/phy_lab_wrapper/auto_layout/auto_layout.h>
 
+#include <fast_io/fast_io_driver/timer.h>
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -350,6 +352,7 @@ static void usage(char const* argv0)
                         "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
                         "  --cuda-expand-windows                      (Optional) Under -Ocuda: increase some bounded windows (resub/sweep/decomp) for quality at higher runtime\n"
                         "  --cuda-trace                               Collect per-pass CUDA telemetry (printed in --report)\n"
+                        "  --time                                    Print per-step wall time using fast_io::timer\n"
                         "  --opt-cost gate|weighted                   Omax: objective cost model (default: gate)\n"
                         "  --opt-weight-NOT N                         Omax: weighted cost (default: 1)\n"
                         "  --opt-weight-AND N                         Omax: weighted cost (default: 1)\n"
@@ -703,6 +706,7 @@ int main(int argc, char** argv)
     bool const cuda_opt = has_flag(argc, argv, "--cuda-opt") || ocuda;
     bool const cuda_expand_windows = has_flag(argc, argv, "--cuda-expand-windows");
     bool const cuda_trace = has_flag(argc, argv, "--cuda-trace");
+    bool const step_time = has_flag(argc, argv, "--time") || has_flag(argc, argv, "--timing");
     std::uint32_t cuda_device_mask = 0;
     if(auto s = arg_after(argc, argv, "--cuda-device-mask"))
     {
@@ -923,7 +927,12 @@ int main(int argc, char** argv)
 
     auto const in_path_s = in_path.string();
     ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] compile ", ::fast_io::mnp::os_c_str(in_path_s.c_str()), "\n");
-    auto cr = ::phy_engine::verilog::digital::compile(src, copt);
+    auto cr = [&]()
+    {
+        if(!step_time) { return ::phy_engine::verilog::digital::compile(src, copt); }
+        ::fast_io::timer t{u8"[verilog2plsav] time.compile"};
+        return ::phy_engine::verilog::digital::compile(src, copt);
+    }();
     if(!cr.errors.empty())
     {
         diagnostic_options dop{};
@@ -1069,7 +1078,17 @@ int main(int argc, char** argv)
     opt.report = show_report ? __builtin_addressof(rep) : nullptr;
 
     ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] synthesize_to_pe_netlist\n");
-    if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt))
+    bool synth_ok = false;
+    if(step_time)
+    {
+        ::fast_io::timer t{u8"[verilog2plsav] time.synthesize_to_pe_netlist"};
+        synth_ok = ::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt);
+    }
+    else
+    {
+        synth_ok = ::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt);
+    }
+    if(!synth_ok)
     {
         ::fast_io::io::perr(::fast_io::u8err(),
                             u8"error: synthesize_to_pe_netlist failed: ",
@@ -1185,7 +1204,12 @@ int main(int argc, char** argv)
     };
 
     ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] pe_to_pl convert\n");
-    auto r = ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt);
+    auto r = [&]()
+    {
+        if(!step_time) { return ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt); }
+        ::fast_io::timer t{u8"[verilog2plsav] time.pe_to_pl.convert"};
+        return ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt);
+    }();
 
     // Keep IO elements fixed for layout.
     for(auto const& e : r.ex.elements())
@@ -1198,6 +1222,9 @@ int main(int argc, char** argv)
 
     // Auto-layout internal elements into the requested region.
     {
+        ::std::optional<::fast_io::timer> t{};
+        if(step_time) { t.emplace(u8"[verilog2plsav] time.auto_layout"); }
+
         ::phy_engine::phy_lab_wrapper::auto_layout::options aopt{};
         aopt.layout_mode = *layout_mode;
         aopt.respect_fixed_elements = true;
@@ -1324,7 +1351,15 @@ int main(int argc, char** argv)
                             "\n");
     }
 
-    r.ex.save(out_path, 2);
+    if(step_time)
+    {
+        ::fast_io::timer t{u8"[verilog2plsav] time.save"};
+        r.ex.save(out_path, 2);
+    }
+    else
+    {
+        r.ex.save(out_path, 2);
+    }
 
     if(!std::filesystem::exists(out_path))
     {

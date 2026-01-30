@@ -10,6 +10,8 @@
 
 #include <phy_engine/pe_nl_fileformat/pe_nl_fileformat.h>
 
+#include <fast_io/fast_io_driver/timer.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -91,6 +93,7 @@ namespace
                         "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
                         "  --cuda-expand-windows                      (Optional) Under -Ocuda: increase some bounded windows (resub/sweep) for quality at higher runtime\n"
                         "  --cuda-trace                               Collect per-pass CUDA telemetry (printed in --report)\n"
+                        "  --time                                    Print per-step wall time using fast_io::timer\n"
                         "  --opt-cost gate|weighted                   Omax: objective cost model (default: gate)\n"
                         "  --opt-weight-NOT N                         Omax: weighted cost (default: 1)\n"
                         "  --opt-weight-AND N                         Omax: weighted cost (default: 1)\n"
@@ -421,6 +424,7 @@ int main(int argc, char** argv)
         bool const cuda_opt = has_flag(argc, argv, "--cuda-opt") || ocuda;
         bool const cuda_expand_windows = has_flag(argc, argv, "--cuda-expand-windows");
         bool const cuda_trace = has_flag(argc, argv, "--cuda-trace");
+        bool const step_time = has_flag(argc, argv, "--time") || has_flag(argc, argv, "--timing");
         std::uint32_t cuda_device_mask = 0;
         if(auto s = arg_after(argc, argv, "--cuda-device-mask"))
         {
@@ -584,7 +588,12 @@ int main(int argc, char** argv)
 
         auto const in_path_s = in_path.string();
         ::fast_io::io::perr(::fast_io::err(), "[verilog2penl] compile ", ::fast_io::mnp::os_c_str(in_path_s.c_str()), "\n");
-        auto cr = ::phy_engine::verilog::digital::compile(src, copt);
+        auto cr = [&]()
+        {
+            if(!step_time) { return ::phy_engine::verilog::digital::compile(src, copt); }
+            ::fast_io::timer t{u8"[verilog2penl] time.compile"};
+            return ::phy_engine::verilog::digital::compile(src, copt);
+        }();
         if(!cr.errors.empty())
         {
             diagnostic_options dop{};
@@ -727,7 +736,17 @@ int main(int argc, char** argv)
             opt.report = show_report ? __builtin_addressof(rep) : nullptr;
 
             ::fast_io::io::perr(::fast_io::err(), "[verilog2penl] synthesize_to_pe_netlist\n");
-            if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, port_nodes, &err, opt))
+            bool synth_ok = false;
+            if(step_time)
+            {
+                ::fast_io::timer t{u8"[verilog2penl] time.synthesize_to_pe_netlist"};
+                synth_ok = ::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, port_nodes, &err, opt);
+            }
+            else
+            {
+                synth_ok = ::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, port_nodes, &err, opt);
+            }
+            if(!synth_ok)
             {
                 ::fast_io::io::perr(::fast_io::u8err(), u8"error: synthesize_to_pe_netlist failed: ", u8sv{err.message.data(), err.message.size()}, u8"\n");
                 return 14;
@@ -818,7 +837,12 @@ int main(int argc, char** argv)
         sopt.layout = *layout;
 
         ::fast_io::io::perr(::fast_io::err(), "[verilog2penl] save\n");
-        auto st = ::phy_engine::pe_nl_fileformat::save(out_path, c, sopt);
+        auto st = [&]()
+        {
+            if(!step_time) { return ::phy_engine::pe_nl_fileformat::save(out_path, c, sopt); }
+            ::fast_io::timer t{u8"[verilog2penl] time.save"};
+            return ::phy_engine::pe_nl_fileformat::save(out_path, c, sopt);
+        }();
         if(!st)
         {
             ::fast_io::io::perr(::fast_io::err(), "error: save failed: ", ::fast_io::mnp::os_c_str(st.message.c_str()), "\n");

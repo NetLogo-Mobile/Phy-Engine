@@ -8,6 +8,7 @@
 #include <deque>
 #include <mutex>
 #include <new>
+#include <utility>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -1111,7 +1112,7 @@ namespace phy_engine::verilog::digital::details
             d.begin = begin;
             d.end = end;
             d.stride_words = stride_words;
-            h->devs.push_back(d);
+            h->devs.push_back(std::move(d));
         }
 
         bool ok = true;
