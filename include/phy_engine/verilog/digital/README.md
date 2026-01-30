@@ -137,10 +137,10 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Richer multi-output sharing (kernel extraction / partial sharing across larger subcubes)
 
 #### Don’t-care (DC-set) inference & exploitation
-- [ ] Derive DC from X/Z semantics and `assume_binary_inputs` (explicit, verifiable DC-set plumbing)
-- [ ] Observability DC / controllability DC (ODC/CDC) propagation (bounded window)
-- [ ] FSM unreachable state detection (when sequential elements are present) → DC constraints
-- [ ] Mutual-exclusion / predicate-based DC inference from conditionals (e.g. `if/else` structure)
+- [x] Derive DC from X/Z semantics and `assume_binary_inputs` (explicit DC-set plumbing in cone minimization; gated by `infer_dc_from_xz`)
+- [x] Observability DC / controllability DC (ODC/CDC) propagation (bounded: local gate-mask ODC + CDC from FSM constraints with bounded state width)
+- [x] FSM unreachable state detection (when sequential elements are present) → DC constraints (one-hot constant assignment inference)
+- [x] Mutual-exclusion / predicate-based DC inference from conditionals (via one-hot FSM inference from constant `if/case` assignments)
 
 #### AIG-style rewriting / resubstitution (beyond local patterns)
 - [ ] More rewrite templates (AOI/OAI-like decompositions using existing primitive library)

@@ -7009,6 +7009,11 @@ namespace phy_engine::verilog::digital
                             // SystemVerilog-style `input reg` is accepted as a compatibility extension.
                             // Treat as a normal input port (driven externally).
                         }
+                        else if(p.accept_kw(u8"logic"))
+                        {
+                            // SystemVerilog-style `input logic` is accepted as a compatibility extension.
+                            // Treat as a normal input port (driven externally).
+                        }
                         if(p.accept_kw(u8"signed")) { current_is_signed = true; }
                         else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
@@ -7024,6 +7029,12 @@ namespace phy_engine::verilog::digital
                         {
                             // ignored
                         }
+                        else if(p.accept_kw(u8"logic"))
+                        {
+                            // SystemVerilog-style `output logic` is accepted as a compatibility extension.
+                            // Treat as an output variable (i.e. reg-like), matching common SystemVerilog usage.
+                            current_is_reg = true;
+                        }
                         if(p.accept_kw(u8"signed")) { current_is_signed = true; }
                         else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
                         accept_range(p, current_range);
@@ -7037,6 +7048,11 @@ namespace phy_engine::verilog::digital
                         if(p.accept_kw(u8"wire"))
                         {
                             // ignored
+                        }
+                        else if(p.accept_kw(u8"logic"))
+                        {
+                            // SystemVerilog-style `inout logic` is accepted as a compatibility extension.
+                            // Treat as a normal inout net.
                         }
                         if(p.accept_kw(u8"signed")) { current_is_signed = true; }
                         else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
@@ -7066,7 +7082,16 @@ namespace phy_engine::verilog::digital
                     }
 
                     if(p.accept_sym(u8')')) { break; }
-                    if(!p.accept_sym(u8',')) { p.err(p.peek(), u8"expected ',' or ')' in port list"); }
+                    if(p.accept_sym(u8',')) { continue; }
+
+                    p.err(p.peek(), u8"expected ',' or ')' in port list");
+                    // Recovery: always consume at least one token to avoid infinite loops on unexpected constructs.
+                    // Skip until ',' or ')' (or EOF), then let the next iteration handle the separator.
+                    while(!p.eof())
+                    {
+                        if(p.peek().kind == token_kind::symbol && (is_sym(p.peek().text, u8',') || is_sym(p.peek().text, u8')'))) { break; }
+                        p.consume();
+                    }
                 }
             }
 

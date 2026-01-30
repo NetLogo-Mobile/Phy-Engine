@@ -44,35 +44,40 @@
 
 namespace phy_engine::verilog::digital
 {
-	    struct pe_synth_options
-	    {
-	        enum class two_level_cost_model : ::std::uint8_t
-	        {
-	            gate_count,    // approximate 2-input gate count (NOT/AND/OR), with shared NOTs per cone
-	            literal_count, // SOP literal count (sum of specified vars across cubes)
-	        };
-	        struct two_level_cost_weights
-	        {
-	            ::std::uint16_t not_w{1};
-	            ::std::uint16_t and_w{1};
-	            ::std::uint16_t or_w{1};
-	        };
+    struct pe_synth_options
+    {
+        enum class two_level_cost_model : ::std::uint8_t
+        {
+            gate_count,     // approximate 2-input gate count (NOT/AND/OR), with shared NOTs per cone
+            literal_count,  // SOP literal count (sum of specified vars across cubes)
+        };
 
-	        bool allow_inout{false};
-	        bool allow_multi_driver{false};
-	        bool support_always_comb{true};
-	        bool support_always_ff{true};
-	        bool assume_binary_inputs{false};  // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
-	        ::std::uint8_t opt_level{0};       // 0=O0, 1=O1, 2=O2, 3=O3 (gate-count driven post-synth optimizations)
-	        bool optimize_wires{false};   // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
-	        bool optimize_mul2{false};    // best-effort: replace 2-bit multiplier tiles with MUL2 models
-	        bool optimize_adders{false};  // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
-	        ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
+        struct two_level_cost_weights
+        {
+            ::std::uint16_t not_w{1};
+            ::std::uint16_t and_w{1};
+            ::std::uint16_t or_w{1};
+        };
 
-	        // Two-level minimization cost model (used in O3 cone minimization passes).
-	        two_level_cost_model two_level_cost{two_level_cost_model::gate_count};
-	        two_level_cost_weights two_level_weights{};
-	    };
+        bool allow_inout{false};
+        bool allow_multi_driver{false};
+        bool support_always_comb{true};
+        bool support_always_ff{true};
+        bool assume_binary_inputs{false};     // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
+        ::std::uint8_t opt_level{0};          // 0=O0, 1=O1, 2=O2, 3=O3 (gate-count driven post-synth optimizations)
+        bool optimize_wires{false};           // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
+        bool optimize_mul2{false};            // best-effort: replace 2-bit multiplier tiles with MUL2 models
+        bool optimize_adders{false};          // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
+        ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
+        bool infer_dc_from_xz{true};          // when assume_binary_inputs, allow X/Z-driven minterms as DC in 2-level minimization
+        bool infer_dc_from_fsm{true};         // infer DC constraints from one-hot FSM-style state encodings (bounded)
+        bool infer_dc_from_odc{true};         // local observability DC for masked internal nodes (bounded)
+        ::std::size_t dc_fsm_max_bits{16};    // max state bits for FSM DC inference (0 disables)
+
+        // Two-level minimization cost model (used in O3 cone minimization passes).
+        two_level_cost_model two_level_cost{two_level_cost_model::gate_count};
+        two_level_cost_weights two_level_weights{};
+    };
 
     struct pe_synth_error
     {
@@ -84,12 +89,9 @@ namespace phy_engine::verilog::digital
         inline bool is_output_pin(::fast_io::u8string_view model_name, std::size_t pin_idx, std::size_t pin_count) noexcept;
 
         inline ::fast_io::u8string_view model_name_u8(::phy_engine::model::model_base const& mb) noexcept
-        {
-            return (mb.ptr == nullptr) ? ::fast_io::u8string_view{} : mb.ptr->get_model_name();
-        }
+        { return (mb.ptr == nullptr) ? ::fast_io::u8string_view{} : mb.ptr->get_model_name(); }
 
-        inline bool is_const_input_model(::phy_engine::model::model_base const& mb,
-                                         ::phy_engine::model::digital_node_statement_t v) noexcept
+        inline bool is_const_input_model(::phy_engine::model::model_base const& mb, ::phy_engine::model::digital_node_statement_t v) noexcept
         {
             if(mb.ptr == nullptr) { return false; }
             if(mb.name.size() != 0) { return false; }  // named INPUTs are external IO, not constants
@@ -99,10 +101,10 @@ namespace phy_engine::verilog::digital
             return vi.digital == v;
         }
 
-        inline ::phy_engine::model::node_t*
-            find_existing_const_node(::phy_engine::netlist::netlist& nl, ::phy_engine::model::digital_node_statement_t v) noexcept
+        inline ::phy_engine::model::node_t* find_existing_const_node(::phy_engine::netlist::netlist& nl,
+                                                                     ::phy_engine::model::digital_node_statement_t v) noexcept
         {
-            for(auto& blk : nl.models)
+            for(auto& blk: nl.models)
             {
                 for(auto* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -117,8 +119,7 @@ namespace phy_engine::verilog::digital
             return nullptr;
         }
 
-        inline ::phy_engine::model::node_t*
-            make_const_node(::phy_engine::netlist::netlist& nl, ::phy_engine::model::digital_node_statement_t v) noexcept
+        inline ::phy_engine::model::node_t* make_const_node(::phy_engine::netlist::netlist& nl, ::phy_engine::model::digital_node_statement_t v) noexcept
         {
             auto& n = ::phy_engine::netlist::create_node(nl);
             auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::INPUT{.outputA = v});
@@ -128,8 +129,8 @@ namespace phy_engine::verilog::digital
             return __builtin_addressof(n);
         }
 
-        inline ::phy_engine::model::node_t*
-            find_or_make_const_node(::phy_engine::netlist::netlist& nl, ::phy_engine::model::digital_node_statement_t v) noexcept
+        inline ::phy_engine::model::node_t* find_or_make_const_node(::phy_engine::netlist::netlist& nl,
+                                                                    ::phy_engine::model::digital_node_statement_t v) noexcept
         {
             if(auto* n = find_existing_const_node(nl, v); n != nullptr) { return n; }
             return make_const_node(nl, v);
@@ -142,6 +143,7 @@ namespace phy_engine::verilog::digital
                 std::size_t vec_pos{};
                 std::size_t chunk_pos{};
             };
+
             struct gate
             {
                 enum class kind : std::uint8_t
@@ -166,14 +168,13 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* a{};
                 ::phy_engine::model::node_t* b{};
             };
+
             struct gate_key_hash
             {
-                std::size_t operator()(gate_key const& x) const noexcept
+                std::size_t operator() (gate_key const& x) const noexcept
                 {
                     auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
-                    {
-                        return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
-                    };
+                    { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
                     std::size_t h{};
                     h = mix(h, static_cast<std::size_t>(x.k));
                     h = mix(h, reinterpret_cast<std::size_t>(x.a));
@@ -181,12 +182,14 @@ namespace phy_engine::verilog::digital
                     return h;
                 }
             };
+
             struct gate_key_eq
             {
-                bool operator()(gate_key const& x, gate_key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
+                bool operator() (gate_key const& x, gate_key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
             };
 
-            auto canon_pair = [](gate::kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> gate_key {
+            auto canon_pair = [](gate::kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> gate_key
+            {
                 if(reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
                 return gate_key{k, a, b};
             };
@@ -208,17 +211,20 @@ namespace phy_engine::verilog::digital
             consumer_count.reserve(1 << 14);
             driver_count.reserve(1 << 14);
 
-            auto note_pin = [&](::phy_engine::model::pin const* p, bool is_out) noexcept {
+            auto note_pin = [&](::phy_engine::model::pin const* p, bool is_out) noexcept
+            {
                 if(p == nullptr) { return; }
                 pin_is_output.emplace(p, is_out);
                 if(p->nodes == nullptr) { return; }
                 if(is_out) { ++driver_count[p->nodes]; }
-                else { ++consumer_count[p->nodes]; }
+                else
+                {
+                    ++consumer_count[p->nodes];
+                }
             };
 
-            auto classify_gate = [&](::phy_engine::model::model_base& mb,
-                                     std::size_t vec_pos,
-                                     std::size_t chunk_pos) noexcept -> std::optional<gate> {
+            auto classify_gate = [&](::phy_engine::model::model_base& mb, std::size_t vec_pos, std::size_t chunk_pos) noexcept -> std::optional<gate>
+            {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return std::nullopt; }
                 auto const name = model_name_u8(mb);
                 gate g{};
@@ -235,7 +241,10 @@ namespace phy_engine::verilog::digital
                     if(name == u8"AND") { g.k = gate::kind::and_gate; }
                     else if(name == u8"OR") { g.k = gate::kind::or_gate; }
                     else if(name == u8"XOR") { g.k = gate::kind::xor_gate; }
-                    else { g.k = gate::kind::xnor_gate; }
+                    else
+                    {
+                        g.k = gate::kind::xnor_gate;
+                    }
 
                     note_pin(__builtin_addressof(pv.pins[0]), false);
                     note_pin(__builtin_addressof(pv.pins[1]), false);
@@ -280,29 +289,28 @@ namespace phy_engine::verilog::digital
                     gates.push_back(*og);
                     gate_by_out.emplace(og->out, gate_index);
 
-                    if(og->k == gate::kind::and_gate || og->k == gate::kind::or_gate || og->k == gate::kind::xor_gate ||
-                       og->k == gate::kind::xnor_gate)
+                    if(og->k == gate::kind::and_gate || og->k == gate::kind::or_gate || og->k == gate::kind::xor_gate || og->k == gate::kind::xnor_gate)
                     {
-                        if(og->in0 != nullptr && og->in1 != nullptr)
-                        {
-                            out_by_inputs.emplace(canon_pair(og->k, og->in0, og->in1), og->out);
-                        }
+                        if(og->in0 != nullptr && og->in1 != nullptr) { out_by_inputs.emplace(canon_pair(og->k, og->in0, og->in1), og->out); }
                     }
                 }
             }
 
-            auto gate_out = [&](gate::kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t* {
+            auto gate_out = [&](gate::kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
+            {
                 auto it = out_by_inputs.find(canon_pair(k, a, b));
                 return it == out_by_inputs.end() ? nullptr : it->second;
             };
 
-            auto gate_ptr_by_out = [&](::phy_engine::model::node_t* out) noexcept -> gate const* {
+            auto gate_ptr_by_out = [&](::phy_engine::model::node_t* out) noexcept -> gate const*
+            {
                 auto it = gate_by_out.find(out);
                 if(it == gate_by_out.end()) { return nullptr; }
                 return __builtin_addressof(gates[it->second]);
             };
 
-            auto can_delete_gate_output = [&](::phy_engine::model::node_t* out) noexcept -> bool {
+            auto can_delete_gate_output = [&](::phy_engine::model::node_t* out) noexcept -> bool
+            {
                 if(out == nullptr) { return false; }
                 auto const dc = driver_count.find(out);
                 if(dc == driver_count.end() || dc->second != 1) { return false; }
@@ -325,14 +333,16 @@ namespace phy_engine::verilog::digital
             ::std::unordered_map<::phy_engine::model::model_base*, bool> used_models{};
             used_models.reserve(1 << 14);
 
-            auto mark_used = [&](gate const* g) noexcept -> bool {
+            auto mark_used = [&](gate const* g) noexcept -> bool
+            {
                 if(g == nullptr || g->mb == nullptr) { return false; }
                 if(used_models.contains(g->mb)) { return false; }
                 used_models.emplace(g->mb, true);
                 return true;
             };
 
-            auto try_add_half_adder = [&](gate const& gx) noexcept {
+            auto try_add_half_adder = [&](gate const& gx) noexcept
+            {
                 if(gx.k != gate::kind::xor_gate) { return; }
                 if(gx.in0 == nullptr || gx.in1 == nullptr || gx.out == nullptr) { return; }
                 auto* cnode = gate_out(gate::kind::and_gate, gx.in0, gx.in1);
@@ -356,7 +366,8 @@ namespace phy_engine::verilog::digital
                 actions.push_back(::std::move(a));
             };
 
-            auto try_add_full_adder_cin1 = [&](gate const& gnot) noexcept {
+            auto try_add_full_adder_cin1 = [&](gate const& gnot) noexcept
+            {
                 if(gnot.k != gate::kind::not_gate) { return; }
                 if(gnot.in0 == nullptr || gnot.out == nullptr) { return; }
 
@@ -395,7 +406,8 @@ namespace phy_engine::verilog::digital
                 actions.push_back(::std::move(a));
             };
 
-            auto try_add_full_adder_general = [&](gate const& g2) noexcept {
+            auto try_add_full_adder_general = [&](gate const& g2) noexcept
+            {
                 if(g2.k != gate::kind::xor_gate) { return; }
                 if(g2.in0 == nullptr || g2.in1 == nullptr || g2.out == nullptr) { return; }
 
@@ -454,34 +466,33 @@ namespace phy_engine::verilog::digital
             };
 
             // Pass 1: general full adders (non-constant carry).
-            for(auto const& g : gates) { try_add_full_adder_general(g); }
+            for(auto const& g: gates) { try_add_full_adder_general(g); }
             // Pass 2: cin=0 half adders (common in LSB).
-            for(auto const& g : gates) { try_add_half_adder(g); }
+            for(auto const& g: gates) { try_add_half_adder(g); }
             // Pass 3: cin=1 simplified form (two's complement +1).
-            for(auto const& g : gates) { try_add_full_adder_cin1(g); }
+            for(auto const& g: gates) { try_add_full_adder_cin1(g); }
 
             ::std::vector<model_pos> to_delete{};
             to_delete.reserve(actions.size() * 8);
-            for(auto const& a : actions)
+            for(auto const& a: actions)
             {
-                for(auto const& p : a.del) { to_delete.push_back(p); }
+                for(auto const& p: a.del) { to_delete.push_back(p); }
             }
 
-            auto less_desc = [](model_pos const& x, model_pos const& y) noexcept {
+            auto less_desc = [](model_pos const& x, model_pos const& y) noexcept
+            {
                 if(x.chunk_pos != y.chunk_pos) { return x.chunk_pos > y.chunk_pos; }
                 return x.vec_pos > y.vec_pos;
             };
             ::std::sort(to_delete.begin(), to_delete.end(), less_desc);
             to_delete.erase(::std::unique(to_delete.begin(),
                                           to_delete.end(),
-                                          [](model_pos const& x, model_pos const& y) noexcept {
-                                              return x.chunk_pos == y.chunk_pos && x.vec_pos == y.vec_pos;
-                                          }),
+                                          [](model_pos const& x, model_pos const& y) noexcept { return x.chunk_pos == y.chunk_pos && x.vec_pos == y.vec_pos; }),
                             to_delete.end());
 
-            for(auto const& p : to_delete) { (void)::phy_engine::netlist::delete_model(nl, p.vec_pos, p.chunk_pos); }
+            for(auto const& p: to_delete) { (void)::phy_engine::netlist::delete_model(nl, p.vec_pos, p.chunk_pos); }
 
-            for(auto const& a : actions)
+            for(auto const& a: actions)
             {
                 if(a.is_full)
                 {
@@ -514,6 +525,7 @@ namespace phy_engine::verilog::digital
                 std::size_t vec_pos{};
                 std::size_t chunk_pos{};
             };
+
             struct gate
             {
                 enum class kind : std::uint8_t
@@ -535,14 +547,13 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* a{};
                 ::phy_engine::model::node_t* b{};
             };
+
             struct gate_key_hash
             {
-                std::size_t operator()(gate_key const& x) const noexcept
+                std::size_t operator() (gate_key const& x) const noexcept
                 {
                     auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
-                    {
-                        return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
-                    };
+                    { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
                     std::size_t h{};
                     h = mix(h, static_cast<std::size_t>(x.k));
                     h = mix(h, reinterpret_cast<std::size_t>(x.a));
@@ -550,9 +561,10 @@ namespace phy_engine::verilog::digital
                     return h;
                 }
             };
+
             struct gate_key_eq
             {
-                bool operator()(gate_key const& x, gate_key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
+                bool operator() (gate_key const& x, gate_key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
             };
 
             auto canon_pair = [](gate::kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> gate_key
@@ -586,7 +598,7 @@ namespace phy_engine::verilog::digital
             named_input_name.reserve(1 << 14);
 
             // Best-effort pin direction classification for the whole netlist.
-            for(auto& blk : nl.models)
+            for(auto& blk: nl.models)
             {
                 for(auto* mb = blk.begin; mb != blk.curr; ++mb)
                 {
@@ -598,7 +610,10 @@ namespace phy_engine::verilog::digital
                         auto* n = pv.pins[i].nodes;
                         if(n == nullptr) { continue; }
                         if(is_output_pin(name, i, pv.size)) { ++driver_count[n]; }
-                        else { ++consumer_count[n]; }
+                        else
+                        {
+                            ++consumer_count[n];
+                        }
 
                         if(is_output_pin(name, i, pv.size))
                         {
@@ -607,10 +622,7 @@ namespace phy_engine::verilog::digital
                                 driver_is_named_input[n] = true;
                                 named_input_name.emplace(n, ::fast_io::u8string_view{mb->name.data(), mb->name.size()});
                             }
-                            else if(name != u8"INPUT")
-                            {
-                                driver_is_non_input[n] = true;
-                            }
+                            else if(name != u8"INPUT") { driver_is_non_input[n] = true; }
                         }
                     }
                 }
@@ -623,7 +635,10 @@ namespace phy_engine::verilog::digital
                 gate g{};
                 if(name == u8"AND") { g.k = gate::kind::and_gate; }
                 else if(name == u8"XOR") { g.k = gate::kind::xor_gate; }
-                else { return std::nullopt; }
+                else
+                {
+                    return std::nullopt;
+                }
                 auto pv = mb.ptr->generate_pin_view();
                 if(pv.size != 3) { return std::nullopt; }
                 g.pos = model_pos{vec_pos, chunk_pos};
@@ -674,9 +689,7 @@ namespace phy_engine::verilog::digital
             };
 
             auto is_in_pair = [&](::phy_engine::model::node_t* x, ::phy_engine::model::node_t* p0, ::phy_engine::model::node_t* p1) noexcept -> bool
-            {
-                return x == p0 || x == p1;
-            };
+            { return x == p0 || x == p1; };
 
             auto try_make_mul2 = [&](std::size_t p1_xor_idx) noexcept -> bool
             {
@@ -720,7 +733,7 @@ namespace phy_engine::verilog::digital
                 // Find p2 = XOR(t3, c1) and p3 = AND(t3, c1).
                 auto uses_it = uses.find(c1_out);
                 if(uses_it == uses.end()) { return false; }
-                for(auto const p2_xor_idx : uses_it->second)
+                for(auto const p2_xor_idx: uses_it->second)
                 {
                     if(p2_xor_idx >= gates.size() || dead[p2_xor_idx]) { continue; }
                     if(p2_xor_idx == p1_xor_idx) { continue; }
@@ -791,10 +804,7 @@ namespace phy_engine::verilog::digital
                         // Prefer explicit "a"/"b" naming; otherwise choose stable (lexicographically smaller) base as operand A.
                         auto desired_a = base_a0;
                         if(base_a0 != u8"a" && base_b0 == u8"a") { desired_a = base_b0; }
-                        else if(base_a0 != u8"a" && base_b0 != u8"a")
-                        {
-                            desired_a = (base_a0 <= base_b0) ? base_a0 : base_b0;
-                        }
+                        else if(base_a0 != u8"a" && base_b0 != u8"a") { desired_a = (base_a0 <= base_b0) ? base_a0 : base_b0; }
 
                         if(base_a0 != desired_a)
                         {
@@ -864,7 +874,7 @@ namespace phy_engine::verilog::digital
                         dead[i] = true;
                         (void)::phy_engine::netlist::delete_model(nl, gates[i].pos.vec_pos, gates[i].pos.chunk_pos);
                     };
-                    for(auto const i : ids) { kill(i); }
+                    for(auto const i: ids) { kill(i); }
                     return true;
                 }
 
@@ -905,8 +915,9 @@ namespace phy_engine::verilog::digital
             ::std::unordered_map<::phy_engine::model::pin const*, bool> pin_out{};
             pin_out.reserve(1 << 16);
 
-            auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool {
-                for(auto* p : protected_nodes)
+            auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool
+            {
+                for(auto* p: protected_nodes)
                 {
                     if(p == n) { return true; }
                 }
@@ -914,17 +925,14 @@ namespace phy_engine::verilog::digital
             };
 
             // Build pin->is_output map for the whole netlist (best-effort).
-            for(auto& blk : nl.models)
+            for(auto& blk: nl.models)
             {
                 for(auto* m = blk.begin; m != blk.curr; ++m)
                 {
                     if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
                     auto const name = model_name_u8(*m);
                     auto pv = m->ptr->generate_pin_view();
-                    for(std::size_t i{}; i < pv.size; ++i)
-                    {
-                        pin_out.emplace(__builtin_addressof(pv.pins[i]), is_output_pin(name, i, pv.size));
-                    }
+                    for(std::size_t i{}; i < pv.size; ++i) { pin_out.emplace(__builtin_addressof(pv.pins[i]), is_output_pin(name, i, pv.size)); }
                 }
             }
 
@@ -943,7 +951,7 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            for(auto const mp : yes_models)
+            for(auto const mp: yes_models)
             {
                 auto* mb = ::phy_engine::netlist::get_model(nl, mp);
                 if(mb == nullptr || mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
@@ -961,7 +969,7 @@ namespace phy_engine::verilog::digital
                 // Ensure `out_node` has exactly one driver pin, and it's this YES output pin.
                 std::size_t drivers{};
                 bool ok_driver{true};
-                for(auto const* p : out_node->pins)
+                for(auto const* p: out_node->pins)
                 {
                     auto it = pin_out.find(p);
                     bool const is_out = (it != pin_out.end()) ? it->second : false;
@@ -976,12 +984,12 @@ namespace phy_engine::verilog::digital
                 // Move all non-YES-output pins from out_node to in_node.
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(out_node->pins.size());
-                for(auto* p : out_node->pins)
+                for(auto* p: out_node->pins)
                 {
                     if(p == out_pin) { continue; }
                     pins_to_move.push_back(p);
                 }
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     out_node->pins.erase(p);
                     p->nodes = in_node;
@@ -999,6 +1007,17 @@ namespace phy_engine::verilog::digital
             ::std::unordered_map<::phy_engine::model::node_t*, ::std::size_t> driver_count{};
         };
 
+        struct dc_group
+        {
+            ::std::vector<::phy_engine::model::node_t*> nodes{};
+            ::std::vector<::std::uint16_t> allowed{};  // allowed minterms (bit order matches nodes)
+        };
+
+        struct dc_constraints
+        {
+            ::std::vector<dc_group> groups{};
+        };
+
         [[nodiscard]] inline gate_opt_fanout build_gate_opt_fanout(::phy_engine::netlist::netlist& nl) noexcept
         {
             gate_opt_fanout info{};
@@ -1006,7 +1025,7 @@ namespace phy_engine::verilog::digital
             info.consumer_count.reserve(1 << 14);
             info.driver_count.reserve(1 << 14);
 
-            for(auto& blk : nl.models)
+            for(auto& blk: nl.models)
             {
                 for(auto* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -1021,7 +1040,10 @@ namespace phy_engine::verilog::digital
                         auto* n = pv.pins[i].nodes;
                         if(n == nullptr) { continue; }
                         if(is_out) { ++info.driver_count[n]; }
-                        else { ++info.consumer_count[n]; }
+                        else
+                        {
+                            ++info.consumer_count[n];
+                        }
                     }
                 }
             }
@@ -1035,7 +1057,7 @@ namespace phy_engine::verilog::digital
         {
             if(node == nullptr || expected_driver == nullptr) { return false; }
             std::size_t drivers{};
-            for(auto const* p : node->pins)
+            for(auto const* p: node->pins)
             {
                 auto it = pin_out.find(p);
                 bool const is_out = (it != pin_out.end()) ? it->second : false;
@@ -1046,9 +1068,8 @@ namespace phy_engine::verilog::digital
             return drivers == 1;
         }
 
-        [[nodiscard]] inline bool optimize_fuse_inverters_in_pe_netlist(
-            ::phy_engine::netlist::netlist& nl,
-            ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
+        [[nodiscard]] inline bool optimize_fuse_inverters_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                        ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
         {
             enum class bin_kind : std::uint8_t
             {
@@ -1082,7 +1103,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -1092,8 +1113,7 @@ namespace phy_engine::verilog::digital
             ::std::vector<not_gate> nots{};
             nots.reserve(1 << 14);
 
-            auto classify_bin = [&](::phy_engine::model::model_base const& mb,
-                                    ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
+            auto classify_bin = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 auto const name = model_name_u8(mb);
@@ -1115,13 +1135,15 @@ namespace phy_engine::verilog::digital
                 else if(name == u8"NOR") { g.k = bin_kind::nor_gate; }
                 else if(name == u8"IMP") { g.k = bin_kind::imp_gate; }
                 else if(name == u8"NIMP") { g.k = bin_kind::nimp_gate; }
-                else { return ::std::nullopt; }
+                else
+                {
+                    return ::std::nullopt;
+                }
 
                 return g;
             };
 
-            auto classify_not = [&](::phy_engine::model::model_base const& mb,
-                                    ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<not_gate>
+            auto classify_not = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<not_gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 if(model_name_u8(mb) != u8"NOT") { return ::std::nullopt; }
@@ -1150,7 +1172,8 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            auto const complement = [](bin_kind k) noexcept -> ::std::optional<bin_kind> {
+            auto const complement = [](bin_kind k) noexcept -> ::std::optional<bin_kind>
+            {
                 switch(k)
                 {
                     case bin_kind::and_gate: return bin_kind::nand_gate;
@@ -1165,10 +1188,8 @@ namespace phy_engine::verilog::digital
                 }
             };
 
-            auto add_bin_gate = [&](bin_kind k,
-                                    ::phy_engine::model::node_t* a,
-                                    ::phy_engine::model::node_t* b,
-                                    ::phy_engine::model::node_t* out) noexcept -> ::std::optional<::phy_engine::netlist::model_pos>
+            auto add_bin_gate = [&](bin_kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b, ::phy_engine::model::node_t* out) noexcept
+                -> ::std::optional<::phy_engine::netlist::model_pos>
             {
                 if(a == nullptr || b == nullptr || out == nullptr) { return ::std::nullopt; }
                 ::phy_engine::netlist::add_model_retstr r{};
@@ -1187,8 +1208,7 @@ namespace phy_engine::verilog::digital
                 if(r.mod == nullptr) { return ::std::nullopt; }
 
                 // Connect inputs first; output is connected after deleting the old driver to avoid multi-driver nets.
-                if(!::phy_engine::netlist::add_to_node(nl, *r.mod, 0, *a) ||
-                   !::phy_engine::netlist::add_to_node(nl, *r.mod, 1, *b))
+                if(!::phy_engine::netlist::add_to_node(nl, *r.mod, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *r.mod, 1, *b))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, r.mod_pos);
                     return ::std::nullopt;
@@ -1198,7 +1218,7 @@ namespace phy_engine::verilog::digital
             };
 
             bool changed{};
-            for(auto const& n : nots)
+            for(auto const& n: nots)
             {
                 if(n.in == nullptr || n.out == nullptr || n.out_pin == nullptr) { continue; }
                 if(is_protected(n.in)) { continue; }  // don't orphan a top-level port node
@@ -1228,10 +1248,7 @@ namespace phy_engine::verilog::digital
                 (void)::phy_engine::netlist::delete_model(nl, g.pos);
 
                 auto* nm = ::phy_engine::netlist::get_model(nl, *new_pos);
-                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr)
-                {
-                    continue;
-                }
+                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr) { continue; }
                 if(!::phy_engine::netlist::add_to_node(nl, *nm, 2, *n.out))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, *new_pos);
@@ -1244,9 +1261,8 @@ namespace phy_engine::verilog::digital
             return changed;
         }
 
-        [[nodiscard]] inline bool optimize_push_input_inverters_in_pe_netlist(
-            ::phy_engine::netlist::netlist& nl,
-            ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
+        [[nodiscard]] inline bool optimize_push_input_inverters_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                              ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
         {
             enum class kind : std::uint8_t
             {
@@ -1255,6 +1271,7 @@ namespace phy_engine::verilog::digital
                 xor_gate,
                 xnor_gate,
             };
+
             struct bin_gate
             {
                 kind k{};
@@ -1264,6 +1281,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* out{};
                 ::phy_engine::model::pin const* out_pin{};
             };
+
             struct not_gate
             {
                 ::phy_engine::netlist::model_pos pos{};
@@ -1274,7 +1292,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -1284,8 +1302,7 @@ namespace phy_engine::verilog::digital
             ::std::vector<bin_gate> bins{};
             bins.reserve(1 << 14);
 
-            auto classify_not = [&](::phy_engine::model::model_base const& mb,
-                                    ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<not_gate>
+            auto classify_not = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<not_gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 if(model_name_u8(mb) != u8"NOT") { return ::std::nullopt; }
@@ -1299,8 +1316,7 @@ namespace phy_engine::verilog::digital
                 return ng;
             };
 
-            auto classify_bin = [&](::phy_engine::model::model_base const& mb,
-                                    ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
+            auto classify_bin = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 auto const name = model_name_u8(mb);
@@ -1316,7 +1332,10 @@ namespace phy_engine::verilog::digital
                 if(name == u8"AND") { g.k = kind::and_gate; }
                 else if(name == u8"OR") { g.k = kind::or_gate; }
                 else if(name == u8"XOR") { g.k = kind::xor_gate; }
-                else { g.k = kind::xnor_gate; }
+                else
+                {
+                    g.k = kind::xnor_gate;
+                }
                 return g;
             };
 
@@ -1335,9 +1354,8 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            auto add_model_inputs_only = [&](::phy_engine::model::model_base* m,
-                                             ::phy_engine::model::node_t* a,
-                                             ::phy_engine::model::node_t* b) noexcept -> bool
+            auto add_model_inputs_only =
+                [&](::phy_engine::model::model_base* m, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> bool
             {
                 if(m == nullptr || a == nullptr || b == nullptr) { return false; }
                 return ::phy_engine::netlist::add_to_node(nl, *m, 0, *a) && ::phy_engine::netlist::add_to_node(nl, *m, 1, *b);
@@ -1357,7 +1375,10 @@ namespace phy_engine::verilog::digital
                 else if(name == u8"NOR") { r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOR{}); }
                 else if(name == u8"IMP") { r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::IMP{}); }
                 else if(name == u8"NIMP") { r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NIMP{}); }
-                else { return ::std::nullopt; }
+                else
+                {
+                    return ::std::nullopt;
+                }
                 if(r.mod == nullptr) { return ::std::nullopt; }
                 if(!add_model_inputs_only(r.mod, a, b))
                 {
@@ -1369,7 +1390,7 @@ namespace phy_engine::verilog::digital
 
             bool changed{};
 
-            for(auto const& g : bins)
+            for(auto const& g: bins)
             {
                 if(g.in0 == nullptr || g.in1 == nullptr || g.out == nullptr || g.out_pin == nullptr) { continue; }
                 if(!has_unique_driver_pin(g.out, g.out_pin, fan.pin_out)) { continue; }
@@ -1401,8 +1422,18 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* b = g.in1;
                 not_gate n0{};
                 not_gate n1{};
-                if(inv0) { n0 = it0->second; if(!ok_not(n0)) { continue; } a = n0.in; }
-                if(inv1) { n1 = it1->second; if(!ok_not(n1)) { continue; } b = n1.in; }
+                if(inv0)
+                {
+                    n0 = it0->second;
+                    if(!ok_not(n0)) { continue; }
+                    a = n0.in;
+                }
+                if(inv1)
+                {
+                    n1 = it1->second;
+                    if(!ok_not(n1)) { continue; }
+                    b = n1.in;
+                }
 
                 ::fast_io::u8string_view new_name{};
                 ::phy_engine::model::node_t* na{};
@@ -1411,25 +1442,75 @@ namespace phy_engine::verilog::digital
                 // Select a cheaper equivalent primitive.
                 if(g.k == kind::and_gate)
                 {
-                    if(inv0 && inv1) { new_name = u8"NOR"; na = a; nb = b; }  // ~a & ~b = ~(a|b)
-                    else if(inv0) { new_name = u8"NIMP"; na = g.in1; nb = a; } // b & ~a = NIMP(b,a)
-                    else { new_name = u8"NIMP"; na = g.in0; nb = b; }         // a & ~b = NIMP(a,b)
+                    if(inv0 && inv1)
+                    {
+                        new_name = u8"NOR";
+                        na = a;
+                        nb = b;
+                    }  // ~a & ~b = ~(a|b)
+                    else if(inv0)
+                    {
+                        new_name = u8"NIMP";
+                        na = g.in1;
+                        nb = a;
+                    }  // b & ~a = NIMP(b,a)
+                    else
+                    {
+                        new_name = u8"NIMP";
+                        na = g.in0;
+                        nb = b;
+                    }  // a & ~b = NIMP(a,b)
                 }
                 else if(g.k == kind::or_gate)
                 {
-                    if(inv0 && inv1) { new_name = u8"NAND"; na = a; nb = b; }  // ~a | ~b = ~(a&b)
-                    else if(inv0) { new_name = u8"IMP"; na = a; nb = g.in1; }  // ~a | b = IMP(a,b)
-                    else { new_name = u8"IMP"; na = b; nb = g.in0; }           // a | ~b = IMP(b,a)
+                    if(inv0 && inv1)
+                    {
+                        new_name = u8"NAND";
+                        na = a;
+                        nb = b;
+                    }  // ~a | ~b = ~(a&b)
+                    else if(inv0)
+                    {
+                        new_name = u8"IMP";
+                        na = a;
+                        nb = g.in1;
+                    }  // ~a | b = IMP(a,b)
+                    else
+                    {
+                        new_name = u8"IMP";
+                        na = b;
+                        nb = g.in0;
+                    }  // a | ~b = IMP(b,a)
                 }
                 else if(g.k == kind::xor_gate)
                 {
-                    if(inv0 && inv1) { new_name = u8"XOR"; na = a; nb = b; }
-                    else { new_name = u8"XNOR"; na = inv0 ? a : g.in0; nb = inv1 ? b : g.in1; }
+                    if(inv0 && inv1)
+                    {
+                        new_name = u8"XOR";
+                        na = a;
+                        nb = b;
+                    }
+                    else
+                    {
+                        new_name = u8"XNOR";
+                        na = inv0 ? a : g.in0;
+                        nb = inv1 ? b : g.in1;
+                    }
                 }
                 else  // XNOR
                 {
-                    if(inv0 && inv1) { new_name = u8"XNOR"; na = a; nb = b; }
-                    else { new_name = u8"XOR"; na = inv0 ? a : g.in0; nb = inv1 ? b : g.in1; }
+                    if(inv0 && inv1)
+                    {
+                        new_name = u8"XNOR";
+                        na = a;
+                        nb = b;
+                    }
+                    else
+                    {
+                        new_name = u8"XOR";
+                        na = inv0 ? a : g.in0;
+                        nb = inv1 ? b : g.in1;
+                    }
                 }
 
                 if(new_name.empty()) { continue; }
@@ -1440,10 +1521,7 @@ namespace phy_engine::verilog::digital
                 (void)::phy_engine::netlist::delete_model(nl, g.pos);
 
                 auto* nm = ::phy_engine::netlist::get_model(nl, r->mod_pos);
-                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr)
-                {
-                    continue;
-                }
+                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr) { continue; }
                 if(!::phy_engine::netlist::add_to_node(nl, *nm, 2, *g.out))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, r->mod_pos);
@@ -1457,12 +1535,16 @@ namespace phy_engine::verilog::digital
                     if(is_protected(n.out)) { return; }
                     if(!has_unique_driver_pin(n.out, n.out_pin, fan.pin_out)) { return; }
                     bool has_consumer{};
-                    for(auto const* p : n.out->pins)
+                    for(auto const* p: n.out->pins)
                     {
                         if(p == n.out_pin) { continue; }
                         auto it = fan.pin_out.find(p);
                         bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
-                        if(!is_out) { has_consumer = true; break; }
+                        if(!is_out)
+                        {
+                            has_consumer = true;
+                            break;
+                        }
                     }
                     if(!has_consumer) { (void)::phy_engine::netlist::delete_model(nl, n.pos); }
                 };
@@ -1479,9 +1561,8 @@ namespace phy_engine::verilog::digital
             return changed;
         }
 
-        [[nodiscard]] inline bool optimize_factor_common_terms_in_pe_netlist(
-            ::phy_engine::netlist::netlist& nl,
-            ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
+        [[nodiscard]] inline bool optimize_factor_common_terms_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                             ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
         {
             enum class kind : std::uint8_t
             {
@@ -1501,7 +1582,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -1514,8 +1595,7 @@ namespace phy_engine::verilog::digital
             ::std::vector<bin_gate> ands{};
             ands.reserve(1 << 14);
 
-            auto classify = [&](::phy_engine::model::model_base const& mb,
-                                ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
+            auto classify = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 auto const name = model_name_u8(mb);
@@ -1531,7 +1611,10 @@ namespace phy_engine::verilog::digital
 
                 if(name == u8"AND") { g.k = kind::and_gate; }
                 else if(name == u8"OR") { g.k = kind::or_gate; }
-                else { return ::std::nullopt; }
+                else
+                {
+                    return ::std::nullopt;
+                }
 
                 return g;
             };
@@ -1546,14 +1629,15 @@ namespace phy_engine::verilog::digital
                     if(!og || og->out == nullptr) { continue; }
                     gate_by_out.emplace(og->out, *og);
                     if(og->k == kind::or_gate) { ors.push_back(*og); }
-                    else { ands.push_back(*og); }
+                    else
+                    {
+                        ands.push_back(*og);
+                    }
                 }
             }
 
-            auto find_common = [](::phy_engine::model::node_t* a0,
-                                  ::phy_engine::model::node_t* a1,
-                                  ::phy_engine::model::node_t* b0,
-                                  ::phy_engine::model::node_t* b1) noexcept
+            auto find_common =
+                [](::phy_engine::model::node_t* a0, ::phy_engine::model::node_t* a1, ::phy_engine::model::node_t* b0, ::phy_engine::model::node_t* b1) noexcept
                 -> ::std::optional<::std::tuple<::phy_engine::model::node_t*, ::phy_engine::model::node_t*, ::phy_engine::model::node_t*>>
             {
                 if(a0 == nullptr || a1 == nullptr || b0 == nullptr || b1 == nullptr) { return ::std::nullopt; }
@@ -1565,7 +1649,7 @@ namespace phy_engine::verilog::digital
             };
 
             bool changed{};
-            for(auto const& gor : ors)
+            for(auto const& gor: ors)
             {
                 if(gor.in0 == nullptr || gor.in1 == nullptr || gor.out == nullptr || gor.out_pin == nullptr) { continue; }
                 if(is_protected(gor.out)) { continue; }
@@ -1606,20 +1690,40 @@ namespace phy_engine::verilog::digital
                     bool ok{true};
                     auto dfs = [&](auto&& self, ::phy_engine::model::node_t* n, bool is_root) noexcept -> void
                     {
-                        if(!ok || n == nullptr) { ok = false; return; }
+                        if(!ok || n == nullptr)
+                        {
+                            ok = false;
+                            return;
+                        }
                         if(visited.contains(n)) { return; }
                         visited.emplace(n, true);
-                        if(or_nodes.size() + and_terms.size() >= max_nodes) { ok = false; return; }
+                        if(or_nodes.size() + and_terms.size() >= max_nodes)
+                        {
+                            ok = false;
+                            return;
+                        }
 
                         auto it = gate_by_out.find(n);
                         if(it != gate_by_out.end() && it->second.k == kind::or_gate)
                         {
                             auto const& og = it->second;
-                            if(og.out == nullptr || og.out_pin == nullptr) { ok = false; return; }
-                            if(!has_unique_driver_pin(og.out, og.out_pin, fan.pin_out)) { ok = false; return; }
+                            if(og.out == nullptr || og.out_pin == nullptr)
+                            {
+                                ok = false;
+                                return;
+                            }
+                            if(!has_unique_driver_pin(og.out, og.out_pin, fan.pin_out))
+                            {
+                                ok = false;
+                                return;
+                            }
                             if(!is_root)
                             {
-                                if(!exclusive_out(og)) { ok = false; return; }
+                                if(!exclusive_out(og))
+                                {
+                                    ok = false;
+                                    return;
+                                }
                             }
                             or_nodes.push_back(og);
                             self(self, og.in0, false);
@@ -1630,8 +1734,16 @@ namespace phy_engine::verilog::digital
                         if(it != gate_by_out.end() && it->second.k == kind::and_gate)
                         {
                             auto const& ag = it->second;
-                            if(and_terms.size() >= max_terms) { ok = false; return; }
-                            if(!exclusive_out(ag)) { ok = false; return; }
+                            if(and_terms.size() >= max_terms)
+                            {
+                                ok = false;
+                                return;
+                            }
+                            if(!exclusive_out(ag))
+                            {
+                                ok = false;
+                                return;
+                            }
                             and_terms.push_back(ag);
                             return;
                         }
@@ -1648,7 +1760,7 @@ namespace phy_engine::verilog::digital
                     for(std::size_t i{1}; i < and_terms.size(); ++i)
                     {
                         auto const* t = __builtin_addressof(and_terms[i]);
-                        for(auto& c : candidates)
+                        for(auto& c: candidates)
                         {
                             if(c == nullptr) { continue; }
                             if(t->in0 != c && t->in1 != c) { c = nullptr; }
@@ -1663,18 +1775,26 @@ namespace phy_engine::verilog::digital
                     };
                     ::std::optional<pick> best{};
 
-                    for(auto* c : candidates)
+                    for(auto* c: candidates)
                     {
                         if(c == nullptr) { continue; }
                         ::std::unordered_map<::phy_engine::model::node_t*, bool> seen{};
                         seen.reserve(and_terms.size() * 2u);
                         ::std::vector<::phy_engine::model::node_t*> others{};
                         others.reserve(and_terms.size());
-                        for(auto const& t : and_terms)
+                        for(auto const& t: and_terms)
                         {
-                            if(t.in0 != c && t.in1 != c) { others.clear(); break; }
+                            if(t.in0 != c && t.in1 != c)
+                            {
+                                others.clear();
+                                break;
+                            }
                             auto* o = (t.in0 == c) ? t.in1 : t.in0;
-                            if(o == nullptr) { others.clear(); break; }
+                            if(o == nullptr)
+                            {
+                                others.clear();
+                                break;
+                            }
                             if(!seen.contains(o))
                             {
                                 seen.emplace(o, true);
@@ -1688,10 +1808,7 @@ namespace phy_engine::verilog::digital
                         if(others.size() >= 2) { cost += (others.size() - 1); }
                         // If all terms are effectively (c & c), others would be {c} and cost becomes 1; still ok.
 
-                        if(!best || cost < best->new_cost)
-                        {
-                            best = pick{.common = c, .others = ::std::move(others), .new_cost = cost};
-                        }
+                        if(!best || cost < best->new_cost) { best = pick{.common = c, .others = ::std::move(others), .new_cost = cost}; }
                     }
 
                     if(!best) { return false; }
@@ -1710,10 +1827,7 @@ namespace phy_engine::verilog::digital
                     }
                     else
                     {
-                        if(best->others.size() == 1)
-                        {
-                            or_out_node = best->others[0];
-                        }
+                        if(best->others.size() == 1) { or_out_node = best->others[0]; }
                         else
                         {
                             // Create OR chain to combine `others` into one node.
@@ -1738,8 +1852,7 @@ namespace phy_engine::verilog::digital
 
                         auto [mand, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{});
                         if(mand == nullptr) { return false; }
-                        if(!::phy_engine::netlist::add_to_node(nl, *mand, 0, *best->common) ||
-                           !::phy_engine::netlist::add_to_node(nl, *mand, 1, *or_out_node))
+                        if(!::phy_engine::netlist::add_to_node(nl, *mand, 0, *best->common) || !::phy_engine::netlist::add_to_node(nl, *mand, 1, *or_out_node))
                         {
                             (void)::phy_engine::netlist::delete_model(nl, pos);
                             return false;
@@ -1748,8 +1861,8 @@ namespace phy_engine::verilog::digital
                     }
 
                     // Delete old OR-tree and AND terms.
-                    for(auto const& og : or_nodes) { (void)::phy_engine::netlist::delete_model(nl, og.pos); }
-                    for(auto const& tg : and_terms) { (void)::phy_engine::netlist::delete_model(nl, tg.pos); }
+                    for(auto const& og: or_nodes) { (void)::phy_engine::netlist::delete_model(nl, og.pos); }
+                    for(auto const& tg: and_terms) { (void)::phy_engine::netlist::delete_model(nl, tg.pos); }
 
                     if(mand_pos)
                     {
@@ -1766,14 +1879,14 @@ namespace phy_engine::verilog::digital
                     // Forward case: move consumers of gor.out to best->common.
                     ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                     pins_to_move.reserve(gor.out->pins.size());
-                    for(auto* p : gor.out->pins)
+                    for(auto* p: gor.out->pins)
                     {
                         auto it = fan.pin_out.find(p);
                         bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
                         if(is_out) { continue; }
                         pins_to_move.push_back(p);
                     }
-                    for(auto* p : pins_to_move)
+                    for(auto* p: pins_to_move)
                     {
                         gor.out->pins.erase(p);
                         p->nodes = best->common;
@@ -1820,8 +1933,7 @@ namespace phy_engine::verilog::digital
 
                 auto [mor, mor_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{});
                 if(mor == nullptr) { continue; }
-                if(!::phy_engine::netlist::add_to_node(nl, *mor, 0, *x) ||
-                   !::phy_engine::netlist::add_to_node(nl, *mor, 1, *y) ||
+                if(!::phy_engine::netlist::add_to_node(nl, *mor, 0, *x) || !::phy_engine::netlist::add_to_node(nl, *mor, 1, *y) ||
                    !::phy_engine::netlist::add_to_node(nl, *mor, 2, *tnode))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, mor_pos);
@@ -1834,8 +1946,7 @@ namespace phy_engine::verilog::digital
                     (void)::phy_engine::netlist::delete_model(nl, mor_pos);
                     continue;
                 }
-                if(!::phy_engine::netlist::add_to_node(nl, *mand, 0, *c) ||
-                   !::phy_engine::netlist::add_to_node(nl, *mand, 1, *tnode))
+                if(!::phy_engine::netlist::add_to_node(nl, *mand, 0, *c) || !::phy_engine::netlist::add_to_node(nl, *mand, 1, *tnode))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, mand_pos);
                     (void)::phy_engine::netlist::delete_model(nl, mor_pos);
@@ -1848,10 +1959,7 @@ namespace phy_engine::verilog::digital
                 (void)::phy_engine::netlist::delete_model(nl, gb.pos);
 
                 auto* mand_m = ::phy_engine::netlist::get_model(nl, mand_pos);
-                if(mand_m == nullptr || mand_m->type != ::phy_engine::model::model_type::normal || mand_m->ptr == nullptr)
-                {
-                    continue;
-                }
+                if(mand_m == nullptr || mand_m->type != ::phy_engine::model::model_type::normal || mand_m->ptr == nullptr) { continue; }
                 if(!::phy_engine::netlist::add_to_node(nl, *mand_m, 2, *gor.out))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, mand_pos);
@@ -1862,7 +1970,7 @@ namespace phy_engine::verilog::digital
                 changed = true;
             }
 
-            for(auto const& gand : ands)
+            for(auto const& gand: ands)
             {
                 if(gand.in0 == nullptr || gand.in1 == nullptr || gand.out == nullptr || gand.out_pin == nullptr) { continue; }
                 if(is_protected(gand.out)) { continue; }
@@ -1902,20 +2010,40 @@ namespace phy_engine::verilog::digital
                     bool ok{true};
                     auto dfs = [&](auto&& self, ::phy_engine::model::node_t* n, bool is_root) noexcept -> void
                     {
-                        if(!ok || n == nullptr) { ok = false; return; }
+                        if(!ok || n == nullptr)
+                        {
+                            ok = false;
+                            return;
+                        }
                         if(visited.contains(n)) { return; }
                         visited.emplace(n, true);
-                        if(and_nodes.size() + or_terms.size() >= max_nodes) { ok = false; return; }
+                        if(and_nodes.size() + or_terms.size() >= max_nodes)
+                        {
+                            ok = false;
+                            return;
+                        }
 
                         auto it = gate_by_out.find(n);
                         if(it != gate_by_out.end() && it->second.k == kind::and_gate)
                         {
                             auto const& ag = it->second;
-                            if(ag.out == nullptr || ag.out_pin == nullptr) { ok = false; return; }
-                            if(!has_unique_driver_pin(ag.out, ag.out_pin, fan.pin_out)) { ok = false; return; }
+                            if(ag.out == nullptr || ag.out_pin == nullptr)
+                            {
+                                ok = false;
+                                return;
+                            }
+                            if(!has_unique_driver_pin(ag.out, ag.out_pin, fan.pin_out))
+                            {
+                                ok = false;
+                                return;
+                            }
                             if(!is_root)
                             {
-                                if(!exclusive_out(ag)) { ok = false; return; }
+                                if(!exclusive_out(ag))
+                                {
+                                    ok = false;
+                                    return;
+                                }
                             }
                             and_nodes.push_back(ag);
                             self(self, ag.in0, false);
@@ -1926,8 +2054,16 @@ namespace phy_engine::verilog::digital
                         if(it != gate_by_out.end() && it->second.k == kind::or_gate)
                         {
                             auto const& og = it->second;
-                            if(or_terms.size() >= max_terms) { ok = false; return; }
-                            if(!exclusive_out(og)) { ok = false; return; }
+                            if(or_terms.size() >= max_terms)
+                            {
+                                ok = false;
+                                return;
+                            }
+                            if(!exclusive_out(og))
+                            {
+                                ok = false;
+                                return;
+                            }
                             or_terms.push_back(og);
                             return;
                         }
@@ -1943,7 +2079,7 @@ namespace phy_engine::verilog::digital
                     for(std::size_t i{1}; i < or_terms.size(); ++i)
                     {
                         auto const* t = __builtin_addressof(or_terms[i]);
-                        for(auto& c : candidates)
+                        for(auto& c: candidates)
                         {
                             if(c == nullptr) { continue; }
                             if(t->in0 != c && t->in1 != c) { c = nullptr; }
@@ -1958,18 +2094,26 @@ namespace phy_engine::verilog::digital
                     };
                     ::std::optional<pick> best{};
 
-                    for(auto* c : candidates)
+                    for(auto* c: candidates)
                     {
                         if(c == nullptr) { continue; }
                         ::std::unordered_map<::phy_engine::model::node_t*, bool> seen{};
                         seen.reserve(or_terms.size() * 2u);
                         ::std::vector<::phy_engine::model::node_t*> others{};
                         others.reserve(or_terms.size());
-                        for(auto const& t : or_terms)
+                        for(auto const& t: or_terms)
                         {
-                            if(t.in0 != c && t.in1 != c) { others.clear(); break; }
+                            if(t.in0 != c && t.in1 != c)
+                            {
+                                others.clear();
+                                break;
+                            }
                             auto* o = (t.in0 == c) ? t.in1 : t.in0;
-                            if(o == nullptr) { others.clear(); break; }
+                            if(o == nullptr)
+                            {
+                                others.clear();
+                                break;
+                            }
                             if(!seen.contains(o))
                             {
                                 seen.emplace(o, true);
@@ -1982,10 +2126,7 @@ namespace phy_engine::verilog::digital
                         std::size_t cost = 1;
                         if(others.size() >= 2) { cost += (others.size() - 1); }
 
-                        if(!best || cost < best->new_cost)
-                        {
-                            best = pick{.common = c, .others = ::std::move(others), .new_cost = cost};
-                        }
+                        if(!best || cost < best->new_cost) { best = pick{.common = c, .others = ::std::move(others), .new_cost = cost}; }
                     }
 
                     if(!best) { return false; }
@@ -2003,10 +2144,7 @@ namespace phy_engine::verilog::digital
                     }
                     else
                     {
-                        if(best->others.size() == 1)
-                        {
-                            and_out_node = best->others[0];
-                        }
+                        if(best->others.size() == 1) { and_out_node = best->others[0]; }
                         else
                         {
                             auto* acc = best->others[0];
@@ -2030,8 +2168,7 @@ namespace phy_engine::verilog::digital
 
                         auto [mor, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{});
                         if(mor == nullptr) { return false; }
-                        if(!::phy_engine::netlist::add_to_node(nl, *mor, 0, *best->common) ||
-                           !::phy_engine::netlist::add_to_node(nl, *mor, 1, *and_out_node))
+                        if(!::phy_engine::netlist::add_to_node(nl, *mor, 0, *best->common) || !::phy_engine::netlist::add_to_node(nl, *mor, 1, *and_out_node))
                         {
                             (void)::phy_engine::netlist::delete_model(nl, pos);
                             return false;
@@ -2039,8 +2176,8 @@ namespace phy_engine::verilog::digital
                         mor_pos = pos;
                     }
 
-                    for(auto const& ag : and_nodes) { (void)::phy_engine::netlist::delete_model(nl, ag.pos); }
-                    for(auto const& og : or_terms) { (void)::phy_engine::netlist::delete_model(nl, og.pos); }
+                    for(auto const& ag: and_nodes) { (void)::phy_engine::netlist::delete_model(nl, ag.pos); }
+                    for(auto const& og: or_terms) { (void)::phy_engine::netlist::delete_model(nl, og.pos); }
 
                     if(mor_pos)
                     {
@@ -2056,14 +2193,14 @@ namespace phy_engine::verilog::digital
 
                     ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                     pins_to_move.reserve(gand.out->pins.size());
-                    for(auto* p : gand.out->pins)
+                    for(auto* p: gand.out->pins)
                     {
                         auto it = fan.pin_out.find(p);
                         bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
                         if(is_out) { continue; }
                         pins_to_move.push_back(p);
                     }
-                    for(auto* p : pins_to_move)
+                    for(auto* p: pins_to_move)
                     {
                         gand.out->pins.erase(p);
                         p->nodes = best->common;
@@ -2110,8 +2247,7 @@ namespace phy_engine::verilog::digital
 
                 auto [mand, mand_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{});
                 if(mand == nullptr) { continue; }
-                if(!::phy_engine::netlist::add_to_node(nl, *mand, 0, *x) ||
-                   !::phy_engine::netlist::add_to_node(nl, *mand, 1, *y) ||
+                if(!::phy_engine::netlist::add_to_node(nl, *mand, 0, *x) || !::phy_engine::netlist::add_to_node(nl, *mand, 1, *y) ||
                    !::phy_engine::netlist::add_to_node(nl, *mand, 2, *tnode))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, mand_pos);
@@ -2163,6 +2299,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* out{};
                 ::phy_engine::model::pin const* out_pin{};
             };
+
             struct and_gate
             {
                 ::phy_engine::netlist::model_pos pos{};
@@ -2171,6 +2308,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* out{};
                 ::phy_engine::model::pin const* out_pin{};
             };
+
             struct or_gate
             {
                 ::phy_engine::netlist::model_pos pos{};
@@ -2179,6 +2317,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* out{};
                 ::phy_engine::model::pin const* out_pin{};
             };
+
             struct nimp_gate
             {
                 ::phy_engine::netlist::model_pos pos{};
@@ -2196,7 +2335,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -2214,8 +2353,7 @@ namespace phy_engine::verilog::digital
             or_by_out.reserve(1 << 14);
             ands.reserve(1 << 14);
 
-            auto classify_not = [&](::phy_engine::model::model_base const& mb,
-                                    ::phy_engine::netlist::model_pos pos) noexcept -> void
+            auto classify_not = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> void
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return; }
                 if(model_name_u8(mb) != u8"NOT") { return; }
@@ -2229,8 +2367,7 @@ namespace phy_engine::verilog::digital
                 if(g.out != nullptr) { not_by_out.emplace(g.out, g); }
             };
 
-            auto classify_and = [&](::phy_engine::model::model_base const& mb,
-                                    ::phy_engine::netlist::model_pos pos) noexcept -> void
+            auto classify_and = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> void
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return; }
                 if(model_name_u8(mb) != u8"AND") { return; }
@@ -2245,8 +2382,7 @@ namespace phy_engine::verilog::digital
                 if(g.out != nullptr) { and_by_out.emplace(g.out, g); }
             };
 
-            auto classify_nimp = [&](::phy_engine::model::model_base const& mb,
-                                     ::phy_engine::netlist::model_pos pos) noexcept -> void
+            auto classify_nimp = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> void
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return; }
                 if(model_name_u8(mb) != u8"NIMP") { return; }
@@ -2261,8 +2397,7 @@ namespace phy_engine::verilog::digital
                 if(g.out != nullptr) { nimp_by_out.emplace(g.out, g); }
             };
 
-            auto classify_or = [&](::phy_engine::model::model_base const& mb,
-                                   ::phy_engine::netlist::model_pos pos) noexcept -> void
+            auto classify_or = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> void
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return; }
                 if(model_name_u8(mb) != u8"OR") { return; }
@@ -2278,8 +2413,7 @@ namespace phy_engine::verilog::digital
                 if(g.out != nullptr) { or_by_out.emplace(g.out, g); }
             };
 
-            auto classify_and2 = [&](::phy_engine::model::model_base const& mb,
-                                     ::phy_engine::netlist::model_pos pos) noexcept -> void
+            auto classify_and2 = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> void
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return; }
                 if(model_name_u8(mb) != u8"AND") { return; }
@@ -2322,10 +2456,7 @@ namespace phy_engine::verilog::digital
 
             auto get_lit = [&](::phy_engine::model::node_t* n) noexcept -> lit
             {
-                if(auto itn = not_by_out.find(n); itn != not_by_out.end() && itn->second.in != nullptr)
-                {
-                    return lit{itn->second.in, true};
-                }
+                if(auto itn = not_by_out.find(n); itn != not_by_out.end() && itn->second.in != nullptr) { return lit{itn->second.in, true}; }
                 return lit{n, false};
             };
 
@@ -2335,8 +2466,8 @@ namespace phy_engine::verilog::digital
                 return {a, b};
             };
 
-            auto add_xor_like = [&](bool is_xnor, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept
-                -> ::std::optional<::phy_engine::netlist::model_pos>
+            auto add_xor_like =
+                [&](bool is_xnor, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::std::optional<::phy_engine::netlist::model_pos>
             {
                 if(a == nullptr || b == nullptr) { return ::std::nullopt; }
                 if(is_xnor)
@@ -2374,6 +2505,7 @@ namespace phy_engine::verilog::digital
                 bool delete_t0{};
                 bool delete_t1{};
             };
+
             struct rewrite_action_pos
             {
                 bool to_xnor{};
@@ -2392,7 +2524,7 @@ namespace phy_engine::verilog::digital
             ::std::vector<rewrite_action_pos> actions_pos{};
             actions_pos.reserve(256);
 
-            for(auto const& gor : ors)
+            for(auto const& gor: ors)
             {
                 if(gor.a == nullptr || gor.b == nullptr || gor.out == nullptr || gor.out_pin == nullptr) { continue; }
                 if(is_protected(gor.out)) { continue; }
@@ -2476,7 +2608,7 @@ namespace phy_engine::verilog::digital
             }
 
             // POS XOR/XNOR: (a|b)&(~a|~b) = XOR(a,b) ; (a|~b)&(~a|b) = XNOR(a,b)
-            for(auto const& gand : ands)
+            for(auto const& gand: ands)
             {
                 if(gand.a == nullptr || gand.b == nullptr || gand.out == nullptr || gand.out_pin == nullptr) { continue; }
                 if(is_protected(gand.out)) { continue; }
@@ -2534,7 +2666,7 @@ namespace phy_engine::verilog::digital
             }
 
             bool changed{};
-            for(auto const& a : actions)
+            for(auto const& a: actions)
             {
                 if(a.out == nullptr || a.a == nullptr || a.b == nullptr) { continue; }
                 if(is_protected(a.out)) { continue; }
@@ -2549,10 +2681,7 @@ namespace phy_engine::verilog::digital
                 if(a.delete_t1) { (void)::phy_engine::netlist::delete_model(nl, a.t1_pos); }
 
                 auto* nm = ::phy_engine::netlist::get_model(nl, *new_pos);
-                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr)
-                {
-                    continue;
-                }
+                if(nm == nullptr || nm->type != ::phy_engine::model::model_type::normal || nm->ptr == nullptr) { continue; }
                 if(!::phy_engine::netlist::add_to_node(nl, *nm, 2, *a.out))
                 {
                     (void)::phy_engine::netlist::delete_model(nl, *new_pos);
@@ -2562,7 +2691,7 @@ namespace phy_engine::verilog::digital
                 changed = true;
             }
 
-            for(auto const& a : actions_pos)
+            for(auto const& a: actions_pos)
             {
                 if(a.out == nullptr || a.a == nullptr || a.b == nullptr) { continue; }
                 if(is_protected(a.out)) { continue; }
@@ -2602,7 +2731,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -2633,15 +2762,14 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            auto move_consumers = [&](::phy_engine::model::node_t* from,
-                                      ::phy_engine::model::node_t* to) noexcept -> bool
+            auto move_consumers = [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to) noexcept -> bool
             {
                 if(from == nullptr || to == nullptr || from == to) { return false; }
                 if(is_protected(from)) { return false; }
 
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins)
+                for(auto* p: from->pins)
                 {
                     auto it = fan.pin_out.find(p);
                     bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
@@ -2649,7 +2777,7 @@ namespace phy_engine::verilog::digital
                     pins_to_move.push_back(p);
                 }
 
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -2659,7 +2787,7 @@ namespace phy_engine::verilog::digital
             };
 
             bool changed{};
-            for(auto const& outer : nots)
+            for(auto const& outer: nots)
             {
                 if(outer.in == nullptr || outer.out == nullptr || outer.out_pin == nullptr) { continue; }
                 if(!has_unique_driver_pin(outer.out, outer.out_pin, fan.pin_out)) { continue; }
@@ -2715,7 +2843,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -2725,7 +2853,7 @@ namespace phy_engine::verilog::digital
             // Build node->(0/1) constant map from unnamed INPUT drivers.
             ::std::unordered_map<::phy_engine::model::node_t*, dns> node_const{};
             node_const.reserve(1 << 14);
-            for(auto& blk : nl.models)
+            for(auto& blk: nl.models)
             {
                 for(auto* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -2754,21 +2882,20 @@ namespace phy_engine::verilog::digital
                 return false;
             };
 
-            auto move_consumers = [&](::phy_engine::model::node_t* from,
-                                      ::phy_engine::model::node_t* to) noexcept -> bool
+            auto move_consumers = [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to) noexcept -> bool
             {
                 if(from == nullptr || to == nullptr || from == to) { return false; }
                 if(is_protected(from)) { return false; }
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins)
+                for(auto* p: from->pins)
                 {
                     auto it = fan.pin_out.find(p);
                     bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
                     if(is_out) { continue; }
                     pins_to_move.push_back(p);
                 }
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -2787,6 +2914,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::pin const* out_pin{};
                 bool is_unary{};
             };
+
             ::std::vector<cand> cands{};
             cands.reserve(1 << 14);
 
@@ -2798,8 +2926,8 @@ namespace phy_engine::verilog::digital
                     auto const& mb = blk.begin[vec_pos];
                     if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { continue; }
                     auto const nm = model_name_u8(mb);
-                    if(nm != u8"NOT" && nm != u8"AND" && nm != u8"OR" && nm != u8"XOR" && nm != u8"XNOR" && nm != u8"NAND" && nm != u8"NOR" &&
-                       nm != u8"IMP" && nm != u8"NIMP")
+                    if(nm != u8"NOT" && nm != u8"AND" && nm != u8"OR" && nm != u8"XOR" && nm != u8"XNOR" && nm != u8"NAND" && nm != u8"NOR" && nm != u8"IMP" &&
+                       nm != u8"NIMP")
                     {
                         continue;
                     }
@@ -2830,7 +2958,7 @@ namespace phy_engine::verilog::digital
             }
 
             bool changed{};
-            for(auto const& g : cands)
+            for(auto const& g: cands)
             {
                 if(g.out == nullptr || g.out_pin == nullptr) { continue; }
                 if(is_protected(g.out)) { continue; }
@@ -2853,7 +2981,10 @@ namespace phy_engine::verilog::digital
                     else if(aconst && av == dns::true_state) { replacement = g.b; }
                     else if(bconst && bv == dns::true_state) { replacement = g.a; }
                     else if(g.a != nullptr && g.a == g.b) { replacement = g.a; }
-                    else { continue; }
+                    else
+                    {
+                        continue;
+                    }
                 }
                 else if(g.name == u8"OR")
                 {
@@ -2862,7 +2993,10 @@ namespace phy_engine::verilog::digital
                     else if(aconst && av == dns::false_state) { replacement = g.b; }
                     else if(bconst && bv == dns::false_state) { replacement = g.a; }
                     else if(g.a != nullptr && g.a == g.b) { replacement = g.a; }
-                    else { continue; }
+                    else
+                    {
+                        continue;
+                    }
                 }
                 else if(g.name == u8"XOR")
                 {
@@ -2873,11 +3007,11 @@ namespace phy_engine::verilog::digital
                     }
                     else if(aconst && av == dns::false_state) { replacement = g.b; }
                     else if(bconst && bv == dns::false_state) { replacement = g.a; }
-                    else if(opt.assume_binary_inputs && g.a != nullptr && g.a == g.b)
+                    else if(opt.assume_binary_inputs && g.a != nullptr && g.a == g.b) { replacement = find_or_make_const_node(nl, dns::false_state); }
+                    else
                     {
-                        replacement = find_or_make_const_node(nl, dns::false_state);
+                        continue;
                     }
-                    else { continue; }
                 }
                 else if(g.name == u8"XNOR")
                 {
@@ -2888,11 +3022,11 @@ namespace phy_engine::verilog::digital
                     }
                     else if(aconst && av == dns::true_state) { replacement = g.b; }
                     else if(bconst && bv == dns::true_state) { replacement = g.a; }
-                    else if(opt.assume_binary_inputs && g.a != nullptr && g.a == g.b)
+                    else if(opt.assume_binary_inputs && g.a != nullptr && g.a == g.b) { replacement = find_or_make_const_node(nl, dns::true_state); }
+                    else
                     {
-                        replacement = find_or_make_const_node(nl, dns::true_state);
+                        continue;
                     }
-                    else { continue; }
                 }
                 else if(g.name == u8"NAND")
                 {
@@ -2903,7 +3037,10 @@ namespace phy_engine::verilog::digital
                         bool const r = !(av == dns::true_state && bv == dns::true_state);
                         replacement = find_or_make_const_node(nl, r ? dns::true_state : dns::false_state);
                     }
-                    else { continue; }
+                    else
+                    {
+                        continue;
+                    }
                 }
                 else if(g.name == u8"NOR")
                 {
@@ -2914,7 +3051,10 @@ namespace phy_engine::verilog::digital
                         bool const r = !(av == dns::true_state || bv == dns::true_state);
                         replacement = find_or_make_const_node(nl, r ? dns::true_state : dns::false_state);
                     }
-                    else { continue; }
+                    else
+                    {
+                        continue;
+                    }
                 }
                 else if(g.name == u8"IMP")
                 {
@@ -2922,7 +3062,10 @@ namespace phy_engine::verilog::digital
                     if(bconst && bv == dns::true_state) { replacement = find_or_make_const_node(nl, dns::true_state); }
                     else if(aconst && av == dns::false_state) { replacement = find_or_make_const_node(nl, dns::true_state); }
                     else if(aconst && av == dns::true_state) { replacement = g.b; }
-                    else { continue; }
+                    else
+                    {
+                        continue;
+                    }
                 }
                 else if(g.name == u8"NIMP")
                 {
@@ -2930,7 +3073,10 @@ namespace phy_engine::verilog::digital
                     if(aconst && av == dns::false_state) { replacement = find_or_make_const_node(nl, dns::false_state); }
                     else if(bconst && bv == dns::true_state) { replacement = find_or_make_const_node(nl, dns::false_state); }
                     else if(bconst && bv == dns::false_state) { replacement = g.a; }
-                    else { continue; }
+                    else
+                    {
+                        continue;
+                    }
                 }
                 else
                 {
@@ -2973,7 +3119,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -2983,8 +3129,7 @@ namespace phy_engine::verilog::digital
             ::std::vector<bin_gate> parents{};
             parents.reserve(1 << 14);
 
-            auto classify = [&](::phy_engine::model::model_base const& mb,
-                                ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
+            auto classify = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<bin_gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 auto const name = model_name_u8(mb);
@@ -3014,21 +3159,20 @@ namespace phy_engine::verilog::digital
                 }
             }
 
-            auto move_consumers = [&](::phy_engine::model::node_t* from,
-                                      ::phy_engine::model::node_t* to) noexcept -> bool
+            auto move_consumers = [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to) noexcept -> bool
             {
                 if(from == nullptr || to == nullptr || from == to) { return false; }
                 if(is_protected(from)) { return false; }
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins)
+                for(auto* p: from->pins)
                 {
                     auto it = fan.pin_out.find(p);
                     bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
                     if(is_out) { continue; }
                     pins_to_move.push_back(p);
                 }
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -3038,7 +3182,7 @@ namespace phy_engine::verilog::digital
             };
 
             bool changed{};
-            for(auto const& pg : parents)
+            for(auto const& pg: parents)
             {
                 if(pg.in0 == nullptr || pg.in1 == nullptr || pg.out == nullptr || pg.out_pin == nullptr) { continue; }
                 if(is_protected(pg.out)) { continue; }
@@ -3093,7 +3237,7 @@ namespace phy_engine::verilog::digital
         }
 
         [[nodiscard]] inline bool optimize_binary_complement_simplify_in_pe_netlist(::phy_engine::netlist::netlist& nl,
-                                                                                     ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
+                                                                                    ::std::vector<::phy_engine::model::node_t*> const& protected_nodes) noexcept
         {
             // Binary-only multi-level simplifications (valid when inputs are guaranteed 0/1):
             // - (x&y) | (x&~y) -> x  and  (x&y) | (~x&y) -> y
@@ -3107,6 +3251,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* out{};
                 ::phy_engine::model::pin const* out_pin{};
             };
+
             struct bin_gate
             {
                 ::fast_io::u8string_view name{};
@@ -3119,7 +3264,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -3196,6 +3341,7 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* v{};
                 bool neg{};
             };
+
             auto get_lit = [&](::phy_engine::model::node_t* n) noexcept -> lit
             {
                 if(auto it = not_by_out.find(n); it != not_by_out.end() && it->second.in != nullptr) { return lit{it->second.in, true}; }
@@ -3208,14 +3354,14 @@ namespace phy_engine::verilog::digital
                 if(is_protected(from)) { return false; }
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins)
+                for(auto* p: from->pins)
                 {
                     auto it = fan.pin_out.find(p);
                     bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
                     if(is_out) { continue; }
                     pins_to_move.push_back(p);
                 }
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -3226,14 +3372,15 @@ namespace phy_engine::verilog::digital
 
             auto make_const = [&](bool v) noexcept -> ::phy_engine::model::node_t*
             {
-                return find_or_make_const_node(nl, v ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                     : ::phy_engine::model::digital_node_statement_t::false_state);
+                return find_or_make_const_node(nl,
+                                               v ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                 : ::phy_engine::model::digital_node_statement_t::false_state);
             };
 
             bool changed{};
 
             // Simplify OR pairs: (x&y)|(x&~y) -> x, and (x&y)|(~x&y) -> y.
-            for(auto const& og : ors)
+            for(auto const& og: ors)
             {
                 if(og.a == nullptr || og.b == nullptr || og.out == nullptr || og.out_pin == nullptr) { continue; }
                 if(is_protected(og.out)) { continue; }
@@ -3270,7 +3417,10 @@ namespace phy_engine::verilog::digital
 
                 ::phy_engine::model::node_t* rep{};
                 if(same0) { rep = t0[0].v; }
-                else { rep = t0[1].v; }
+                else
+                {
+                    rep = t0[1].v;
+                }
                 // If the common literal is negated, result is ~x (still valid). We'll materialize via NOT.
                 bool const rep_neg = same0 ? t0[0].neg : t0[1].neg;
                 if(rep == nullptr) { continue; }
@@ -3299,7 +3449,7 @@ namespace phy_engine::verilog::digital
             }
 
             // Simplify AND pairs: (x|y)&(x|~y) -> x, and (x|y)&(~x|y) -> y.
-            for(auto const& ag : ands)
+            for(auto const& ag: ands)
             {
                 if(ag.a == nullptr || ag.b == nullptr || ag.out == nullptr || ag.out_pin == nullptr) { continue; }
                 if(is_protected(ag.out)) { continue; }
@@ -3334,8 +3484,16 @@ namespace phy_engine::verilog::digital
 
                 ::phy_engine::model::node_t* rep{};
                 bool rep_neg{};
-                if(same0) { rep = t0[0].v; rep_neg = t0[0].neg; }
-                else { rep = t0[1].v; rep_neg = t0[1].neg; }
+                if(same0)
+                {
+                    rep = t0[0].v;
+                    rep_neg = t0[0].neg;
+                }
+                else
+                {
+                    rep = t0[1].v;
+                    rep_neg = t0[1].neg;
+                }
                 if(rep == nullptr) { continue; }
                 if(rep_neg)
                 {
@@ -3360,7 +3518,7 @@ namespace phy_engine::verilog::digital
             }
 
             // Complement tautologies/contradictions: (x|~x)->1, (x&~x)->0 when expressed as OR/AND of a literal and its negation.
-            for(auto const& og : ors)
+            for(auto const& og: ors)
             {
                 if(og.a == nullptr || og.b == nullptr || og.out == nullptr || og.out_pin == nullptr) { continue; }
                 if(is_protected(og.out)) { continue; }
@@ -3376,7 +3534,7 @@ namespace phy_engine::verilog::digital
                     changed = true;
                 }
             }
-            for(auto const& ag : ands)
+            for(auto const& ag: ands)
             {
                 if(ag.a == nullptr || ag.b == nullptr || ag.out == nullptr || ag.out_pin == nullptr) { continue; }
                 if(is_protected(ag.out)) { continue; }
@@ -3439,7 +3597,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -3447,7 +3605,7 @@ namespace phy_engine::verilog::digital
             using dns = ::phy_engine::model::digital_node_statement_t;
             ::std::unordered_map<::phy_engine::model::node_t*, dns> node_const{};
             node_const.reserve(1 << 14);
-            for(auto& blk : nl.models)
+            for(auto& blk: nl.models)
             {
                 for(auto* m = blk.begin; m != blk.curr; ++m)
                 {
@@ -3549,14 +3707,14 @@ namespace phy_engine::verilog::digital
                 if(is_protected(from)) { return false; }
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins)
+                for(auto* p: from->pins)
                 {
                     auto it = fan.pin_out.find(p);
                     bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
                     if(is_out) { continue; }
                     pins_to_move.push_back(p);
                 }
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -3595,12 +3753,10 @@ namespace phy_engine::verilog::digital
             };
 
             auto make_const_node = [&](bool v) noexcept -> ::phy_engine::model::node_t*
-            {
-                return find_or_make_const_node(nl, v ? dns::true_state : dns::false_state);
-            };
+            { return find_or_make_const_node(nl, v ? dns::true_state : dns::false_state); };
 
             bool changed{};
-            for(auto const& root : roots)
+            for(auto const& root: roots)
             {
                 if(root.in0 == nullptr || root.in1 == nullptr || root.out == nullptr || root.out_pin == nullptr) { continue; }
                 if(is_protected(root.out)) { continue; }
@@ -3625,7 +3781,11 @@ namespace phy_engine::verilog::digital
                 auto collect = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> void
                 {
                     if(n == nullptr) { return; }
-                    if(visited.contains(n)) { leaves.push_back(as_leaf(n)); return; }
+                    if(visited.contains(n))
+                    {
+                        leaves.push_back(as_leaf(n));
+                        return;
+                    }
                     visited.emplace(n, true);
 
                     auto itg = gate_by_out.find(n);
@@ -3664,7 +3824,7 @@ namespace phy_engine::verilog::digital
                 bool force_const{};
                 bool force_const_value{};
 
-                for(auto const& l : leaves)
+                for(auto const& l: leaves)
                 {
                     if(l.node == nullptr || l.base == nullptr) { continue; }
 
@@ -3675,13 +3835,23 @@ namespace phy_engine::verilog::digital
                         const_value = cv;
                         if(root.k == k2::and_gate)
                         {
-                            if(!cv) { force_const = true; force_const_value = false; break; }
+                            if(!cv)
+                            {
+                                force_const = true;
+                                force_const_value = false;
+                                break;
+                            }
                             // true leaf can be dropped
                             continue;
                         }
                         else
                         {
-                            if(cv) { force_const = true; force_const_value = true; break; }
+                            if(cv)
+                            {
+                                force_const = true;
+                                force_const_value = true;
+                                break;
+                            }
                             // false leaf can be dropped
                             continue;
                         }
@@ -3696,7 +3866,7 @@ namespace phy_engine::verilog::digital
                     if(rep == nullptr) { continue; }
                     if(!move_consumers(root.out, rep)) { continue; }
                     (void)::phy_engine::netlist::delete_model(nl, root.pos);
-                    for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    for(auto const mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                     changed = true;
                     continue;
                 }
@@ -3707,7 +3877,7 @@ namespace phy_engine::verilog::digital
                 {
                     ::std::unordered_map<::phy_engine::model::node_t*, unsigned> seen_mask{};
                     seen_mask.reserve(uniq.size() * 2u);
-                    for(auto const& kv : uniq)
+                    for(auto const& kv: uniq)
                     {
                         auto const& l = kv.second;
                         if(l.base == nullptr) { continue; }
@@ -3717,10 +3887,18 @@ namespace phy_engine::verilog::digital
                         {
                             bool const v = (root.k == k2::or_gate);
                             auto* rep = make_const_node(v);
-                            if(rep == nullptr) { did_root_rewrite = false; break; }
-                            if(!move_consumers(root.out, rep)) { did_root_rewrite = false; break; }
+                            if(rep == nullptr)
+                            {
+                                did_root_rewrite = false;
+                                break;
+                            }
+                            if(!move_consumers(root.out, rep))
+                            {
+                                did_root_rewrite = false;
+                                break;
+                            }
                             (void)::phy_engine::netlist::delete_model(nl, root.pos);
-                            for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                            for(auto const mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                             changed = true;
                             did_root_rewrite = true;
                             break;
@@ -3732,7 +3910,7 @@ namespace phy_engine::verilog::digital
                 {
                     ::std::vector<leaf> flat{};
                     flat.reserve(uniq.size());
-                    for(auto const& kv : uniq) { flat.push_back(kv.second); }
+                    for(auto const& kv: uniq) { flat.push_back(kv.second); }
 
                     // If everything dropped (e.g. AND of 1's, OR of 0's), reduce to identity constant.
                     if(flat.empty())
@@ -3742,16 +3920,19 @@ namespace phy_engine::verilog::digital
                         if(rep == nullptr) { continue; }
                         if(!move_consumers(root.out, rep)) { continue; }
                         (void)::phy_engine::netlist::delete_model(nl, root.pos);
-                        for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        for(auto const mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                         changed = true;
                         continue;
                     }
 
                     // Canonical order: sort by (base ptr, neg).
-                    ::std::sort(flat.begin(), flat.end(), [](leaf const& x, leaf const& y) noexcept {
-                        if(x.base != y.base) { return reinterpret_cast<std::uintptr_t>(x.base) < reinterpret_cast<std::uintptr_t>(y.base); }
-                        return x.neg < y.neg;
-                    });
+                    ::std::sort(flat.begin(),
+                                flat.end(),
+                                [](leaf const& x, leaf const& y) noexcept
+                                {
+                                    if(x.base != y.base) { return reinterpret_cast<std::uintptr_t>(x.base) < reinterpret_cast<std::uintptr_t>(y.base); }
+                                    return x.neg < y.neg;
+                                });
 
                     auto const old_cost = 1u + to_delete.size();
                     auto const new_cost = (flat.size() <= 1) ? 0u : static_cast<std::size_t>(flat.size() - 1);
@@ -3763,7 +3944,7 @@ namespace phy_engine::verilog::digital
                         if(rep == nullptr) { continue; }
                         if(!move_consumers(root.out, rep)) { continue; }
                         (void)::phy_engine::netlist::delete_model(nl, root.pos);
-                        for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        for(auto const mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                         changed = true;
                         continue;
                     }
@@ -3793,14 +3974,13 @@ namespace phy_engine::verilog::digital
 
                     // Delete old root + internal.
                     (void)::phy_engine::netlist::delete_model(nl, root.pos);
-                    for(auto const mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    for(auto const mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                     changed = true;
                     continue;
 
                 rollback_new:
-                    for(auto const mp : new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    for(auto const mp: new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                 }
-
             }
 
             return changed;
@@ -3838,13 +4018,13 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* a{};
                 ::phy_engine::model::node_t* b{};
             };
+
             struct key_hash
             {
-                std::size_t operator()(key const& x) const noexcept
+                std::size_t operator() (key const& x) const noexcept
                 {
-                    auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t {
-                        return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
-                    };
+                    auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
+                    { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
                     std::size_t h{};
                     h = mix(h, static_cast<std::size_t>(x.k));
                     h = mix(h, reinterpret_cast<std::size_t>(x.a));
@@ -3852,28 +4032,28 @@ namespace phy_engine::verilog::digital
                     return h;
                 }
             };
+
             struct key_eq
             {
-                bool operator()(key const& x, key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
+                bool operator() (key const& x, key const& y) const noexcept { return x.k == y.k && x.a == y.a && x.b == y.b; }
             };
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
 
             auto canon_key = [](kind k, ::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> key
             {
-                auto const commutative = (k == kind::and_gate || k == kind::or_gate || k == kind::xor_gate || k == kind::xnor_gate || k == kind::nand_gate ||
-                                          k == kind::nor_gate);
+                auto const commutative =
+                    (k == kind::and_gate || k == kind::or_gate || k == kind::xor_gate || k == kind::xnor_gate || k == kind::nand_gate || k == kind::nor_gate);
                 if(commutative && reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
                 return key{k, a, b};
             };
 
-            auto classify = [&](::phy_engine::model::model_base const& mb,
-                                ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<gate>
+            auto classify = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 auto const name = model_name_u8(mb);
@@ -3907,16 +4087,198 @@ namespace phy_engine::verilog::digital
                     else if(name == u8"NAND") { g.k = kind::nand_gate; }
                     else if(name == u8"NOR") { g.k = kind::nor_gate; }
                     else if(name == u8"IMP") { g.k = kind::imp_gate; }
-                    else { g.k = kind::nimp_gate; }
+                    else
+                    {
+                        g.k = kind::nimp_gate;
+                    }
                     return g;
                 }
 
                 return ::std::nullopt;
             };
 
-            auto move_consumers = [&](::phy_engine::model::node_t* from,
-                                      ::phy_engine::model::node_t* to,
-                                      ::phy_engine::model::pin const* from_driver_pin) noexcept -> bool
+            struct dc_group_view
+            {
+                ::std::vector<std::size_t> leaf_pos{};
+                ::std::vector<bool> allowed{};
+            };
+
+            auto build_dc_group_views = [&](::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept -> ::std::vector<dc_group_view>
+            {
+                ::std::vector<dc_group_view> views{};
+                if(dc == nullptr || dc->groups.empty()) { return views; }
+                for(auto const& g: dc->groups)
+                {
+                    if(g.nodes.empty() || g.allowed.empty() || g.nodes.size() > 16u) { continue; }
+                    ::std::vector<std::size_t> pos{};
+                    pos.reserve(g.nodes.size());
+                    bool ok{true};
+                    for(auto* n: g.nodes)
+                    {
+                        std::size_t idx = SIZE_MAX;
+                        for(std::size_t i{}; i < leaves.size(); ++i)
+                        {
+                            if(leaves[i] == n)
+                            {
+                                idx = i;
+                                break;
+                            }
+                        }
+                        if(idx == SIZE_MAX)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        pos.push_back(idx);
+                    }
+                    if(!ok) { continue; }
+                    dc_group_view view{};
+                    view.leaf_pos = ::std::move(pos);
+                    view.allowed.assign(1u << g.nodes.size(), false);
+                    for(auto const v: g.allowed)
+                    {
+                        if(v < view.allowed.size()) { view.allowed[v] = true; }
+                    }
+                    views.push_back(::std::move(view));
+                }
+                return views;
+            };
+
+            auto apply_dc_constraints = [&](::std::vector<::std::uint16_t>& dc_list,
+                                            ::std::vector<::std::uint16_t> const& on_list,
+                                            std::size_t var_count,
+                                            ::std::vector<dc_group_view> const& views) noexcept
+            {
+                if(views.empty() || var_count == 0u || var_count > 16u) { return; }
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                ::std::vector<bool> is_on{};
+                ::std::vector<bool> is_dc{};
+                is_on.assign(U, false);
+                is_dc.assign(U, false);
+                for(auto const m: on_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
+                }
+                for(auto const m: dc_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
+                }
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_on[m] || is_dc[m]) { continue; }
+                    bool dc_hit{false};
+                    for(auto const& v: views)
+                    {
+                        ::std::uint16_t sub{};
+                        for(std::size_t bi{}; bi < v.leaf_pos.size(); ++bi)
+                        {
+                            auto const lp = v.leaf_pos[bi];
+                            if(((m >> lp) & 1u) != 0u) { sub = static_cast<::std::uint16_t>(sub | (1u << bi)); }
+                        }
+                        if(sub < v.allowed.size() && !v.allowed[sub])
+                        {
+                            dc_hit = true;
+                            break;
+                        }
+                    }
+                    if(dc_hit) { is_dc[m] = true; }
+                }
+                dc_list.clear();
+                dc_list.reserve(U);
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_dc[m]) { dc_list.push_back(static_cast<::std::uint16_t>(m)); }
+                }
+            };
+
+            struct odc_condition
+            {
+                std::size_t leaf_idx{};
+                bool value{};
+            };
+
+            auto build_odc_conditions =
+                [&](::phy_engine::model::node_t* root,
+                    ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> const& leaf_index) noexcept -> ::std::vector<odc_condition>
+            {
+                ::std::vector<odc_condition> conds{};
+                if(!opt.infer_dc_from_odc || root == nullptr) { return conds; }
+                auto itc = fan.consumer_count.find(root);
+                if(itc == fan.consumer_count.end() || itc->second != 1u) { return conds; }
+                auto it = consumers.find(root);
+                if(it == consumers.end() || it->second.size() != 1u) { return conds; }
+                auto const& cg = it->second.front();
+                if(cg.other == nullptr) { return conds; }
+                auto it_leaf = leaf_index.find(cg.other);
+                if(it_leaf == leaf_index.end()) { return conds; }
+
+                bool ok{true};
+                bool val{};
+                switch(cg.k)
+                {
+                    case gkind::and_gate:
+                    case gkind::nand_gate: val = false; break;
+                    case gkind::or_gate:
+                    case gkind::nor_gate: val = true; break;
+                    case gkind::imp_gate: val = cg.root_is_in0 ? true : false; break;
+                    case gkind::nimp_gate: val = cg.root_is_in0 ? true : false; break;
+                    default: ok = false; break;
+                }
+                if(!ok) { return conds; }
+                conds.push_back(odc_condition{it_leaf->second, val});
+                return conds;
+            };
+
+            auto apply_odc_conditions = [&](::std::vector<::std::uint16_t>& on_list,
+                                            ::std::vector<::std::uint16_t>& dc_list,
+                                            std::size_t var_count,
+                                            ::std::vector<odc_condition> const& conds) noexcept
+            {
+                if(conds.empty() || var_count == 0u || var_count > 16u) { return; }
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                ::std::vector<bool> is_on{};
+                ::std::vector<bool> is_dc{};
+                is_on.assign(U, false);
+                is_dc.assign(U, false);
+                for(auto const m: on_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
+                }
+                for(auto const m: dc_list)
+                {
+                    if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
+                }
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_dc[m]) { continue; }
+                    bool dc_hit{false};
+                    for(auto const& c: conds)
+                    {
+                        if(((m >> c.leaf_idx) & 1u) == (c.value ? 1u : 0u))
+                        {
+                            dc_hit = true;
+                            break;
+                        }
+                    }
+                    if(dc_hit)
+                    {
+                        is_dc[m] = true;
+                        is_on[m] = false;
+                    }
+                }
+                on_list.clear();
+                dc_list.clear();
+                on_list.reserve(U);
+                dc_list.reserve(U);
+                for(::std::size_t m{}; m < U; ++m)
+                {
+                    if(is_on[m]) { on_list.push_back(static_cast<::std::uint16_t>(m)); }
+                    else if(is_dc[m]) { dc_list.push_back(static_cast<::std::uint16_t>(m)); }
+                }
+            };
+
+            auto move_consumers =
+                [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to, ::phy_engine::model::pin const* from_driver_pin) noexcept -> bool
             {
                 if(from == nullptr || to == nullptr || from_driver_pin == nullptr) { return false; }
                 if(from == to) { return false; }
@@ -3925,12 +4287,12 @@ namespace phy_engine::verilog::digital
 
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins)
+                for(auto* p: from->pins)
                 {
                     if(p == from_driver_pin) { continue; }
                     pins_to_move.push_back(p);
                 }
-                for(auto* p : pins_to_move)
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -3972,7 +4334,11 @@ namespace phy_engine::verilog::digital
                     }
 
                     auto& r = it->second;
-                    if(r.out == nullptr || r.out_pin == nullptr) { r = *og; continue; }
+                    if(r.out == nullptr || r.out_pin == nullptr)
+                    {
+                        r = *og;
+                        continue;
+                    }
 
                     // Prefer keeping protected outputs. If both are protected, skip.
                     bool const r_prot = is_protected(r.out);
@@ -4005,7 +4371,7 @@ namespace phy_engine::verilog::digital
         {
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -4032,9 +4398,17 @@ namespace phy_engine::verilog::digital
                         any_out = true;
                         auto* n = pv.pins[i].nodes;
                         if(n == nullptr) { continue; }
-                        if(is_protected(n)) { all_unused = false; break; }
+                        if(is_protected(n))
+                        {
+                            all_unused = false;
+                            break;
+                        }
                         auto it = fan.consumer_count.find(n);
-                        if(it != fan.consumer_count.end() && it->second != 0) { all_unused = false; break; }
+                        if(it != fan.consumer_count.end() && it->second != 0)
+                        {
+                            all_unused = false;
+                            break;
+                        }
                     }
                     if(!any_out || !all_unused) { continue; }
 
@@ -4053,9 +4427,7 @@ namespace phy_engine::verilog::digital
         };
 
         [[nodiscard]] inline std::size_t popcount16(::std::uint16_t x) noexcept
-        {
-            return static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(x)));
-        }
+        { return static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(x))); }
 
         [[nodiscard]] inline bool implicant_covers(qm_implicant const& imp, ::std::uint16_t m) noexcept
         {
@@ -4071,14 +4443,12 @@ namespace phy_engine::verilog::digital
         }
 
         [[nodiscard]] inline ::std::vector<qm_implicant>
-            qm_prime_implicants(::std::vector<::std::uint16_t> const& on,
-                                ::std::vector<::std::uint16_t> const& dc,
-                                std::size_t var_count) noexcept
+            qm_prime_implicants(::std::vector<::std::uint16_t> const& on, ::std::vector<::std::uint16_t> const& dc, std::size_t var_count) noexcept
         {
             ::std::vector<qm_implicant> current{};
             current.reserve(on.size() + dc.size());
-            for(auto const m : on) { current.push_back(qm_implicant{m, 0u, false}); }
-            for(auto const m : dc) { current.push_back(qm_implicant{m, 0u, false}); }
+            for(auto const m: on) { current.push_back(qm_implicant{m, 0u, false}); }
+            for(auto const m: dc) { current.push_back(qm_implicant{m, 0u, false}); }
 
             ::std::vector<qm_implicant> primes{};
             primes.reserve(256);
@@ -4087,7 +4457,7 @@ namespace phy_engine::verilog::digital
 
             for(;;)
             {
-                for(auto& x : current) { x.combined = false; }
+                for(auto& x: current) { x.combined = false; }
 
                 ::std::vector<qm_implicant> next{};
                 next.reserve(current.size());
@@ -4111,21 +4481,29 @@ namespace phy_engine::verilog::digital
                         current[j].combined = true;
 
                         bool dup{};
-                        for(auto const& e : next)
+                        for(auto const& e: next)
                         {
-                            if(e.value == c.value && e.mask == c.mask) { dup = true; break; }
+                            if(e.value == c.value && e.mask == c.mask)
+                            {
+                                dup = true;
+                                break;
+                            }
                         }
                         if(!dup) { next.push_back(c); }
                     }
                 }
 
-                for(auto const& a : current)
+                for(auto const& a: current)
                 {
                     if(a.combined) { continue; }
                     bool dup{};
-                    for(auto const& p : primes)
+                    for(auto const& p: primes)
                     {
-                        if(p.value == a.value && p.mask == a.mask) { dup = true; break; }
+                        if(p.value == a.value && p.mask == a.mask)
+                        {
+                            dup = true;
+                            break;
+                        }
                     }
                     if(!dup) { primes.push_back(a); }
                 }
@@ -4143,17 +4521,13 @@ namespace phy_engine::verilog::digital
             std::size_t cost{static_cast<std::size_t>(-1)};
         };
 
-        [[nodiscard]] inline std::size_t two_level_cover_cost(::std::vector<qm_implicant> const& cover,
-                                                              std::size_t var_count,
-                                                              pe_synth_options const& opt) noexcept
+        [[nodiscard]] inline std::size_t
+            two_level_cover_cost(::std::vector<qm_implicant> const& cover, std::size_t var_count, pe_synth_options const& opt) noexcept
         {
             if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count)
             {
                 std::size_t lits{};
-                for(auto const& imp : cover)
-                {
-                    lits += implicant_literals(imp, var_count);
-                }
+                for(auto const& imp: cover) { lits += implicant_literals(imp, var_count); }
                 return lits;
             }
 
@@ -4164,7 +4538,7 @@ namespace phy_engine::verilog::digital
             std::size_t terms{};
             std::size_t and_cost{};
 
-            for(auto const& imp : cover)
+            for(auto const& imp: cover)
             {
                 std::size_t cube_lits{};
                 for(std::size_t v{}; v < var_count; ++v)
@@ -4187,8 +4561,7 @@ namespace phy_engine::verilog::digital
             std::size_t or_cost{};
             if(terms >= 2) { or_cost = terms - 1u; }
 
-            return static_cast<std::size_t>(opt.two_level_weights.not_w) * not_cost +
-                   static_cast<std::size_t>(opt.two_level_weights.and_w) * and_cost +
+            return static_cast<std::size_t>(opt.two_level_weights.not_w) * not_cost + static_cast<std::size_t>(opt.two_level_weights.and_w) * and_cost +
                    static_cast<std::size_t>(opt.two_level_weights.or_w) * or_cost;
         }
 
@@ -4199,7 +4572,7 @@ namespace phy_engine::verilog::digital
         {
             ::std::vector<qm_implicant> cover{};
             cover.reserve(pick.size());
-            for(auto const idx : pick)
+            for(auto const idx: pick)
             {
                 if(idx >= primes.size()) { continue; }
                 cover.push_back(primes[idx]);
@@ -4207,13 +4580,12 @@ namespace phy_engine::verilog::digital
             return two_level_cover_cost(cover, var_count, opt);
         }
 
-        [[nodiscard]] inline bool two_level_cover_covers_all_on(::std::vector<qm_implicant> const& cover,
-                                                                ::std::vector<::std::uint16_t> const& on) noexcept
+        [[nodiscard]] inline bool two_level_cover_covers_all_on(::std::vector<qm_implicant> const& cover, ::std::vector<::std::uint16_t> const& on) noexcept
         {
-            for(auto const m : on)
+            for(auto const m: on)
             {
                 bool hit{};
-                for(auto const& c : cover)
+                for(auto const& c: cover)
                 {
                     if(implicant_covers(c, m))
                     {
@@ -4226,9 +4598,8 @@ namespace phy_engine::verilog::digital
             return true;
         }
 
-        [[nodiscard]] inline bool two_level_cover_hits_off(::std::vector<qm_implicant> const& cover,
-                                                           ::std::vector<bool> const& is_on,
-                                                           ::std::vector<bool> const& is_dc) noexcept
+        [[nodiscard]] inline bool
+            two_level_cover_hits_off(::std::vector<qm_implicant> const& cover, ::std::vector<bool> const& is_on, ::std::vector<bool> const& is_dc) noexcept
         {
             // Universe is implicit: [0, is_on.size()).
             auto const U = is_on.size();
@@ -4236,7 +4607,7 @@ namespace phy_engine::verilog::digital
             {
                 if(is_on[m] || is_dc[m]) { continue; }
                 auto const mm = static_cast<::std::uint16_t>(m);
-                for(auto const& c : cover)
+                for(auto const& c: cover)
                 {
                     if(implicant_covers(c, mm)) { return true; }
                 }
@@ -4263,16 +4634,15 @@ namespace phy_engine::verilog::digital
             ::std::uint16_t mask{};
             ::std::uint16_t value{};
         };
+
         struct cube_key_hash
         {
-            std::size_t operator()(cube_key const& k) const noexcept
-            {
-                return (static_cast<std::size_t>(k.mask) << 16) ^ static_cast<std::size_t>(k.value);
-            }
+            std::size_t operator() (cube_key const& k) const noexcept { return (static_cast<std::size_t>(k.mask) << 16) ^ static_cast<std::size_t>(k.value); }
         };
+
         struct cube_key_eq
         {
-            bool operator()(cube_key const& a, cube_key const& b) const noexcept { return a.mask == b.mask && a.value == b.value; }
+            bool operator() (cube_key const& a, cube_key const& b) const noexcept { return a.mask == b.mask && a.value == b.value; }
         };
 
         [[nodiscard]] inline cube_key to_cube_key(qm_implicant const& imp) noexcept
@@ -4281,14 +4651,10 @@ namespace phy_engine::verilog::digital
             return cube_key{imp.mask, static_cast<::std::uint16_t>(imp.value & keep)};
         }
 
-        [[nodiscard]] inline std::size_t cube_literals(qm_implicant const& imp, std::size_t var_count) noexcept
-        {
-            return implicant_literals(imp, var_count);
-        }
+        [[nodiscard]] inline std::size_t cube_literals(qm_implicant const& imp, std::size_t var_count) noexcept { return implicant_literals(imp, var_count); }
 
-        [[nodiscard]] inline std::size_t multi_output_gate_cost(::std::vector<::std::vector<qm_implicant>> const& covers,
-                                                                 std::size_t var_count,
-                                                                 pe_synth_options const& opt) noexcept
+        [[nodiscard]] inline std::size_t
+            multi_output_gate_cost(::std::vector<::std::vector<qm_implicant>> const& covers, std::size_t var_count, pe_synth_options const& opt) noexcept
         {
             if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count)
             {
@@ -4296,9 +4662,9 @@ namespace phy_engine::verilog::digital
                 ::std::unordered_map<cube_key, bool, cube_key_hash, cube_key_eq> seen{};
                 seen.reserve(256);
                 std::size_t lit{};
-                for(auto const& cv : covers)
+                for(auto const& cv: covers)
                 {
-                    for(auto const& imp : cv)
+                    for(auto const& imp: cv)
                     {
                         auto const k = to_cube_key(imp);
                         if(seen.emplace(k, true).second) { lit += cube_literals(imp, var_count); }
@@ -4315,16 +4681,13 @@ namespace phy_engine::verilog::digital
             ::std::unordered_map<cube_key, qm_implicant, cube_key_hash, cube_key_eq> uniq{};
             uniq.reserve(256);
 
-            for(auto const& cv : covers)
+            for(auto const& cv: covers)
             {
-                for(auto const& imp : cv)
-                {
-                    (void)uniq.emplace(to_cube_key(imp), imp);
-                }
+                for(auto const& imp: cv) { (void)uniq.emplace(to_cube_key(imp), imp); }
             }
 
             std::size_t and_cost{};
-            for(auto const& kv : uniq)
+            for(auto const& kv: uniq)
             {
                 auto const& imp = kv.second;
                 auto const lits = cube_literals(imp, var_count);
@@ -4339,13 +4702,12 @@ namespace phy_engine::verilog::digital
 
             std::size_t not_cost = static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(neg_used_mask)));
             std::size_t or_cost{};
-            for(auto const& cv : covers)
+            for(auto const& cv: covers)
             {
                 if(cv.size() >= 2u) { or_cost += (cv.size() - 1u); }
             }
 
-            return static_cast<std::size_t>(opt.two_level_weights.not_w) * not_cost +
-                   static_cast<std::size_t>(opt.two_level_weights.and_w) * and_cost +
+            return static_cast<std::size_t>(opt.two_level_weights.not_w) * not_cost + static_cast<std::size_t>(opt.two_level_weights.and_w) * and_cost +
                    static_cast<std::size_t>(opt.two_level_weights.or_w) * or_cost;
         }
 
@@ -4367,10 +4729,7 @@ namespace phy_engine::verilog::digital
             // Quick constant handling.
             for(std::size_t o{}; o < outputs; ++o)
             {
-                if(on_list[o].empty())
-                {
-                    sol.covers[o].clear();
-                }
+                if(on_list[o].empty()) { sol.covers[o].clear(); }
             }
 
             // Build prime implicants per output.
@@ -4390,7 +4749,7 @@ namespace phy_engine::verilog::digital
 
             for(std::size_t o{}; o < outputs; ++o)
             {
-                for(auto const& imp : primes_by_out[o])
+                for(auto const& imp: primes_by_out[o])
                 {
                     auto const k = to_cube_key(imp);
                     if(auto it = cube_to_idx.find(k); it == cube_to_idx.end())
@@ -4411,11 +4770,11 @@ namespace phy_engine::verilog::digital
             {
                 is_on_full[o].assign(full_U, false);
                 is_dc_full[o].assign(full_U, false);
-                for(auto const m : on_list[o])
+                for(auto const m: on_list[o])
                 {
                     if(static_cast<std::size_t>(m) < full_U) { is_on_full[o][static_cast<std::size_t>(m)] = true; }
                 }
-                for(auto const m : dc_list[o])
+                for(auto const m: dc_list[o])
                 {
                     if(static_cast<std::size_t>(m) < full_U) { is_dc_full[o][static_cast<std::size_t>(m)] = true; }
                 }
@@ -4428,7 +4787,7 @@ namespace phy_engine::verilog::digital
             {
                 auto const blocks = (on_list[o].size() + 63u) / 64u;
                 cov[o].resize(cubes.size());
-                for(auto& v : cov[o]) { v.assign(blocks, 0ull); }
+                for(auto& v: cov[o]) { v.assign(blocks, 0ull); }
                 for(std::size_t ci{}; ci < cubes.size(); ++ci)
                 {
                     // A cube can only be used for output `o` if it does not cover any OFF minterm for that output.
@@ -4445,10 +4804,7 @@ namespace phy_engine::verilog::digital
                     if(!valid) { continue; }
                     for(std::size_t mi{}; mi < on_list[o].size(); ++mi)
                     {
-                        if(implicant_covers(cubes[ci], on_list[o][mi]))
-                        {
-                            cov[o][ci][mi / 64u] |= (1ull << (mi % 64u));
-                        }
+                        if(implicant_covers(cubes[ci], on_list[o][mi])) { cov[o][ci][mi / 64u] |= (1ull << (mi % 64u)); }
                     }
                 }
             }
@@ -4493,7 +4849,7 @@ namespace phy_engine::verilog::digital
             {
                 for(std::size_t o{}; o < outputs; ++o)
                 {
-                    for(auto const w : uncovered[o])
+                    for(auto const w: uncovered[o])
                     {
                         if(w) { return true; }
                     }
@@ -4517,10 +4873,7 @@ namespace phy_engine::verilog::digital
                     for(std::size_t o{}; o < outputs; ++o)
                     {
                         std::size_t og{};
-                        for(std::size_t b{}; b < uncovered[o].size(); ++b)
-                        {
-                            og += popcount64(cov[o][ci][b] & uncovered[o][b]);
-                        }
+                        for(std::size_t b{}; b < uncovered[o].size(); ++b) { og += popcount64(cov[o][ci][b] & uncovered[o][b]); }
                         if(og)
                         {
                             hits[o] = true;
@@ -4594,7 +4947,7 @@ namespace phy_engine::verilog::digital
                 // Count coverage per ON minterm.
                 ::std::vector<unsigned> cnt{};
                 cnt.assign(on.size(), 0u);
-                for(auto const ci : picks)
+                for(auto const ci: picks)
                 {
                     for(std::size_t mi{}; mi < on.size(); ++mi)
                     {
@@ -4630,7 +4983,7 @@ namespace phy_engine::verilog::digital
                 }
 
                 sol.covers[o].reserve(picks.size());
-                for(auto const ci : picks) { sol.covers[o].push_back(cubes[ci]); }
+                for(auto const ci: picks) { sol.covers[o].push_back(cubes[ci]); }
             }
 
             // Validate (best-effort): cover each ON and do not hit OFF (implicit, since cubes come from primes).
@@ -4643,9 +4996,8 @@ namespace phy_engine::verilog::digital
             return sol;
         }
 
-        [[nodiscard]] inline ::std::vector<std::size_t> espresso_binate_var_order(::std::vector<::std::uint16_t> const& on,
-                                                                                  ::std::vector<::std::uint16_t> const& dc,
-                                                                                  std::size_t var_count) noexcept
+        [[nodiscard]] inline ::std::vector<std::size_t>
+            espresso_binate_var_order(::std::vector<::std::uint16_t> const& on, ::std::vector<::std::uint16_t> const& dc, std::size_t var_count) noexcept
         {
             ::std::vector<std::size_t> order{};
             order.reserve(var_count);
@@ -4658,6 +5010,7 @@ namespace phy_engine::verilog::digital
                 std::size_t c1{};
                 bool binate{};
             };
+
             ::std::vector<var_stat> stats{};
             stats.reserve(var_count);
 
@@ -4665,15 +5018,21 @@ namespace phy_engine::verilog::digital
             {
                 std::size_t c0{};
                 std::size_t c1{};
-                for(auto const m : on)
+                for(auto const m: on)
                 {
                     if((m >> v) & 1u) { ++c1; }
-                    else { ++c0; }
+                    else
+                    {
+                        ++c0;
+                    }
                 }
-                for(auto const m : dc)
+                for(auto const m: dc)
                 {
                     if((m >> v) & 1u) { ++c1; }
-                    else { ++c0; }
+                    else
+                    {
+                        ++c0;
+                    }
                 }
                 bool const binate = (c0 != 0u && c1 != 0u);
                 stats.push_back(var_stat{v, c0, c1, binate});
@@ -4681,7 +5040,8 @@ namespace phy_engine::verilog::digital
 
             ::std::sort(stats.begin(),
                         stats.end(),
-                        [](var_stat const& a, var_stat const& b) noexcept {
+                        [](var_stat const& a, var_stat const& b) noexcept
+                        {
                             if(a.binate != b.binate) { return a.binate > b.binate; }
                             auto const amin = (a.c0 < a.c1) ? a.c0 : a.c1;
                             auto const bmin = (b.c0 < b.c1) ? b.c0 : b.c1;
@@ -4695,7 +5055,7 @@ namespace phy_engine::verilog::digital
                             return a.v < b.v;
                         });
 
-            for(auto const& s : stats) { order.push_back(s.v); }
+            for(auto const& s: stats) { order.push_back(s.v); }
             return order;
         }
 
@@ -4735,11 +5095,11 @@ namespace phy_engine::verilog::digital
             ::std::vector<bool> is_dc{};
             is_on.assign(U, false);
             is_dc.assign(U, false);
-            for(auto const m : on)
+            for(auto const m: on)
             {
                 if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
             }
-            for(auto const m : dc)
+            for(auto const m: dc)
             {
                 if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
             }
@@ -4747,7 +5107,7 @@ namespace phy_engine::verilog::digital
             // Initial cover: one cube per ON minterm.
             ::std::vector<qm_implicant> cover{};
             cover.reserve(on.size());
-            for(auto const m : on) { cover.push_back(qm_implicant{m, 0u, false}); }
+            for(auto const m: on) { cover.push_back(qm_implicant{m, 0u, false}); }
 
             auto cube_hits_off = [&](qm_implicant const& c) noexcept -> bool
             {
@@ -4766,7 +5126,7 @@ namespace phy_engine::verilog::digital
                 while(changed)
                 {
                     changed = false;
-                    for(auto const v : var_order)
+                    for(auto const v: var_order)
                     {
                         if((c.mask >> v) & 1u) { continue; }
                         qm_implicant cand = c;
@@ -4788,9 +5148,9 @@ namespace phy_engine::verilog::digital
                 ::std::vector<::std::uint16_t> cnt{};
                 cnt.assign(U, 0u);
 
-                for(auto const& c : cover)
+                for(auto const& c: cover)
                 {
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(implicant_covers(c, m))
                         {
@@ -4806,7 +5166,7 @@ namespace phy_engine::verilog::digital
                     auto const c = cover[i];
                     bool redundant{true};
                     bool covers_any{};
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(!implicant_covers(c, m)) { continue; }
                         covers_any = true;
@@ -4826,7 +5186,7 @@ namespace phy_engine::verilog::digital
                     }
 
                     // Remove cube and update counts.
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(!implicant_covers(c, m)) { continue; }
                         auto& x = cnt[static_cast<std::size_t>(m)];
@@ -4841,10 +5201,13 @@ namespace phy_engine::verilog::digital
 
             auto dedupe = [&]() noexcept
             {
-                ::std::sort(cover.begin(), cover.end(), [](qm_implicant const& a, qm_implicant const& b) noexcept {
-                    if(a.mask != b.mask) { return a.mask < b.mask; }
-                    return a.value < b.value;
-                });
+                ::std::sort(cover.begin(),
+                            cover.end(),
+                            [](qm_implicant const& a, qm_implicant const& b) noexcept
+                            {
+                                if(a.mask != b.mask) { return a.mask < b.mask; }
+                                return a.value < b.value;
+                            });
                 cover.erase(::std::unique(cover.begin(),
                                           cover.end(),
                                           [](qm_implicant const& a, qm_implicant const& b) noexcept { return a.mask == b.mask && a.value == b.value; }),
@@ -4857,9 +5220,9 @@ namespace phy_engine::verilog::digital
                 // Coverage counts over ON minterms.
                 ::std::vector<::std::uint16_t> cnt{};
                 cnt.assign(U, 0u);
-                for(auto const& c : cover)
+                for(auto const& c: cover)
                 {
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(!implicant_covers(c, m)) { continue; }
                         auto& x = cnt[static_cast<std::size_t>(m)];
@@ -4867,12 +5230,12 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                for(auto& c : cover)
+                for(auto& c: cover)
                 {
                     // Essential region R: ON minterms uniquely covered by c.
                     bool has_r{};
                     ::std::uint16_t r_min{};
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(!implicant_covers(c, m)) { continue; }
                         if(cnt[static_cast<std::size_t>(m)] == 1u)
@@ -4886,7 +5249,7 @@ namespace phy_engine::verilog::digital
                     {
                         // No unique responsibility: anchor reduction to the first ON minterm covered by this cube (if any).
                         bool found{};
-                        for(auto const m : on)
+                        for(auto const m: on)
                         {
                             if(implicant_covers(c, m))
                             {
@@ -4900,7 +5263,7 @@ namespace phy_engine::verilog::digital
 
                     // Reduce: for each don't-care var, if all R minterms share the same bit, specialize to that bit.
                     // In the anchored case (single minterm), this specializes all don't-care vars, shrinking to that minterm.
-                    for(auto const v : var_order)
+                    for(auto const v: var_order)
                     {
                         auto const bit = static_cast<::std::uint16_t>(1u << v);
                         if(((c.mask >> v) & 1u) == 0u) { continue; }  // already specified
@@ -4910,12 +5273,15 @@ namespace phy_engine::verilog::digital
 
                         if(has_r)
                         {
-                            for(auto const m : on)
+                            for(auto const m: on)
                             {
                                 if(!implicant_covers(c, m)) { continue; }
                                 if(cnt[static_cast<std::size_t>(m)] != 1u) { continue; }
                                 if(m & bit) { all0 = false; }
-                                else { all1 = false; }
+                                else
+                                {
+                                    all1 = false;
+                                }
                                 if(!all0 && !all1) { break; }
                             }
                         }
@@ -4923,14 +5289,20 @@ namespace phy_engine::verilog::digital
                         {
                             // anchored single minterm
                             if(r_min & bit) { all0 = false; }
-                            else { all1 = false; }
+                            else
+                            {
+                                all1 = false;
+                            }
                         }
 
                         if(all0 != all1)  // exactly one is true
                         {
                             c.mask = static_cast<::std::uint16_t>(c.mask & static_cast<::std::uint16_t>(~bit));
                             if(all1) { c.value = static_cast<::std::uint16_t>(c.value | bit); }
-                            else { c.value = static_cast<::std::uint16_t>(c.value & static_cast<::std::uint16_t>(~bit)); }
+                            else
+                            {
+                                c.value = static_cast<::std::uint16_t>(c.value & static_cast<::std::uint16_t>(~bit));
+                            }
                         }
                     }
                 }
@@ -4941,23 +5313,21 @@ namespace phy_engine::verilog::digital
                 // Heuristic ordering: expand cubes that already cover more ON minterms first.
                 ::std::vector<::std::pair<std::size_t, qm_implicant>> ranked{};
                 ranked.reserve(cover.size());
-                for(auto const& c : cover)
+                for(auto const& c: cover)
                 {
                     std::size_t cnt{};
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(implicant_covers(c, m)) { ++cnt; }
                     }
                     ranked.push_back({cnt, c});
                 }
-                ::std::sort(ranked.begin(),
-                            ranked.end(),
-                            [](auto const& a, auto const& b) noexcept { return a.first > b.first; });
+                ::std::sort(ranked.begin(), ranked.end(), [](auto const& a, auto const& b) noexcept { return a.first > b.first; });
                 cover.clear();
                 cover.reserve(ranked.size());
-                for(auto& rc : ranked) { cover.push_back(rc.second); }
+                for(auto& rc: ranked) { cover.push_back(rc.second); }
 
-                for(auto& c : cover) { c = expand_one(c); }
+                for(auto& c: cover) { c = expand_one(c); }
                 dedupe();
                 (void)irredundant();
             };
@@ -5013,7 +5383,7 @@ namespace phy_engine::verilog::digital
 
                     // Pick an anchor ON minterm covered by this cube; shrink to that minterm.
                     std::optional<std::uint16_t> anchor{};
-                    for(auto const m : on)
+                    for(auto const m: on)
                     {
                         if(implicant_covers(cover[idx], m))
                         {
@@ -5064,11 +5434,11 @@ namespace phy_engine::verilog::digital
             ::std::vector<bool> is_dc{};
             is_on.assign(U, false);
             is_dc.assign(U, false);
-            for(auto const m : on)
+            for(auto const m: on)
             {
                 if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
             }
-            for(auto const m : dc)
+            for(auto const m: dc)
             {
                 if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
             }
@@ -5087,7 +5457,10 @@ namespace phy_engine::verilog::digital
 
             std::size_t penalty{};
             if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count) { penalty = 1u; }
-            else { penalty = static_cast<std::size_t>(opt.two_level_weights.not_w); }
+            else
+            {
+                penalty = static_cast<std::size_t>(opt.two_level_weights.not_w);
+            }
 
             if(comp.cost + penalty < best.cost)
             {
@@ -5147,14 +5520,22 @@ namespace phy_engine::verilog::digital
                     auto const& cand = covers[mi];
                     std::size_t alive{};
                     std::size_t last{};
-                    for(auto const pi : cand)
+                    for(auto const pi: cand)
                     {
                         bool already{};
-                        for(auto const ppi : picked)
+                        for(auto const ppi: picked)
                         {
-                            if(ppi == pi) { already = true; break; }
+                            if(ppi == pi)
+                            {
+                                already = true;
+                                break;
+                            }
                         }
-                        if(already) { alive = 2; break; }  // already covered by picked
+                        if(already)
+                        {
+                            alive = 2;
+                            break;
+                        }  // already covered by picked
                         ++alive;
                         last = pi;
                         if(alive > 1) { break; }
@@ -5177,8 +5558,9 @@ namespace phy_engine::verilog::digital
             best.pick = picked;
             best.cost = base_cost;
 
-            auto all_covered = [&]() noexcept -> bool {
-                for(auto const v : covered)
+            auto all_covered = [&]() noexcept -> bool
+            {
+                for(auto const v: covered)
                 {
                     if(!v) { return false; }
                 }
@@ -5189,7 +5571,7 @@ namespace phy_engine::verilog::digital
             // Map: prime index -> whether selected.
             ::std::vector<bool> selected{};
             selected.resize(primes.size());
-            for(auto const pi : picked)
+            for(auto const pi: picked)
             {
                 if(pi < selected.size()) { selected[pi] = true; }
             }
@@ -5226,7 +5608,7 @@ namespace phy_engine::verilog::digital
                 }
 
                 auto const& options = covers[next_m];
-                for(auto const pi : options)
+                for(auto const pi: options)
                 {
                     if(pi >= primes.size()) { continue; }
                     bool newly_added{false};
@@ -5251,7 +5633,7 @@ namespace phy_engine::verilog::digital
 
                     self(self, cov, sel, pick);
 
-                    for(auto const mj : flipped) { cov[mj] = false; }
+                    for(auto const mj: flipped) { cov[mj] = false; }
                     if(newly_added)
                     {
                         pick.pop_back();
@@ -5314,7 +5696,7 @@ namespace phy_engine::verilog::digital
                     if(cnt == 1)
                     {
                         bool already{};
-                        for(auto const p : sol.pick)
+                        for(auto const p: sol.pick)
                         {
                             if(p == last)
                             {
@@ -5362,14 +5744,14 @@ namespace phy_engine::verilog::digital
 
             constexpr std::size_t max_terms = 16384;
 
-            for(auto const m : remaining)
+            for(auto const m: remaining)
             {
                 std::uint64_t clause{};
                 for(std::size_t pi{}; pi < primes.size(); ++pi)
                 {
                     // skip already-picked primes
                     bool already{};
-                    for(auto const p : sol.pick)
+                    for(auto const p: sol.pick)
                     {
                         if(p == pi)
                         {
@@ -5388,7 +5770,7 @@ namespace phy_engine::verilog::digital
 
                 ::std::vector<std::uint64_t> next{};
                 next.reserve(terms.size() * 4u + 8u);
-                for(auto const t : terms)
+                for(auto const t: terms)
                 {
                     auto c = clause;
                     while(c)
@@ -5429,7 +5811,11 @@ namespace phy_engine::verilog::digital
                         }
                         else if((a & b) == b)
                         {
-                            if(cost[j] <= cost[i]) { drop[i] = true; break; }
+                            if(cost[j] <= cost[i])
+                            {
+                                drop[i] = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -5452,7 +5838,7 @@ namespace phy_engine::verilog::digital
             // Choose best term.
             std::uint64_t best_bits{};
             std::size_t best_cost{static_cast<std::size_t>(-1)};
-            for(auto const t : terms)
+            for(auto const t: terms)
             {
                 auto const c = bit_cost(t);
                 if(c < best_cost)
@@ -5489,7 +5875,7 @@ namespace phy_engine::verilog::digital
             auto const blocks = (on.size() + 63u) / 64u;
             ::std::vector<::std::vector<::std::uint64_t>> cov{};
             cov.resize(primes.size());
-            for(auto& v : cov) { v.assign(blocks, 0ull); }
+            for(auto& v: cov) { v.assign(blocks, 0ull); }
 
             ::std::vector<::std::size_t> prime_cost{};
             prime_cost.resize(primes.size());
@@ -5499,10 +5885,7 @@ namespace phy_engine::verilog::digital
                 prime_cost[pi] = qm_cover_cost(primes, ::std::vector<std::size_t>{pi}, var_count, opt);
                 for(std::size_t mi{}; mi < on.size(); ++mi)
                 {
-                    if(implicant_covers(primes[pi], on[mi]))
-                    {
-                        cov[pi][mi / 64u] |= (1ull << (mi % 64u));
-                    }
+                    if(implicant_covers(primes[pi], on[mi])) { cov[pi][mi / 64u] |= (1ull << (mi % 64u)); }
                 }
             }
 
@@ -5562,7 +5945,7 @@ namespace phy_engine::verilog::digital
 
             auto any_uncovered = [&]() noexcept -> bool
             {
-                for(auto const w : uncovered)
+                for(auto const w: uncovered)
                 {
                     if(w) { return true; }
                 }
@@ -5581,10 +5964,7 @@ namespace phy_engine::verilog::digital
                     if(picked[pi]) { continue; }
 
                     std::size_t gain{};
-                    for(std::size_t b{}; b < blocks; ++b)
-                    {
-                        gain += popcount64(cov[pi][b] & uncovered[b]);
-                    }
+                    for(std::size_t b{}; b < blocks; ++b) { gain += popcount64(cov[pi][b] & uncovered[b]); }
                     if(gain == 0) { continue; }
 
                     auto const cost = prime_cost[pi];
@@ -5613,7 +5993,8 @@ namespace phy_engine::verilog::digital
 
         [[nodiscard]] inline bool optimize_qm_two_level_minimize_in_pe_netlist(::phy_engine::netlist::netlist& nl,
                                                                                ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
-                                                                               pe_synth_options const& opt) noexcept
+                                                                               pe_synth_options const& opt,
+                                                                               dc_constraints const* dc = nullptr) noexcept
         {
             // Two-level minimization on small binary cones (exclusive fanout):
             // - Quine–McCluskey prime implicants + exact cover (very small) / greedy cover (moderate)
@@ -5626,7 +6007,7 @@ namespace phy_engine::verilog::digital
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -5643,6 +6024,7 @@ namespace phy_engine::verilog::digital
                 imp_gate,
                 nimp_gate,
             };
+
             struct gate
             {
                 gkind k{};
@@ -5652,11 +6034,17 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::model::node_t* out{};
             };
 
+            struct consumer_gate
+            {
+                gkind k{};
+                ::phy_engine::model::node_t* other{};
+                bool root_is_in0{};
+            };
+
             ::std::unordered_map<::phy_engine::model::node_t*, gate> gate_by_out{};
             gate_by_out.reserve(1 << 14);
 
-            auto classify = [&](::phy_engine::model::model_base const& mb,
-                                ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<gate>
+            auto classify = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<gate>
             {
                 if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
                 auto const name = model_name_u8(mb);
@@ -5673,8 +6061,8 @@ namespace phy_engine::verilog::digital
                     return g;
                 }
 
-                if(name == u8"AND" || name == u8"OR" || name == u8"XOR" || name == u8"XNOR" || name == u8"NAND" || name == u8"NOR" ||
-                   name == u8"IMP" || name == u8"NIMP")
+                if(name == u8"AND" || name == u8"OR" || name == u8"XOR" || name == u8"XNOR" || name == u8"NAND" || name == u8"NOR" || name == u8"IMP" ||
+                   name == u8"NIMP")
                 {
                     if(pv.size != 3) { return ::std::nullopt; }
                     g.in0 = pv.pins[0].nodes;
@@ -5687,7 +6075,10 @@ namespace phy_engine::verilog::digital
                     else if(name == u8"NAND") { g.k = gkind::nand_gate; }
                     else if(name == u8"NOR") { g.k = gkind::nor_gate; }
                     else if(name == u8"IMP") { g.k = gkind::imp_gate; }
-                    else { g.k = gkind::nimp_gate; }
+                    else
+                    {
+                        g.k = gkind::nimp_gate;
+                    }
                     return g;
                 }
 
@@ -5704,6 +6095,15 @@ namespace phy_engine::verilog::digital
                     if(!og || og->out == nullptr) { continue; }
                     gate_by_out.emplace(og->out, *og);
                 }
+            }
+
+            ::std::unordered_map<::phy_engine::model::node_t*, ::std::vector<consumer_gate>> consumers{};
+            consumers.reserve(gate_by_out.size() * 2u + 1u);
+            for(auto const& kv: gate_by_out)
+            {
+                auto const& g = kv.second;
+                if(g.in0 != nullptr) { consumers[g.in0].push_back(consumer_gate{g.k, g.in1, true}); }
+                if(g.k != gkind::not_gate && g.in1 != nullptr) { consumers[g.in1].push_back(consumer_gate{g.k, g.in0, false}); }
             }
 
             auto eval_gate = [&](auto&& self,
@@ -5755,10 +6155,7 @@ namespace phy_engine::verilog::digital
                 if(m == nullptr) { return nullptr; }
                 auto& out_ref = ::phy_engine::netlist::create_node(nl);
                 auto* out = __builtin_addressof(out_ref);
-                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *in) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *out))
-                {
-                    return nullptr;
-                }
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *in) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *out)) { return nullptr; }
                 return out;
             };
             auto make_and = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
@@ -5806,8 +6203,8 @@ namespace phy_engine::verilog::digital
                 if(is_protected(from)) { return false; }
                 ::std::vector<::phy_engine::model::pin*> pins_to_move{};
                 pins_to_move.reserve(from->pins.size());
-                for(auto* p : from->pins) { pins_to_move.push_back(p); }
-                for(auto* p : pins_to_move)
+                for(auto* p: from->pins) { pins_to_move.push_back(p); }
+                for(auto* p: pins_to_move)
                 {
                     from->pins.erase(p);
                     p->nodes = to;
@@ -5821,7 +6218,7 @@ namespace phy_engine::verilog::digital
             // Collect candidate roots from current snapshot (avoid iterator invalidation).
             ::std::vector<::phy_engine::model::node_t*> roots{};
             roots.reserve(gate_by_out.size());
-            for(auto const& kv : gate_by_out) { roots.push_back(kv.first); }
+            for(auto const& kv: gate_by_out) { roots.push_back(kv.first); }
 
             // Multi-output sharing (bounded): for protected output nodes that share the same leaf set, choose covers jointly to
             // encourage shared product terms (beyond per-output independent minimization).
@@ -5836,6 +6233,7 @@ namespace phy_engine::verilog::digital
                     ::std::vector<::std::uint16_t> on{};
                     ::std::vector<::std::uint16_t> dc{};
                 };
+
                 struct group
                 {
                     ::std::vector<::phy_engine::model::node_t*> leaves{};
@@ -5844,11 +6242,9 @@ namespace phy_engine::verilog::digital
 
                 auto leaves_hash = [&](::std::vector<::phy_engine::model::node_t*> const& v) noexcept -> std::size_t
                 {
-                    auto mix = [](std::size_t h, std::size_t x) noexcept -> std::size_t {
-                        return (h ^ (x + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2)));
-                    };
+                    auto mix = [](std::size_t h, std::size_t x) noexcept -> std::size_t { return (h ^ (x + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
                     std::size_t h{};
-                    for(auto* p : v) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
+                    for(auto* p: v) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
                     return h;
                 };
 
@@ -5861,7 +6257,7 @@ namespace phy_engine::verilog::digital
                 {
                     auto const h = leaves_hash(leaves);
                     auto& ids = hash_to_groups[h];
-                    for(auto const gi : ids)
+                    for(auto const gi: ids)
                     {
                         if(gi >= groups.size()) { continue; }
                         if(groups[gi].leaves == leaves) { return groups[gi]; }
@@ -5905,7 +6301,11 @@ namespace phy_engine::verilog::digital
                         {
                             if(!leaf_seen.contains(n))
                             {
-                                if(out.leaves.size() >= max_vars) { ok = false; return; }
+                                if(out.leaves.size() >= max_vars)
+                                {
+                                    ok = false;
+                                    return;
+                                }
                                 leaf_seen.emplace(n, true);
                                 out.leaves.push_back(n);
                             }
@@ -5915,14 +6315,30 @@ namespace phy_engine::verilog::digital
                         auto const& g = itg->second;
                         if(n != root)
                         {
-                            if(is_protected(n)) { ok = false; return; }
+                            if(is_protected(n))
+                            {
+                                ok = false;
+                                return;
+                            }
                             auto itc = fan.consumer_count.find(n);
-                            if(itc == fan.consumer_count.end() || itc->second != 1) { ok = false; return; }
+                            if(itc == fan.consumer_count.end() || itc->second != 1)
+                            {
+                                ok = false;
+                                return;
+                            }
                             auto itd = fan.driver_count.find(n);
-                            if(itd == fan.driver_count.end() || itd->second != 1) { ok = false; return; }
+                            if(itd == fan.driver_count.end() || itd->second != 1)
+                            {
+                                ok = false;
+                                return;
+                            }
                         }
 
-                        if(out.to_delete.size() >= max_gates) { ok = false; return; }
+                        if(out.to_delete.size() >= max_gates)
+                        {
+                            ok = false;
+                            return;
+                        }
                         out.to_delete.push_back(g.pos);
 
                         self(self, g.in0);
@@ -5934,9 +6350,9 @@ namespace phy_engine::verilog::digital
                     if(out.leaves.empty()) { return false; }
 
                     // Canonical leaf order for consistent variable indexing across outputs.
-                    ::std::sort(out.leaves.begin(), out.leaves.end(), [](auto* a, auto* b) noexcept {
-                        return reinterpret_cast<std::uintptr_t>(a) < reinterpret_cast<std::uintptr_t>(b);
-                    });
+                    ::std::sort(out.leaves.begin(),
+                                out.leaves.end(),
+                                [](auto* a, auto* b) noexcept { return reinterpret_cast<std::uintptr_t>(a) < reinterpret_cast<std::uintptr_t>(b); });
 
                     auto const var_count = out.leaves.size();
                     if(var_count == 0 || var_count > 16) { return false; }
@@ -5949,8 +6365,9 @@ namespace phy_engine::verilog::digital
                         for(std::size_t i{}; i < var_count; ++i)
                         {
                             auto const bit = ((m >> i) & 1u) != 0;
-                            leaf_val.emplace(out.leaves[i], bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                                : ::phy_engine::model::digital_node_statement_t::false_state);
+                            leaf_val.emplace(out.leaves[i],
+                                             bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                 : ::phy_engine::model::digital_node_statement_t::false_state);
                         }
                         ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
                         memo.reserve(out.to_delete.size() * 2u + 8u);
@@ -5959,30 +6376,39 @@ namespace phy_engine::verilog::digital
                         else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
                         else
                         {
-                            if(opt.assume_binary_inputs) { out.dc.push_back(m); }
-                            else { return false; }
+                            if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { out.dc.push_back(m); }
+                            else
+                            {
+                                return false;
+                            }
                         }
+                    }
+
+                    if(opt.infer_dc_from_fsm)
+                    {
+                        auto const views = build_dc_group_views(out.leaves);
+                        if(!views.empty()) { apply_dc_constraints(out.dc, out.on, out.leaves.size(), views); }
                     }
 
                     // Normalize deletion list and avoid duplicates.
                     ::std::sort(out.to_delete.begin(),
                                 out.to_delete.end(),
-                                [](auto const& a, auto const& b) noexcept {
+                                [](auto const& a, auto const& b) noexcept
+                                {
                                     if(a.chunk_pos != b.chunk_pos) { return a.chunk_pos > b.chunk_pos; }
                                     return a.vec_pos > b.vec_pos;
                                 });
                     out.to_delete.erase(::std::unique(out.to_delete.begin(),
-                                                     out.to_delete.end(),
-                                                     [](auto const& a, auto const& b) noexcept {
-                                                         return a.chunk_pos == b.chunk_pos && a.vec_pos == b.vec_pos;
-                                                     }),
+                                                      out.to_delete.end(),
+                                                      [](auto const& a, auto const& b) noexcept
+                                                      { return a.chunk_pos == b.chunk_pos && a.vec_pos == b.vec_pos; }),
                                         out.to_delete.end());
 
                     return true;
                 };
 
                 // Collect candidate protected cones into groups by leaf-set.
-                for(auto* root : roots)
+                for(auto* root: roots)
                 {
                     cone c{};
                     if(!collect_cone(root, c)) { continue; }
@@ -5995,30 +6421,25 @@ namespace phy_engine::verilog::digital
                                              ::std::vector<::std::uint16_t> const& dc,
                                              std::size_t var_count) noexcept -> ::std::vector<qm_implicant>
                 {
-                    if(on.empty())
-                    {
-                        return {};
-                    }
+                    if(on.empty()) { return {}; }
                     if(on.size() == (1u << var_count))
                     {
-                        return {qm_implicant{0u, static_cast<::std::uint16_t>((var_count >= 16) ? 0xFFFFu : ((1u << var_count) - 1u)), false}};
+                        return {
+                            qm_implicant{0u, static_cast<::std::uint16_t>((var_count >= 16) ? 0xFFFFu : ((1u << var_count) - 1u)), false}
+                        };
                     }
 
                     auto const primes = qm_prime_implicants(on, dc, var_count);
                     if(primes.empty()) { return {}; }
                     qm_solution qm_sol{};
-                    if(var_count <= exact_vars)
-                    {
-                        qm_sol = qm_exact_minimum_cover(primes, on, var_count, opt);
-                    }
+                    if(var_count <= exact_vars) { qm_sol = qm_exact_minimum_cover(primes, on, var_count, opt); }
                     else
                     {
                         qm_sol = qm_greedy_cover(primes, on, var_count, opt);
                         if(primes.size() <= 64u && on.size() <= 64u)
                         {
                             auto const pet = qm_petrick_minimum_cover(primes, on, var_count, opt);
-                            if(pet.cost != static_cast<std::size_t>(-1) &&
-                               (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
+                            if(pet.cost != static_cast<std::size_t>(-1) && (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
                             {
                                 qm_sol = pet;
                             }
@@ -6028,7 +6449,7 @@ namespace phy_engine::verilog::digital
 
                     ::std::vector<qm_implicant> qm_cover{};
                     qm_cover.reserve(qm_sol.pick.size());
-                    for(auto const idx : qm_sol.pick)
+                    for(auto const idx: qm_sol.pick)
                     {
                         if(idx < primes.size()) { qm_cover.push_back(primes[idx]); }
                     }
@@ -6042,7 +6463,7 @@ namespace phy_engine::verilog::digital
                     return qm_cover;
                 };
 
-                for(auto& grp : groups)
+                for(auto& grp: groups)
                 {
                     if(grp.cones.size() < 2u) { continue; }
                     auto const var_count = grp.leaves.size();
@@ -6052,7 +6473,7 @@ namespace phy_engine::verilog::digital
                     ::std::vector<::std::vector<::std::uint16_t>> dc_list{};
                     on_list.reserve(grp.cones.size());
                     dc_list.reserve(grp.cones.size());
-                    for(auto const& c : grp.cones)
+                    for(auto const& c: grp.cones)
                     {
                         on_list.push_back(c.on);
                         dc_list.push_back(c.dc);
@@ -6090,12 +6511,11 @@ namespace phy_engine::verilog::digital
                         std::size_t v{};
                         bool neg{};
                     };
+
                     constexpr std::size_t max_shared_literals = 3u;
                     auto const var_mask = static_cast<std::uint16_t>((var_count >= 16) ? 0xFFFFu : ((1u << var_count) - 1u));
                     auto popcount16 = [](std::uint16_t x) noexcept -> std::size_t
-                    {
-                        return static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(x)));
-                    };
+                    { return static_cast<std::size_t>(__builtin_popcount(static_cast<unsigned>(x))); };
 
                     auto cube_lits = [&](qm_implicant const& imp) noexcept -> ::std::vector<lit>
                     {
@@ -6108,7 +6528,8 @@ namespace phy_engine::verilog::digital
                         }
                         ::std::sort(lits.begin(),
                                     lits.end(),
-                                    [](lit const& a, lit const& b) noexcept {
+                                    [](lit const& a, lit const& b) noexcept
+                                    {
                                         if(a.v != b.v) { return a.v < b.v; }
                                         return a.neg < b.neg;
                                     });
@@ -6117,12 +6538,9 @@ namespace phy_engine::verilog::digital
 
                     ::std::unordered_map<cube_key, qm_implicant, cube_key_hash, cube_key_eq> uniq_cubes{};
                     uniq_cubes.reserve(256);
-                    for(auto const& cv : chosen)
+                    for(auto const& cv: chosen)
                     {
-                        for(auto const& imp : cv)
-                        {
-                            (void)uniq_cubes.emplace(to_cube_key(imp), imp);
-                        }
+                        for(auto const& imp: cv) { (void)uniq_cubes.emplace(to_cube_key(imp), imp); }
                     }
 
                     ::std::unordered_map<cube_key, std::size_t, cube_key_hash, cube_key_eq> subcube_count{};
@@ -6140,7 +6558,7 @@ namespace phy_engine::verilog::digital
                         ++subcube_count[cube_key{mask, value}];
                     };
 
-                    for(auto const& kv : uniq_cubes)
+                    for(auto const& kv: uniq_cubes)
                     {
                         auto const& imp = kv.second;
                         auto lits = cube_lits(imp);
@@ -6173,7 +6591,7 @@ namespace phy_engine::verilog::digital
                     std::size_t best_gain{};
                     std::size_t best_cnt{};
                     std::size_t best_size{};
-                    for(auto const& kv : subcube_count)
+                    for(auto const& kv: subcube_count)
                     {
                         auto const cnt = kv.second;
                         if(cnt < 2u) { continue; }
@@ -6182,10 +6600,7 @@ namespace phy_engine::verilog::digital
                         if(size < 2u || size > max_shared_literals) { continue; }
 
                         std::size_t gain{};
-                        if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count)
-                        {
-                            gain = (cnt - 1u) * size;
-                        }
+                        if(opt.two_level_cost == pe_synth_options::two_level_cost_model::literal_count) { gain = (cnt - 1u) * size; }
                         else
                         {
                             gain = (cnt - 1u) * (size - 1u) * static_cast<std::size_t>(opt.two_level_weights.and_w);
@@ -6200,21 +6615,18 @@ namespace phy_engine::verilog::digital
                     }
 
                     bool use_shared_subcube = (best_gain > 0u);
-                    if(use_shared_subcube)
-                    {
-                        chosen_cost = (chosen_cost > best_gain) ? (chosen_cost - best_gain) : 0u;
-                    }
+                    if(use_shared_subcube) { chosen_cost = (chosen_cost > best_gain) ? (chosen_cost - best_gain) : 0u; }
 
                     // Include the required YES buffers for protected roots in the improvement check.
                     std::size_t old_models{};
-                    for(auto const& c : grp.cones) { old_models += c.to_delete.size(); }
+                    for(auto const& c: grp.cones) { old_models += c.to_delete.size(); }
                     auto const est_new_models = chosen_cost + grp.cones.size();  // +YES per output root
                     if(est_new_models >= old_models) { continue; }
 
                     // Delete old cones.
-                    for(auto const& c : grp.cones)
+                    for(auto const& c: grp.cones)
                     {
-                        for(auto const& mp : c.to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        for(auto const& mp: c.to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
                     }
 
                     // Shared caches across outputs in the group.
@@ -6260,7 +6672,10 @@ namespace phy_engine::verilog::digital
                             auto* lit = bit_is_1 ? grp.leaves[v] : ensure_neg(v);
                             if(lit == nullptr) { return nullptr; }
                             if(term == nullptr) { term = lit; }
-                            else { term = make_and(term, lit); }
+                            else
+                            {
+                                term = make_and(term, lit);
+                            }
                             if(term == nullptr) { return nullptr; }
                         }
                         shared_node = term;
@@ -6291,7 +6706,10 @@ namespace phy_engine::verilog::digital
                             if(lit == nullptr) { return nullptr; }
                             ++lits;
                             if(term == nullptr) { term = lit; }
-                            else { term = make_and(term, lit); }
+                            else
+                            {
+                                term = make_and(term, lit);
+                            }
                             if(term == nullptr) { return nullptr; }
                         }
                         if(lits == 0 && !used_shared) { term = const1; }
@@ -6303,18 +6721,12 @@ namespace phy_engine::verilog::digital
                     auto build_cover_to = [&](::std::vector<qm_implicant> const& cover, ::phy_engine::model::node_t* root) noexcept -> bool
                     {
                         if(root == nullptr) { return false; }
-                        if(cover.empty())
-                        {
-                            return make_yes(const0, root);
-                        }
-                        if(cover.size() == 1u && cube_literals(cover[0], var_count) == 0u)
-                        {
-                            return make_yes(const1, root);
-                        }
+                        if(cover.empty()) { return make_yes(const0, root); }
+                        if(cover.size() == 1u && cube_literals(cover[0], var_count) == 0u) { return make_yes(const1, root); }
 
                         ::std::vector<::phy_engine::model::node_t*> terms{};
                         terms.reserve(cover.size());
-                        for(auto const& imp : cover)
+                        for(auto const& imp: cover)
                         {
                             auto* t = build_term(imp);
                             if(t == nullptr) { return false; }
@@ -6331,16 +6743,13 @@ namespace phy_engine::verilog::digital
                         return make_yes(out, root);
                     };
 
-                    for(std::size_t oi{}; oi < grp.cones.size() && oi < chosen.size(); ++oi)
-                    {
-                        (void)build_cover_to(chosen[oi], grp.cones[oi].root);
-                    }
+                    for(std::size_t oi{}; oi < grp.cones.size() && oi < chosen.size(); ++oi) { (void)build_cover_to(chosen[oi], grp.cones[oi].root); }
 
                     changed = true;
                 }
             }
 
-            for(auto* root : roots)
+            for(auto* root: roots)
             {
                 if(root == nullptr) { continue; }
                 auto it_drv = fan.driver_count.find(root);
@@ -6355,8 +6764,9 @@ namespace phy_engine::verilog::digital
                     if(mb == nullptr || mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
                     auto const nm = model_name_u8(*mb);
                     if((g.k == gkind::not_gate && nm != u8"NOT") || (g.k == gkind::and_gate && nm != u8"AND") || (g.k == gkind::or_gate && nm != u8"OR") ||
-                       (g.k == gkind::xor_gate && nm != u8"XOR") || (g.k == gkind::xnor_gate && nm != u8"XNOR") || (g.k == gkind::nand_gate && nm != u8"NAND") ||
-                       (g.k == gkind::nor_gate && nm != u8"NOR") || (g.k == gkind::imp_gate && nm != u8"IMP") || (g.k == gkind::nimp_gate && nm != u8"NIMP"))
+                       (g.k == gkind::xor_gate && nm != u8"XOR") || (g.k == gkind::xnor_gate && nm != u8"XNOR") ||
+                       (g.k == gkind::nand_gate && nm != u8"NAND") || (g.k == gkind::nor_gate && nm != u8"NOR") || (g.k == gkind::imp_gate && nm != u8"IMP") ||
+                       (g.k == gkind::nimp_gate && nm != u8"NIMP"))
                     {
                         continue;
                     }
@@ -6384,7 +6794,11 @@ namespace phy_engine::verilog::digital
                     {
                         if(!leaf_index.contains(n))
                         {
-                            if(leaves.size() >= max_vars) { ok = false; return; }
+                            if(leaves.size() >= max_vars)
+                            {
+                                ok = false;
+                                return;
+                            }
                             leaf_index.emplace(n, leaves.size());
                             leaves.push_back(n);
                         }
@@ -6394,14 +6808,30 @@ namespace phy_engine::verilog::digital
                     auto const& g = itg->second;
                     if(n != root)
                     {
-                        if(is_protected(n)) { ok = false; return; }
+                        if(is_protected(n))
+                        {
+                            ok = false;
+                            return;
+                        }
                         auto itc = fan.consumer_count.find(n);
-                        if(itc == fan.consumer_count.end() || itc->second != 1) { ok = false; return; }
+                        if(itc == fan.consumer_count.end() || itc->second != 1)
+                        {
+                            ok = false;
+                            return;
+                        }
                         auto itd = fan.driver_count.find(n);
-                        if(itd == fan.driver_count.end() || itd->second != 1) { ok = false; return; }
+                        if(itd == fan.driver_count.end() || itd->second != 1)
+                        {
+                            ok = false;
+                            return;
+                        }
                     }
 
-                    if(to_delete.size() >= max_gates) { ok = false; return; }
+                    if(to_delete.size() >= max_gates)
+                    {
+                        ok = false;
+                        return;
+                    }
                     to_delete.push_back(g.pos);
 
                     self(self, g.in0);
@@ -6411,6 +6841,7 @@ namespace phy_engine::verilog::digital
                 dfs(dfs, root);
                 if(!ok) { continue; }
                 if(leaves.empty()) { continue; }
+                auto const odc_conditions = build_odc_conditions(root, leaf_index);
 
                 // Build ON/DC sets by truth-table enumeration on leaf vars (binary only).
                 ::std::vector<::std::uint16_t> on{};
@@ -6424,8 +6855,9 @@ namespace phy_engine::verilog::digital
                     for(std::size_t i{}; i < leaves.size(); ++i)
                     {
                         auto const bit = ((m >> i) & 1u) != 0;
-                        leaf_val.emplace(leaves[i], bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                        : ::phy_engine::model::digital_node_statement_t::false_state);
+                        leaf_val.emplace(leaves[i],
+                                         bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                             : ::phy_engine::model::digital_node_statement_t::false_state);
                     }
                     ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
                     memo.reserve(to_delete.size() * 2u + 8u);
@@ -6436,27 +6868,34 @@ namespace phy_engine::verilog::digital
                     {
                         // Conservative: treat X/Z as don't-care only if user opted out of X-propagation.
                         // (This is a best-effort DC-set exploitation.)
-                        if(opt.assume_binary_inputs) { dc.push_back(m); }
-                        else { ok = false; break; }
+                        if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { dc.push_back(m); }
+                        else
+                        {
+                            ok = false;
+                            break;
+                        }
                     }
                 }
                 if(!ok) { continue; }
 
+                if(opt.infer_dc_from_fsm)
+                {
+                    auto const views = build_dc_group_views(leaves);
+                    if(!views.empty()) { apply_dc_constraints(dc, on, leaves.size(), views); }
+                }
+                if(!odc_conditions.empty()) { apply_odc_conditions(on, dc, leaves.size(), odc_conditions); }
+
                 auto const primes = qm_prime_implicants(on, dc, leaves.size());
                 if(primes.size() > max_primes) { continue; }
                 qm_solution qm_sol{};
-                if(leaves.size() <= exact_vars)
-                {
-                    qm_sol = qm_exact_minimum_cover(primes, on, leaves.size(), opt);
-                }
+                if(leaves.size() <= exact_vars) { qm_sol = qm_exact_minimum_cover(primes, on, leaves.size(), opt); }
                 else
                 {
                     qm_sol = qm_greedy_cover(primes, on, leaves.size(), opt);
                     if(primes.size() <= 64u && on.size() <= 64u)
                     {
                         auto const pet = qm_petrick_minimum_cover(primes, on, leaves.size(), opt);
-                        if(pet.cost != static_cast<std::size_t>(-1) &&
-                           (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
+                        if(pet.cost != static_cast<std::size_t>(-1) && (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
                         {
                             qm_sol = pet;
                         }
@@ -6487,7 +6926,8 @@ namespace phy_engine::verilog::digital
                 // Normalize deletion list and only apply if we estimate a gate-count win.
                 ::std::sort(to_delete.begin(),
                             to_delete.end(),
-                            [](auto const& a, auto const& b) noexcept {
+                            [](auto const& a, auto const& b) noexcept
+                            {
                                 if(a.chunk_pos != b.chunk_pos) { return a.chunk_pos > b.chunk_pos; }
                                 return a.vec_pos > b.vec_pos;
                             });
@@ -6499,7 +6939,7 @@ namespace phy_engine::verilog::digital
                 if(best_cost >= to_delete.size()) { continue; }
 
                 // Delete old cone (descending order).
-                for(auto const& mp : to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                for(auto const& mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
 
                 // Rebuild minimized SOP.
                 auto* const0 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::false_state);
@@ -6534,7 +6974,7 @@ namespace phy_engine::verilog::digital
                 };
                 if(best == best_kind::qm)
                 {
-                    for(auto const pi : qm_sol.pick)
+                    for(auto const pi: qm_sol.pick)
                     {
                         if(pi >= primes.size()) { continue; }
                         ensure_neg_for(primes[pi]);
@@ -6542,14 +6982,13 @@ namespace phy_engine::verilog::digital
                 }
                 else
                 {
-                    for(auto const& imp : esp.cover) { ensure_neg_for(imp); }
+                    for(auto const& imp: esp.cover) { ensure_neg_for(imp); }
                 }
 
                 ::std::vector<::phy_engine::model::node_t*> terms{};
                 terms.reserve(best == best_kind::qm ? qm_sol.pick.size() : esp.cover.size());
                 auto add_term_from = [&](qm_implicant const& imp) noexcept -> void
                 {
-
                     ::phy_engine::model::node_t* term = nullptr;
                     std::size_t lits{};
                     for(std::size_t v{}; v < leaves.size(); ++v)
@@ -6557,10 +6996,17 @@ namespace phy_engine::verilog::digital
                         if((imp.mask >> v) & 1u) { continue; }
                         bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
                         auto* lit = bit_is_1 ? leaves[v] : neg[v];
-                        if(lit == nullptr) { ok = false; break; }
+                        if(lit == nullptr)
+                        {
+                            ok = false;
+                            break;
+                        }
                         ++lits;
                         if(term == nullptr) { term = lit; }
-                        else { term = make_and(term, lit); }
+                        else
+                        {
+                            term = make_and(term, lit);
+                        }
                     }
                     if(!ok) { return; }
                     if(lits == 0) { term = const1; }  // covers all
@@ -6568,7 +7014,7 @@ namespace phy_engine::verilog::digital
                 };
                 if(best == best_kind::qm)
                 {
-                    for(auto const pi : qm_sol.pick)
+                    for(auto const pi: qm_sol.pick)
                     {
                         if(pi >= primes.size()) { continue; }
                         add_term_from(primes[pi]);
@@ -6577,7 +7023,7 @@ namespace phy_engine::verilog::digital
                 }
                 else
                 {
-                    for(auto const& imp : esp.cover)
+                    for(auto const& imp: esp.cover)
                     {
                         add_term_from(imp);
                         if(!ok) { break; }
@@ -6589,7 +7035,11 @@ namespace phy_engine::verilog::digital
                 for(std::size_t i{1}; i < terms.size(); ++i)
                 {
                     out = make_or(out, terms[i]);
-                    if(out == nullptr) { ok = false; break; }
+                    if(out == nullptr)
+                    {
+                        ok = false;
+                        break;
+                    }
                 }
                 if(!ok || out == nullptr) { continue; }
 
@@ -6608,10 +7058,7 @@ namespace phy_engine::verilog::digital
 
                 // Keep protected port nodes intact: use YES buffer if output is not directly driven by a newly created gate.
                 // Otherwise, connect final output by a YES to ensure root has a driver.
-                if(is_protected(root))
-                {
-                    (void)make_yes(out, root);
-                }
+                if(is_protected(root)) { (void)make_yes(out, root); }
                 else
                 {
                     // If root is not protected, alias by moving consumers to `out`.
@@ -6642,9 +7089,8 @@ namespace phy_engine::verilog::digital
             }
 
             [[nodiscard]] ::phy_engine::model::node_t* expr(::std::size_t root) noexcept;
-            [[nodiscard]] ::phy_engine::model::node_t* expr_in_env(::std::size_t root,
-                                                                   ::std::vector<::phy_engine::model::node_t*> const& env,
-                                                                   ::std::vector<bool> const* use_env) noexcept;
+            [[nodiscard]] ::phy_engine::model::node_t*
+                expr_in_env(::std::size_t root, ::std::vector<::phy_engine::model::node_t*> const& env, ::std::vector<bool> const* use_env) noexcept;
         };
 
         struct synth_context
@@ -6653,6 +7099,7 @@ namespace phy_engine::verilog::digital
             pe_synth_options opt{};
             pe_synth_error* err{};
             bool failed{};
+            dc_constraints dc{};
 
             // driver count per node (best-effort; does not include any drivers created before synthesis)
             ::std::unordered_map<::phy_engine::model::node_t*, ::std::size_t> driver_count{};
@@ -6779,20 +7226,14 @@ namespace phy_engine::verilog::digital
                 if(aconst)
                 {
                     av = ::phy_engine::verilog::digital::normalize_z_to_x(av);
-                    if(av == ::phy_engine::verilog::digital::logic_t::false_state)
-                    {
-                        return const_node(::phy_engine::verilog::digital::logic_t::false_state);
-                    }
+                    if(av == ::phy_engine::verilog::digital::logic_t::false_state) { return const_node(::phy_engine::verilog::digital::logic_t::false_state); }
                     if(av == ::phy_engine::verilog::digital::logic_t::true_state) { return b; }
                     if(bconst) { return const_node(::phy_engine::verilog::digital::logic_and(av, bv)); }
                 }
                 if(bconst)
                 {
                     bv = ::phy_engine::verilog::digital::normalize_z_to_x(bv);
-                    if(bv == ::phy_engine::verilog::digital::logic_t::false_state)
-                    {
-                        return const_node(::phy_engine::verilog::digital::logic_t::false_state);
-                    }
+                    if(bv == ::phy_engine::verilog::digital::logic_t::false_state) { return const_node(::phy_engine::verilog::digital::logic_t::false_state); }
                     if(bv == ::phy_engine::verilog::digital::logic_t::true_state) { return a; }
                     if(aconst) { return const_node(::phy_engine::verilog::digital::logic_and(av, bv)); }
                 }
@@ -6889,29 +7330,20 @@ namespace phy_engine::verilog::digital
                 ::phy_engine::verilog::digital::logic_t bv{};
                 bool const aconst{try_get_const(a, av)};
                 bool const bconst{try_get_const(b, bv)};
-                if(aconst && bconst)
-                {
-                    return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv)));
-                }
+                if(aconst && bconst) { return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv))); }
                 if(aconst)
                 {
                     av = ::phy_engine::verilog::digital::normalize_z_to_x(av);
                     if(av == ::phy_engine::verilog::digital::logic_t::false_state) { return gate_not(b); }
                     if(av == ::phy_engine::verilog::digital::logic_t::true_state) { return b; }
-                    if(bconst)
-                    {
-                        return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv)));
-                    }
+                    if(bconst) { return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv))); }
                 }
                 if(bconst)
                 {
                     bv = ::phy_engine::verilog::digital::normalize_z_to_x(bv);
                     if(bv == ::phy_engine::verilog::digital::logic_t::false_state) { return gate_not(a); }
                     if(bv == ::phy_engine::verilog::digital::logic_t::true_state) { return a; }
-                    if(aconst)
-                    {
-                        return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv)));
-                    }
+                    if(aconst) { return const_node(::phy_engine::verilog::digital::logic_not(::phy_engine::verilog::digital::logic_xor(av, bv))); }
                 }
 
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::XNOR{})};
@@ -6990,8 +7422,7 @@ namespace phy_engine::verilog::digital
                 if(ticks == 0) { return in; }
 
                 // key = (ticks<<32) ^ (ptr>>4) (best-effort)
-                auto const key = (static_cast<::std::uint64_t>(ticks) << 32) ^
-                                 (static_cast<::std::uint64_t>(reinterpret_cast<::std::uintptr_t>(in)) >> 4);
+                auto const key = (static_cast<::std::uint64_t>(ticks) << 32) ^ (static_cast<::std::uint64_t>(reinterpret_cast<::std::uintptr_t>(in)) >> 4);
                 if(auto it = delay_cache.find(key); it != delay_cache.end()) { return it->second; }
 
                 auto [m, pos]{::phy_engine::netlist::add_model(nl, ::phy_engine::model::TICK_DELAY{static_cast<::std::size_t>(ticks)})};
@@ -7114,10 +7545,7 @@ namespace phy_engine::verilog::digital
             if(!ctx.ok()) { return nullptr; }
 
             auto const* m = inst.mod;
-            if(m == nullptr || root >= m->expr_nodes.size())
-            {
-                return ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
-            }
+            if(m == nullptr || root >= m->expr_nodes.size()) { return ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state); }
 
             ::std::unordered_map<::std::size_t, ::phy_engine::model::node_t*> cache{};
 
@@ -7240,6 +7668,224 @@ namespace phy_engine::verilog::digital
                     return true;
                 }
                 default: return false;
+            }
+        }
+
+        struct vector_assign_info
+        {
+            vector_desc const* desc{};
+            bool bad{};
+            ::std::vector<::std::uint16_t> patterns{};
+        };
+
+        inline void collect_vector_assignments(instance_builder& b,
+                                               ::fast_io::vector<stmt_node> const& arena,
+                                               ::std::size_t stmt_idx,
+                                               ::std::vector<vector_assign_info>& vecs,
+                                               ::std::vector<std::size_t> const& vec_by_signal) noexcept
+        {
+            if(stmt_idx >= arena.size()) { return; }
+            auto const& n = arena.index_unchecked(stmt_idx);
+            switch(n.k)
+            {
+                case stmt_node::kind::blocking_assign:
+                case stmt_node::kind::nonblocking_assign:
+                {
+                    if(n.lhs_signal < vec_by_signal.size())
+                    {
+                        auto const vid = vec_by_signal[n.lhs_signal];
+                        if(vid != SIZE_MAX && vid < vecs.size()) { vecs[vid].bad = true; }
+                    }
+                    return;
+                }
+                case stmt_node::kind::blocking_assign_vec:
+                case stmt_node::kind::nonblocking_assign_vec:
+                {
+                    if(n.lhs_signals.size() != n.rhs_roots.size() || n.lhs_signals.empty()) { return; }
+                    std::size_t vec_id = SIZE_MAX;
+                    bool ok{true};
+                    for(auto const sig: n.lhs_signals)
+                    {
+                        if(sig >= vec_by_signal.size())
+                        {
+                            ok = false;
+                            break;
+                        }
+                        auto const vid = vec_by_signal[sig];
+                        if(vid == SIZE_MAX)
+                        {
+                            ok = false;
+                            break;
+                        }
+                        if(vec_id == SIZE_MAX) { vec_id = vid; }
+                        else if(vec_id != vid)
+                        {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if(!ok || vec_id == SIZE_MAX || vec_id >= vecs.size())
+                    {
+                        for(auto const sig: n.lhs_signals)
+                        {
+                            if(sig < vec_by_signal.size())
+                            {
+                                auto const vid = vec_by_signal[sig];
+                                if(vid != SIZE_MAX && vid < vecs.size()) { vecs[vid].bad = true; }
+                            }
+                        }
+                        return;
+                    }
+
+                    auto* desc = vecs[vec_id].desc;
+                    if(desc == nullptr || desc->bits.size() != n.lhs_signals.size())
+                    {
+                        vecs[vec_id].bad = true;
+                        return;
+                    }
+                    for(std::size_t i{}; i < desc->bits.size(); ++i)
+                    {
+                        if(desc->bits.index_unchecked(i) != n.lhs_signals.index_unchecked(i))
+                        {
+                            vecs[vec_id].bad = true;
+                            return;
+                        }
+                    }
+
+                    ::std::uint16_t pattern{};
+                    for(std::size_t i{}; i < n.rhs_roots.size(); ++i)
+                    {
+                        ::phy_engine::verilog::digital::logic_t v{};
+                        if(!eval_const_expr_to_logic(b, n.rhs_roots.index_unchecked(i), v))
+                        {
+                            vecs[vec_id].bad = true;
+                            return;
+                        }
+                        if(v == ::phy_engine::verilog::digital::logic_t::true_state) { pattern = static_cast<::std::uint16_t>(pattern | (1u << i)); }
+                        else if(v != ::phy_engine::verilog::digital::logic_t::false_state)
+                        {
+                            vecs[vec_id].bad = true;
+                            return;
+                        }
+                    }
+                    vecs[vec_id].patterns.push_back(pattern);
+                    return;
+                }
+                case stmt_node::kind::block:
+                {
+                    for(auto const s: n.stmts) { collect_vector_assignments(b, arena, s, vecs, vec_by_signal); }
+                    return;
+                }
+                case stmt_node::kind::if_stmt:
+                {
+                    for(auto const s: n.stmts) { collect_vector_assignments(b, arena, s, vecs, vec_by_signal); }
+                    for(auto const s: n.else_stmts) { collect_vector_assignments(b, arena, s, vecs, vec_by_signal); }
+                    return;
+                }
+                case stmt_node::kind::case_stmt:
+                {
+                    for(auto const& ci: n.case_items)
+                    {
+                        for(auto const s: ci.stmts) { collect_vector_assignments(b, arena, s, vecs, vec_by_signal); }
+                    }
+                    return;
+                }
+                case stmt_node::kind::for_stmt:
+                {
+                    if(n.init_stmt != SIZE_MAX) { collect_vector_assignments(b, arena, n.init_stmt, vecs, vec_by_signal); }
+                    if(n.step_stmt != SIZE_MAX) { collect_vector_assignments(b, arena, n.step_stmt, vecs, vec_by_signal); }
+                    if(n.body_stmt != SIZE_MAX) { collect_vector_assignments(b, arena, n.body_stmt, vecs, vec_by_signal); }
+                    return;
+                }
+                case stmt_node::kind::while_stmt:
+                {
+                    if(n.body_stmt != SIZE_MAX) { collect_vector_assignments(b, arena, n.body_stmt, vecs, vec_by_signal); }
+                    return;
+                }
+                default: return;
+            }
+        }
+
+        inline void infer_one_hot_fsm_groups(instance_builder& b) noexcept
+        {
+            if(!b.ctx.opt.infer_dc_from_fsm || b.ctx.opt.dc_fsm_max_bits == 0) { return; }
+            if(b.inst.mod == nullptr) { return; }
+            auto const& m = *b.inst.mod;
+            if(m.vectors.empty() || m.always_ffs.empty()) { return; }
+
+            ::std::vector<vector_assign_info> vecs{};
+            vecs.reserve(m.vectors.size());
+            ::std::vector<std::size_t> vec_by_signal{};
+            vec_by_signal.assign(m.signal_names.size(), SIZE_MAX);
+
+            for(auto const& kv: m.vectors)
+            {
+                auto const& vd = kv.second;
+                auto const w = vd.bits.size();
+                if(w == 0 || w > b.ctx.opt.dc_fsm_max_bits || w > 16u) { continue; }
+                auto const vid = vecs.size();
+                vecs.push_back(vector_assign_info{.desc = __builtin_addressof(vd), .bad = false, .patterns = {}});
+                for(auto const sig: vd.bits)
+                {
+                    if(sig < vec_by_signal.size()) { vec_by_signal[sig] = vid; }
+                }
+            }
+            if(vecs.empty()) { return; }
+
+            for(auto const& ff: m.always_ffs)
+            {
+                for(auto const root: ff.roots) { collect_vector_assignments(b, ff.stmt_nodes, root, vecs, vec_by_signal); }
+            }
+
+            auto add_group = [&](dc_group&& g) noexcept
+            {
+                for(auto const& existing: b.ctx.dc.groups)
+                {
+                    if(existing.nodes == g.nodes) { return; }
+                }
+                b.ctx.dc.groups.push_back(::std::move(g));
+            };
+
+            for(auto& v: vecs)
+            {
+                if(v.bad || v.patterns.empty() || v.desc == nullptr) { continue; }
+                auto const w = v.desc->bits.size();
+                if(w == 0 || w > 16u) { continue; }
+                bool one_hot{true};
+                for(auto const pat: v.patterns)
+                {
+                    if(__builtin_popcount(static_cast<unsigned>(pat)) != 1u)
+                    {
+                        one_hot = false;
+                        break;
+                    }
+                }
+                if(!one_hot) { continue; }
+
+                ::std::sort(v.patterns.begin(), v.patterns.end());
+                v.patterns.erase(::std::unique(v.patterns.begin(), v.patterns.end()), v.patterns.end());
+
+                dc_group g{};
+                g.nodes.reserve(w);
+                bool ok{true};
+                for(auto const sig: v.desc->bits)
+                {
+                    if(sig >= b.sig_nodes.size())
+                    {
+                        ok = false;
+                        break;
+                    }
+                    auto* n = b.sig_nodes[sig];
+                    if(n == nullptr)
+                    {
+                        ok = false;
+                        break;
+                    }
+                    g.nodes.push_back(n);
+                }
+                if(!ok) { continue; }
+                g.allowed = v.patterns;
+                add_group(::std::move(g));
             }
         }
 
@@ -7567,10 +8213,7 @@ namespace phy_engine::verilog::digital
                     ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
                     ::std::vector<::phy_engine::model::node_t*> key_bits{};
                     key_bits.resize(w);
-                    if(n.case_expr_roots.empty())
-                    {
-                        key_bits[0] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
-                    }
+                    if(n.case_expr_roots.empty()) { key_bits[0] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state); }
                     else
                     {
                         for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_cur, nullptr); }
@@ -7578,8 +8221,7 @@ namespace phy_engine::verilog::digital
 
                     auto* z = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::high_impedence_state);
 
-                    auto bit_match = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* bb) noexcept
-                        -> ::phy_engine::model::node_t*
+                    auto bit_match = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* bb) noexcept -> ::phy_engine::model::node_t*
                     {
                         auto* eq = b.ctx.gate_case_eq(a, bb);
                         switch(n.ck)
@@ -7619,7 +8261,10 @@ namespace phy_engine::verilog::digital
                     for(auto const& ci: n.case_items)
                     {
                         if(ci.is_default) { def = __builtin_addressof(ci); }
-                        else { items.push_back(__builtin_addressof(ci)); }
+                        else
+                        {
+                            items.push_back(__builtin_addressof(ci));
+                        }
                     }
 
                     auto agg_cur = base_cur;
@@ -7884,22 +8529,15 @@ namespace phy_engine::verilog::digital
                     ::std::size_t const w{n.case_expr_roots.empty() ? 1u : n.case_expr_roots.size()};
                     ::std::vector<::phy_engine::model::node_t*> key_bits{};
                     key_bits.resize(w);
-                    if(n.case_expr_roots.empty())
-                    {
-                        key_bits[0] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state);
-                    }
+                    if(n.case_expr_roots.empty()) { key_bits[0] = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::indeterminate_state); }
                     else
                     {
-                        for(::std::size_t i{}; i < w; ++i)
-                        {
-                            key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_value, nullptr);
-                        }
+                        for(::std::size_t i{}; i < w; ++i) { key_bits[i] = b.expr_in_env(n.case_expr_roots.index_unchecked(i), base_value, nullptr); }
                     }
 
                     auto* z = b.ctx.const_node(::phy_engine::verilog::digital::logic_t::high_impedence_state);
 
-                    auto bit_match = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* bb) noexcept
-                        -> ::phy_engine::model::node_t*
+                    auto bit_match = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* bb) noexcept -> ::phy_engine::model::node_t*
                     {
                         auto* eq = b.ctx.gate_case_eq(a, bb);
                         switch(n.ck)
@@ -7939,7 +8577,10 @@ namespace phy_engine::verilog::digital
                     for(auto const& ci: n.case_items)
                     {
                         if(ci.is_default) { def = __builtin_addressof(ci); }
-                        else { items.push_back(__builtin_addressof(ci)); }
+                        else
+                        {
+                            items.push_back(__builtin_addressof(ci));
+                        }
                     }
 
                     auto agg_value = base_value;
@@ -8188,6 +8829,8 @@ namespace phy_engine::verilog::digital
                 b.sig_nodes[si] = make_node();
             }
 
+            infer_one_hot_fsm_groups(b);
+
             // Continuous assigns.
             for(auto const& a: m.assigns)
             {
@@ -8229,7 +8872,7 @@ namespace phy_engine::verilog::digital
             // Note: `instance_state::bindings` only covers input (and inout-as-input) ports.
             if(parent != nullptr)
             {
-                for(auto const& d : inst.output_drives)
+                for(auto const& d: inst.output_drives)
                 {
                     if(!ok()) { return false; }
                     if(d.parent_signal == SIZE_MAX) { continue; }
@@ -8242,10 +8885,7 @@ namespace phy_engine::verilog::digital
                     }
 
                     ::phy_engine::model::node_t* src{};
-                    if(d.src_is_literal)
-                    {
-                        src = const_node(d.literal);
-                    }
+                    if(d.src_is_literal) { src = const_node(d.literal); }
                     else
                     {
                         if(d.child_signal == SIZE_MAX) { continue; }
@@ -8290,8 +8930,7 @@ namespace phy_engine::verilog::digital
                         if(lhs == nullptr || rhs == nullptr) { continue; }
 
                         ::phy_engine::verilog::digital::logic_t av{};
-                        bool const always_assigned = try_get_const(assigned_cond[sig], av) &&
-                                                     (av == ::phy_engine::verilog::digital::logic_t::true_state);
+                        bool const always_assigned = try_get_const(assigned_cond[sig], av) && (av == ::phy_engine::verilog::digital::logic_t::true_state);
 
                         if(always_assigned)
                         {
@@ -8445,8 +9084,16 @@ namespace phy_engine::verilog::digital
                             for(::std::size_t sig{}; sig < targets.size() && sig < then_has_reset.size() && sig < else_has_reset.size(); ++sig)
                             {
                                 if(!targets[sig]) { continue; }
-                                if(then_has_reset[sig] != else_has_reset[sig]) { same = false; break; }
-                                if(then_has_reset[sig] && then_reset_values[sig] != else_reset_values[sig]) { same = false; break; }
+                                if(then_has_reset[sig] != else_has_reset[sig])
+                                {
+                                    same = false;
+                                    break;
+                                }
+                                if(then_has_reset[sig] && then_reset_values[sig] != else_reset_values[sig])
+                                {
+                                    same = false;
+                                    break;
+                                }
                             }
                             if(!same)
                             {
@@ -8762,7 +9409,8 @@ namespace phy_engine::verilog::digital
         bool const do_flatten = (lvl >= 2);
         bool const do_binary_simplify = (lvl >= 2) && opt.assume_binary_inputs;
 
-        auto run_once = [&]() noexcept -> void {
+        auto run_once = [&]() noexcept -> void
+        {
             if(do_wires) { details::optimize_eliminate_yes_buffers(nl, top_port_nodes); }
             if(do_mul2) { details::optimize_mul2_in_pe_netlist(nl); }
             if(do_adders) { details::optimize_adders_in_pe_netlist(nl); }
@@ -8774,7 +9422,7 @@ namespace phy_engine::verilog::digital
             if(do_flatten) { (void)details::optimize_flatten_associative_and_or_in_pe_netlist(nl, top_port_nodes, opt); }
             if(do_binary_simplify) { (void)details::optimize_binary_complement_simplify_in_pe_netlist(nl, top_port_nodes); }
             if(do_binary_simplify) { (void)details::optimize_constant_propagation_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_qm) { (void)details::optimize_qm_two_level_minimize_in_pe_netlist(nl, top_port_nodes, opt); }
+            if(do_qm) { (void)details::optimize_qm_two_level_minimize_in_pe_netlist(nl, top_port_nodes, opt, __builtin_addressof(ctx.dc)); }
             if(do_input_inv_map) { (void)details::optimize_push_input_inverters_in_pe_netlist(nl, top_port_nodes); }
             if(do_double_not) { (void)details::optimize_eliminate_double_not_in_pe_netlist(nl, top_port_nodes); }
             if(do_fuse_inverters) { (void)details::optimize_fuse_inverters_in_pe_netlist(nl, top_port_nodes); }
