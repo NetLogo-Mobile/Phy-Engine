@@ -17,11 +17,6 @@ inline ::phy_engine::model::variant dv(::phy_engine::model::digital_node_stateme
     return vi;
 }
 
-struct run_result
-{
-    std::size_t gate_count{};
-};
-
 std::size_t count_logic_gates(::phy_engine::netlist::netlist const& nl) noexcept
 {
     std::size_t gates{};
@@ -40,6 +35,12 @@ std::size_t count_logic_gates(::phy_engine::netlist::netlist const& nl) noexcept
     }
     return gates;
 }
+
+struct run_result
+{
+    std::size_t gate_count{};
+    ::phy_engine::verilog::digital::pe_synth_report report{};
+};
 
 std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t opt_level) noexcept
 {
@@ -69,7 +70,6 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         ports.push_back(__builtin_addressof(n));
     }
 
-    // Create INPUT/OUTPUT models for each bit port.
     for(std::size_t pi{}; pi < top_inst.mod->ports.size(); ++pi)
     {
         auto const& p = top_inst.mod->ports.index_unchecked(pi);
@@ -96,14 +96,19 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         }
     }
 
+    run_result rr{};
     ::phy_engine::verilog::digital::pe_synth_error err{};
     ::phy_engine::verilog::digital::pe_synth_options opt{
         .allow_inout = false,
         .allow_multi_driver = false,
-        // Enable binary-only optimization passes (e.g. QM 2-level minimization).
-        // Without this, many boolean simplifications are not semantics-preserving under X/Z.
         .assume_binary_inputs = true,
         .opt_level = opt_level,
+        .techmap_enable = false,   // isolate decomposition behavior
+        .decomp_min_vars = 11,     // exact leaf count in this test
+        .decomp_max_vars = 16,
+        .decomp_max_gates = 4096,  // allow large SOP cones
+        .report_enable = true,
+        .report = __builtin_addressof(rr.report),
     };
 
     if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, opt))
@@ -116,32 +121,9 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         return std::nullopt;
     }
 
-    run_result rr{};
     rr.gate_count = count_logic_gates(nl);
 
     if(!c.analyze()) { return std::nullopt; }
-
-    auto port_index = [&](::fast_io::u8string_view name) noexcept -> std::optional<std::size_t>
-    {
-        for(std::size_t i{}; i < top_inst.mod->ports.size(); ++i)
-        {
-            auto const& p = top_inst.mod->ports.index_unchecked(i);
-            if(p.name == name) { return i; }
-        }
-        return std::nullopt;
-    };
-
-    auto idx_a = port_index(u8"a");
-    auto idx_b = port_index(u8"b");
-    auto idx_c = port_index(u8"c");
-    auto idx_d = port_index(u8"d");
-    auto idx_e = port_index(u8"e");
-    auto idx_f = port_index(u8"f");
-    auto idx_g = port_index(u8"g");
-    auto idx_y1 = port_index(u8"y1");
-    auto idx_y2 = port_index(u8"y2");
-    auto idx_y3 = port_index(u8"y3");
-    if(!idx_a || !idx_b || !idx_c || !idx_d || !idx_e || !idx_f || !idx_g || !idx_y1 || !idx_y2 || !idx_y3) { return std::nullopt; }
 
     auto set_in = [&](::fast_io::u8string_view nm, bool v) noexcept
     {
@@ -164,58 +146,57 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
         for(std::size_t i{}; i < 4u; ++i) { c.digital_clk(); }
     };
 
-    auto read_out = [&](std::size_t idx) noexcept -> std::optional<bool>
+    auto read_out = [&](::fast_io::u8string_view nm) noexcept -> std::optional<bool>
     {
-        auto const s = ports[idx]->node_information.dn.state;
-        if(s == ::phy_engine::model::digital_node_statement_t::true_state) { return true; }
-        if(s == ::phy_engine::model::digital_node_statement_t::false_state) { return false; }
+        for(std::size_t pi{}; pi < top_inst.mod->ports.size(); ++pi)
+        {
+            auto const& p = top_inst.mod->ports.index_unchecked(pi);
+            if(p.name != nm) { continue; }
+            auto const s = ports[pi]->node_information.dn.state;
+            if(s == ::phy_engine::model::digital_node_statement_t::true_state) { return true; }
+            if(s == ::phy_engine::model::digital_node_statement_t::false_state) { return false; }
+            return std::nullopt;
+        }
         return std::nullopt;
     };
 
-    // Exhaustive 2-valued check for all 5 inputs.
-    for(std::uint32_t mask{}; mask < 128u; ++mask)
+    // Exhaustive check: y == d[sel].
+    for(std::uint32_t m{}; m < (1u << 11); ++m)
     {
-        bool const a = (mask & 0x01u) != 0;
-        bool const b = (mask & 0x02u) != 0;
-        bool const c_in = (mask & 0x04u) != 0;
-        bool const d = (mask & 0x08u) != 0;
-        bool const e = (mask & 0x10u) != 0;
-        bool const f = (mask & 0x20u) != 0;
-        bool const g = (mask & 0x40u) != 0;
+        bool const s0 = (m & (1u << 0)) != 0u;
+        bool const s1 = (m & (1u << 1)) != 0u;
+        bool const s2 = (m & (1u << 2)) != 0u;
+        std::uint32_t const sel = (static_cast<std::uint32_t>(s2) << 2u) | (static_cast<std::uint32_t>(s1) << 1u) | static_cast<std::uint32_t>(s0);
 
-        set_in(u8"a", a);
-        set_in(u8"b", b);
-        set_in(u8"c", c_in);
-        set_in(u8"d", d);
-        set_in(u8"e", e);
-        set_in(u8"f", f);
-        set_in(u8"g", g);
+        set_in(u8"s0", s0);
+        set_in(u8"s1", s1);
+        set_in(u8"s2", s2);
+        for(std::uint32_t i{}; i < 8u; ++i)
+        {
+            bool const dvv = (m & (1u << (3u + i))) != 0u;
+            // names: d0..d7
+            char8_t name_buf[3]{u8'd', static_cast<char8_t>(u8'0' + i), u8'\0'};
+            set_in(::fast_io::u8string_view{name_buf, 2}, dvv);
+        }
         settle();
 
-        auto const y1 = read_out(*idx_y1);
-        auto const y2 = read_out(*idx_y2);
-        auto const y3 = read_out(*idx_y3);
-        if(!y1 || !y2 || !y3)
+        auto const y = read_out(u8"y");
+        if(!y) { return std::nullopt; }
+
+        bool expected{};
         {
-            std::fprintf(stderr, "non-binary output at O%u (mask=%u)\n", static_cast<unsigned>(opt_level), mask);
-            return std::nullopt;
+            // d_i are packed after s0..s2 in the loop above.
+            expected = (m & (1u << (3u + sel))) != 0u;
         }
 
-        bool const exp_y1 = (a && b) || (a && c_in);
-        bool const exp_y2 = !(d && e);
-        bool const exp_y3 = f;
-        if(*y1 != exp_y1 || *y2 != exp_y2 || *y3 != exp_y3)
+        if(*y != expected)
         {
             std::fprintf(stderr,
-                         "mismatch at O%u (mask=%u): got y1=%d y2=%d y3=%d, expected y1=%d y2=%d y3=%d\n",
+                         "mismatch (O%u): sel=%u y=%u expected=%u\n",
                          static_cast<unsigned>(opt_level),
-                         mask,
-                         *y1 ? 1 : 0,
-                         *y2 ? 1 : 0,
-                         *y3 ? 1 : 0,
-                         exp_y1 ? 1 : 0,
-                         exp_y2 ? 1 : 0,
-                         exp_y3 ? 1 : 0);
+                         sel,
+                         static_cast<unsigned>(*y),
+                         static_cast<unsigned>(expected));
             return std::nullopt;
         }
     }
@@ -226,37 +207,70 @@ std::optional<run_result> run_once(::fast_io::u8string_view src, std::uint8_t op
 
 int main()
 {
-    decltype(auto) src = u8R"(
-module top(input a, input b, input c, input d, input e, input f, input g, output y1, output y2, output y3);
-  // factoring target: (a&b) | (a&c) => a & (b|c)
-  assign y1 = (a & b) | (a & c);
-  // inverter-fusion target: ~(d&e) => NAND(d,e)
-  assign y2 = ~(d & e);
-  // QM target: (f&g)|(f&~g) => f
-  assign y3 = (f & g) | (f & ~g);
+    // An 8:1 mux written as a big SOP, plus per-term duplicated negations to avoid CSE creating shared ~s* leaves.
+    constexpr ::fast_io::u8string_view src = u8R"(
+module top(
+    input wire s0,
+    input wire s1,
+    input wire s2,
+    input wire d0,
+    input wire d1,
+    input wire d2,
+    input wire d3,
+    input wire d4,
+    input wire d5,
+    input wire d6,
+    input wire d7,
+    output wire y
+);
+    wire ns0_0, ns0_1, ns0_2, ns0_3;
+    wire ns1_0, ns1_1, ns1_2, ns1_3;
+    wire ns2_0, ns2_1, ns2_2, ns2_3;
+    assign ns0_0 = ~s0;
+    assign ns0_1 = ~s0;
+    assign ns0_2 = ~s0;
+    assign ns0_3 = ~s0;
+    assign ns1_0 = ~s1;
+    assign ns1_1 = ~s1;
+    assign ns1_2 = ~s1;
+    assign ns1_3 = ~s1;
+    assign ns2_0 = ~s2;
+    assign ns2_1 = ~s2;
+    assign ns2_2 = ~s2;
+    assign ns2_3 = ~s2;
+
+    assign y = (ns2_0 & ns1_0 & ns0_0 & d0) |
+               (ns2_1 & ns1_1 & s0    & d1) |
+               (ns2_2 & s1    & ns0_1 & d2) |
+               (ns2_3 & s1    & s0    & d3) |
+               (s2    & ns1_2 & ns0_2 & d4) |
+               (s2    & ns1_3 & s0    & d5) |
+               (s2    & s1    & ns0_3 & d6) |
+               (s2    & s1    & s0    & d7);
 endmodule
 )";
 
-    auto const o0 = run_once(src, 0);
-    auto const o1 = run_once(src, 1);
-    auto const o2 = run_once(src, 2);
-    auto const o3 = run_once(src, 3);
-    if(!o0 || !o1 || !o2 || !o3) { return 1; }
+    auto r2 = run_once(src, 2);
+    if(!r2) { return 1; }
+    auto r3 = run_once(src, 3);
+    if(!r3) { return 1; }
 
-    if(!(o0->gate_count > o1->gate_count))
+    if(r3->gate_count > r2->gate_count)
     {
-        std::fprintf(stderr, "expected O1 to reduce gates: O0=%zu O1=%zu\n", o0->gate_count, o1->gate_count);
+        std::fprintf(stderr, "expected O3 to not increase gates via decomposition (O2=%zu, O3=%zu)\n", r2->gate_count, r3->gate_count);
         return 2;
     }
-    if(!(o1->gate_count > o2->gate_count))
+
+    bool saw_decomp{};
+    for(auto const& ps : r3->report.passes)
     {
-        std::fprintf(stderr, "expected O2 to reduce gates: O1=%zu O2=%zu\n", o1->gate_count, o2->gate_count);
-        return 3;
+        if(ps.pass != u8"bdd_decompose") { continue; }
+        saw_decomp = true;
     }
-    if(!(o2->gate_count > o3->gate_count))
+    if(!saw_decomp)
     {
-        std::fprintf(stderr, "expected O3 to reduce gates: O2=%zu O3=%zu\n", o2->gate_count, o3->gate_count);
-        return 4;
+        std::fprintf(stderr, "expected bdd_decompose pass to run\n");
+        return 3;
     }
 
     return 0;

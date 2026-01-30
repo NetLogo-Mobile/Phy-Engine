@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <optional>
 #include <tuple>
 #include <unordered_map>
@@ -44,12 +47,36 @@
 
 namespace phy_engine::verilog::digital
 {
+    struct pe_synth_report;
+
     struct pe_synth_options
     {
+        enum class omax_cost_model : ::std::uint8_t
+        {
+            gate_count,          // legacy: count primitive gate instances (includes YES)
+            weighted_gate_count  // approximate "area": weighted sum of primitive instances (includes YES by default)
+        };
+
         enum class two_level_cost_model : ::std::uint8_t
         {
             gate_count,     // approximate 2-input gate count (NOT/AND/OR), with shared NOTs per cone
             literal_count,  // SOP literal count (sum of specified vars across cubes)
+        };
+
+        struct gate_cost_weights
+        {
+            ::std::uint16_t not_w{1};
+            ::std::uint16_t and_w{1};
+            ::std::uint16_t or_w{1};
+            ::std::uint16_t xor_w{1};
+            ::std::uint16_t xnor_w{1};
+            ::std::uint16_t nand_w{1};
+            ::std::uint16_t nor_w{1};
+            ::std::uint16_t imp_w{1};
+            ::std::uint16_t nimp_w{1};
+            ::std::uint16_t yes_w{1};
+            ::std::uint16_t case_eq_w{1};
+            ::std::uint16_t is_unknown_w{1};
         };
 
         struct two_level_cost_weights
@@ -63,16 +90,60 @@ namespace phy_engine::verilog::digital
         bool allow_multi_driver{false};
         bool support_always_comb{true};
         bool support_always_ff{true};
-        bool assume_binary_inputs{false};     // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
-        ::std::uint8_t opt_level{0};          // 0=O0, 1=O1, 2=O2, 3=O3 (gate-count driven post-synth optimizations)
-        bool optimize_wires{false};           // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
-        bool optimize_mul2{false};            // best-effort: replace 2-bit multiplier tiles with MUL2 models
-        bool optimize_adders{false};          // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
-        ::std::size_t loop_unroll_limit{64};  // bounded unrolling for dynamic for/while in procedural blocks
-        bool infer_dc_from_xz{true};          // when assume_binary_inputs, allow X/Z-driven minterms as DC in 2-level minimization
-        bool infer_dc_from_fsm{true};         // infer DC constraints from one-hot FSM-style state encodings (bounded)
-        bool infer_dc_from_odc{true};         // local observability DC for masked internal nodes (bounded)
-        ::std::size_t dc_fsm_max_bits{16};    // max state bits for FSM DC inference (0 disables)
+        bool assume_binary_inputs{false};                // treat X/Z as absent: `is_unknown(...)` folds to 0, dropping X-propagation mux networks
+        ::std::uint8_t opt_level{0};                     // 0=O0, 1=O1, 2=O2, 3=O3, 4=Omax (budgeted multi-start search; best-so-far kept)
+        ::std::size_t omax_timeout_ms{0};                // Omax only: 0 disables wall-clock budget
+        ::std::size_t omax_max_iter{32};                 // Omax only: max restarts/tries (0 disables Omax loop)
+        bool omax_randomize{false};                      // Omax only: enable randomized heuristic variants (deterministic if false)
+        ::std::uint64_t omax_rand_seed{1};               // Omax only: RNG seed for randomized variants
+        bool omax_allow_regress{false};                  // Omax only: if false, only accept strictly better cost solutions
+        bool omax_verify{false};                         // Omax only: verify candidate netlists against the pre-opt reference (best-effort, combinational only)
+        ::std::size_t omax_verify_exact_max_inputs{12};  // if input count <= this, do an exhaustive equivalence check
+        ::std::size_t omax_verify_random_vectors{256};   // otherwise, random-vector regression guard
+        ::std::uint64_t omax_verify_seed{1};             // RNG seed for verification vectors
+        omax_cost_model omax_cost{omax_cost_model::gate_count};
+        gate_cost_weights omax_gate_weights{};
+
+        using omax_dump_best_cb_t = void (*)(::phy_engine::netlist::netlist const&, void*) noexcept;
+        omax_dump_best_cb_t omax_dump_best_cb{nullptr};  // optional callback invoked when a new best is found
+        void* omax_dump_best_user{nullptr};
+        ::std::size_t decomp_var_order_tries{4};    // BDD decomposition: max variable-order variants to try (bounded, deterministic unless randomized)
+        bool optimize_wires{false};                 // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
+        bool optimize_mul2{false};                  // best-effort: replace 2-bit multiplier tiles with MUL2 models
+        bool optimize_adders{false};                // best-effort: replace gate-level adders with HALF_ADDER/FULL_ADDER models
+        ::std::size_t loop_unroll_limit{64};        // bounded unrolling for dynamic for/while in procedural blocks
+        bool infer_dc_from_xz{true};                // when assume_binary_inputs, allow X/Z-driven minterms as DC in 2-level minimization
+        bool infer_dc_from_fsm{true};               // infer DC constraints from one-hot FSM-style state encodings (bounded)
+        bool infer_dc_from_odc{true};               // local observability DC for masked internal nodes (bounded)
+        ::std::size_t dc_fsm_max_bits{16};          // max state bits for FSM DC inference (0 disables)
+        bool techmap_enable{true};                  // enable cut-based tech mapping (bounded, best-effort)
+        bool techmap_richer_library{false};         // include AOI/OAI-style templates (lowered to primitives)
+        ::std::size_t techmap_max_cut{4};           // max cut size (vars) for mapping
+        ::std::size_t techmap_max_gates{96};        // max gates per cone for mapping
+        ::std::size_t techmap_max_cuts{32};         // max cuts per node
+        bool decompose_large_functions{true};       // bounded functional decomposition for large cones (2-valued)
+        ::std::size_t decomp_min_vars{11};          // start decomposing at this leaf count
+        ::std::size_t decomp_max_vars{16};          // max vars for truth-table/BDD decomposition
+        ::std::size_t decomp_max_gates{256};        // max gates per cone for decomposition
+        ::std::size_t decomp_bdd_node_limit{4096};  // BDD node budget (includes terminals)
+
+        // Per-pass budgets (used by O3 and thus by Omax too). Use 0 to disable a pass's heavy inner loop.
+        ::std::size_t qm_max_vars{10};            // 2-level minimization: max vars per cone (0 disables QM/Espresso pass)
+        ::std::size_t qm_max_gates{64};           // 2-level minimization: max internal logic gates per cone
+        ::std::size_t qm_max_primes{4096};        // 2-level minimization: max prime implicants to consider (best-effort)
+        ::std::size_t qm_max_minterms{0};         // 2-level minimization: 0 = unlimited; else skip cones with 2^vars > this
+        ::std::size_t resub_max_vars{6};          // Resub: max vars per local truth-table window (0 disables resub)
+        ::std::size_t resub_max_gates{64};        // Resub: max gates in local cone
+        ::std::size_t sweep_max_vars{6};          // Sweep: max vars per local truth-table window (0 disables sweep)
+        ::std::size_t sweep_max_gates{64};        // Sweep: max gates in local cone
+        ::std::size_t rewrite_max_candidates{0};  // AIG rewrite: 0 = unlimited; else cap candidate roots (deterministic prefix)
+
+        // Global "blow-up" guards (best-effort). Note: nodes are allocated from arenas; they can't be shrunk.
+        ::std::size_t max_total_nodes{0};        // 0 disables; if exceeded, remaining passes are skipped (best-effort)
+        ::std::size_t max_total_models{0};       // 0 disables; if exceeded after a pass, it is rolled back (best-effort)
+        ::std::size_t max_total_logic_gates{0};  // 0 disables; if exceeded after a pass, it is rolled back (best-effort)
+        bool report_enable{false};               // collect per-pass gate-count deltas (best-effort)
+        pe_synth_report* report{nullptr};        // optional sink when report_enable=true
 
         // Two-level minimization cost model (used in O3 cone minimization passes).
         two_level_cost_model two_level_cost{two_level_cost_model::gate_count};
@@ -82,6 +153,22 @@ namespace phy_engine::verilog::digital
     struct pe_synth_error
     {
         ::fast_io::u8string message{};
+    };
+
+    struct pe_synth_pass_stat
+    {
+        ::fast_io::u8string_view pass{};
+        ::std::size_t before{};
+        ::std::size_t after{};
+    };
+
+    struct pe_synth_report
+    {
+        ::std::vector<pe_synth_pass_stat> passes{};
+        ::std::vector<::std::size_t> iter_gate_count{};
+        ::std::vector<::std::size_t> omax_best_gate_count{};  // best-so-far cost after each Omax try (empty unless opt_level>=4)
+        ::std::vector<::std::size_t> omax_best_cost{};        // best-so-far objective cost after each Omax try (matches opt.omax_cost)
+        ::fast_io::u8string omax_summary{};                   // single-line, reproducible knobs summary
     };
 
     namespace details
@@ -134,6 +221,572 @@ namespace phy_engine::verilog::digital
         {
             if(auto* n = find_existing_const_node(nl, v); n != nullptr) { return n; }
             return make_const_node(nl, v);
+        }
+
+        [[nodiscard]] inline std::size_t count_logic_gates(::phy_engine::netlist::netlist const& nl) noexcept
+        {
+            std::size_t gates{};
+            for(auto const& blk: nl.models)
+            {
+                for(auto const* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    auto const n = m->ptr->get_model_name();
+                    if(n == u8"AND" || n == u8"OR" || n == u8"XOR" || n == u8"XNOR" || n == u8"NOT" || n == u8"NAND" || n == u8"NOR" || n == u8"IMP" ||
+                       n == u8"NIMP" || n == u8"YES")
+                    {
+                        ++gates;
+                    }
+                }
+            }
+            return gates;
+        }
+
+        [[nodiscard]] inline std::size_t compute_omax_cost(::phy_engine::netlist::netlist const& nl, pe_synth_options const& opt) noexcept
+        {
+            if(opt.omax_cost == pe_synth_options::omax_cost_model::gate_count) { return count_logic_gates(nl); }
+
+            std::size_t cost{};
+            for(auto const& blk: nl.models)
+            {
+                for(auto const* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    auto const n = m->ptr->get_model_name();
+                    if(n == u8"NOT") { cost += opt.omax_gate_weights.not_w; }
+                    else if(n == u8"AND") { cost += opt.omax_gate_weights.and_w; }
+                    else if(n == u8"OR") { cost += opt.omax_gate_weights.or_w; }
+                    else if(n == u8"XOR") { cost += opt.omax_gate_weights.xor_w; }
+                    else if(n == u8"XNOR") { cost += opt.omax_gate_weights.xnor_w; }
+                    else if(n == u8"NAND") { cost += opt.omax_gate_weights.nand_w; }
+                    else if(n == u8"NOR") { cost += opt.omax_gate_weights.nor_w; }
+                    else if(n == u8"IMP") { cost += opt.omax_gate_weights.imp_w; }
+                    else if(n == u8"NIMP") { cost += opt.omax_gate_weights.nimp_w; }
+                    else if(n == u8"YES") { cost += opt.omax_gate_weights.yes_w; }
+                    else if(n == u8"CASE_EQ") { cost += opt.omax_gate_weights.case_eq_w; }
+                    else if(n == u8"IS_UNKNOWN") { cost += opt.omax_gate_weights.is_unknown_w; }
+                }
+            }
+            return cost;
+        }
+
+        [[nodiscard]] inline std::size_t count_total_models(::phy_engine::netlist::netlist const& nl) noexcept
+        {
+            std::size_t models{};
+            for(auto const& blk: nl.models)
+            {
+                for(auto const* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    ++models;
+                }
+            }
+            return models;
+        }
+
+        [[nodiscard]] inline std::size_t count_total_nodes(::phy_engine::netlist::netlist const& nl) noexcept
+        {
+            std::size_t nodes{};
+            for(auto const& blk: nl.nodes) { nodes += static_cast<std::size_t>(blk.curr - blk.begin); }
+            return nodes + 1u;  // + ground_node
+        }
+
+        inline void restore_from_snapshot(::phy_engine::netlist::netlist& dst, ::phy_engine::netlist::netlist const& src) noexcept
+        {
+            auto gather_nodes = [](::phy_engine::netlist::netlist const& x, ::std::vector<::phy_engine::model::node_t const*>& out) noexcept
+            {
+                out.clear();
+                for(auto const& blk: x.nodes)
+                {
+                    for(auto const* n = blk.begin; n != blk.curr; ++n) { out.push_back(n); }
+                }
+            };
+
+            ::std::vector<::phy_engine::model::node_t const*> src_nodes{};
+            ::std::vector<::phy_engine::model::node_t const*> dst_nodes_const{};
+            src_nodes.reserve(4096);
+            dst_nodes_const.reserve(4096);
+            gather_nodes(src, src_nodes);
+            gather_nodes(dst, dst_nodes_const);
+
+            // Clear node pin sets (including extra nodes allocated after the snapshot).
+            for(auto const* cn: dst_nodes_const)
+            {
+                auto* n = const_cast<::phy_engine::model::node_t*>(cn);
+                n->pins.clear();
+                n->num_of_analog_node = 0;
+                n->node_information = {};
+                n->node_index = SIZE_MAX;
+            }
+            dst.ground_node.pins.clear();
+            dst.ground_node.num_of_analog_node = 0;
+            dst.ground_node.node_information = {};
+            dst.ground_node.node_index = SIZE_MAX;
+
+            // Clear existing models.
+            for(auto& blk: dst.models) { blk.clear(); }
+            dst.models.clear();
+
+            if(dst_nodes_const.size() < src_nodes.size()) { return; }  // best-effort: shouldn't happen
+
+            // Restore node_information for the overlapping prefix.
+            for(::std::size_t i{}; i < src_nodes.size(); ++i)
+            {
+                auto* dn = const_cast<::phy_engine::model::node_t*>(dst_nodes_const[i]);
+                dn->node_information = src_nodes[i]->node_information;
+            }
+            dst.ground_node.node_information = src.ground_node.node_information;
+
+            ::std::unordered_map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
+            node_map.reserve(src_nodes.size() * 2u + 8u);
+            node_map.emplace(__builtin_addressof(src.ground_node), __builtin_addressof(dst.ground_node));
+            for(::std::size_t i{}; i < src_nodes.size(); ++i) { node_map.emplace(src_nodes[i], const_cast<::phy_engine::model::node_t*>(dst_nodes_const[i])); }
+
+            auto emplace_model_base = [&](::phy_engine::model::model_base&& mb) noexcept
+            {
+                if(dst.models.empty()) [[unlikely]]
+                {
+                    auto& nlb{dst.models.emplace_back()};
+                    ::new(nlb.curr++)::phy_engine::model::model_base{::std::move(mb)};
+                    return;
+                }
+                auto& nlb{dst.models.back_unchecked()};
+                if(nlb.curr == nlb.begin + nlb.chunk_module_size) [[unlikely]]
+                {
+                    auto& new_nlb{dst.models.emplace_back()};
+                    ::new(new_nlb.curr++)::phy_engine::model::model_base{::std::move(mb)};
+                    return;
+                }
+                ::new(nlb.curr++)::phy_engine::model::model_base{::std::move(mb)};
+            };
+
+            // Recreate models from src, reconnecting pins to mapped dst nodes.
+            for(auto const& blk: src.models)
+            {
+                for(auto const* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+
+                    ::phy_engine::model::model_base copy{};
+                    copy.copy_with_node_ptr(*m);
+                    if(copy.type != ::phy_engine::model::model_type::normal || copy.ptr == nullptr) { continue; }
+
+                    auto const dev = copy.ptr->get_device_type();
+                    bool const is_analog = (dev != ::phy_engine::model::model_device_type::digital);
+
+                    auto pv = copy.ptr->generate_pin_view();
+                    for(std::size_t pi{}; pi < pv.size; ++pi)
+                    {
+                        auto& pn = pv.pins[pi];
+                        auto* sn = pn.nodes;
+                        if(sn == nullptr) { continue; }
+                        auto it = node_map.find(sn);
+                        if(it == node_map.end())
+                        {
+                            pn.nodes = nullptr;
+                            continue;
+                        }
+                        pn.nodes = it->second;
+                        it->second->pins.insert(__builtin_addressof(pn));
+                        if(is_analog) { ++it->second->num_of_analog_node; }
+                    }
+
+                    emplace_model_base(::std::move(copy));
+                }
+            }
+        }
+
+        struct u8sv_hash
+        {
+            std::size_t operator() (::fast_io::u8string_view s) const noexcept
+            {
+                auto mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
+                std::size_t h{};
+                for(std::size_t i{}; i < s.size(); ++i) { h = mix(h, static_cast<unsigned char>(reinterpret_cast<char const*>(s.data())[i])); }
+                return h;
+            }
+        };
+
+        struct u8sv_eq
+        {
+            bool operator() (::fast_io::u8string_view a, ::fast_io::u8string_view b) const noexcept { return a == b; }
+        };
+
+        struct comb_eval_net
+        {
+            struct gate
+            {
+                enum class kind : std::uint8_t
+                {
+                    not_gate,
+                    yes_gate,
+                    and_gate,
+                    or_gate,
+                    xor_gate,
+                    xnor_gate,
+                    nand_gate,
+                    nor_gate,
+                    imp_gate,
+                    nimp_gate,
+                    case_eq_gate,
+                    is_unknown_gate,
+                };
+                kind k{};
+                ::phy_engine::model::node_t* in0{};
+                ::phy_engine::model::node_t* in1{};
+            };
+
+            ::std::unordered_map<::fast_io::u8string_view, ::phy_engine::model::node_t*, u8sv_hash, u8sv_eq> inputs{};
+            ::std::unordered_map<::fast_io::u8string_view, ::phy_engine::model::node_t*, u8sv_hash, u8sv_eq> outputs{};
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> const_nodes{};
+            ::std::unordered_map<::phy_engine::model::node_t*, gate> driver{};
+            bool ok{true};
+        };
+
+        [[nodiscard]] inline bool build_comb_eval_net(::phy_engine::netlist::netlist& nl, comb_eval_net& out) noexcept
+        {
+            out = comb_eval_net{};
+            out.inputs.reserve(128);
+            out.outputs.reserve(128);
+            out.const_nodes.reserve(128);
+            out.driver.reserve(1 << 14);
+
+            auto to_bool_const = [&](::phy_engine::model::model_base const& mb, bool& v) noexcept -> bool
+            {
+                if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return false; }
+                auto vi = mb.ptr->get_attribute(0);
+                if(vi.type != ::phy_engine::model::variant_type::digital) { return false; }
+                if(vi.digital == ::phy_engine::model::digital_node_statement_t::true_state)
+                {
+                    v = true;
+                    return true;
+                }
+                if(vi.digital == ::phy_engine::model::digital_node_statement_t::false_state)
+                {
+                    v = false;
+                    return true;
+                }
+                return false;
+            };
+
+            for(auto& blk: nl.models)
+            {
+                for(auto* m = blk.begin; m != blk.curr; ++m)
+                {
+                    if(m->type != ::phy_engine::model::model_type::normal || m->ptr == nullptr) { continue; }
+                    if(m->ptr->get_device_type() != ::phy_engine::model::model_device_type::digital) { continue; }
+                    auto const nm = model_name_u8(*m);
+                    auto pv = m->ptr->generate_pin_view();
+
+                    if(nm == u8"INPUT")
+                    {
+                        if(pv.size != 1)
+                        {
+                            out.ok = false;
+                            return false;
+                        }
+                        auto* n = pv.pins[0].nodes;
+                        if(n == nullptr) { continue; }
+                        if(m->name.size() == 0)
+                        {
+                            bool cv{};
+                            if(!to_bool_const(*m, cv))
+                            {
+                                out.ok = false;
+                                return false;
+                            }
+                            out.const_nodes.emplace(n, cv);
+                        }
+                        else
+                        {
+                            ::fast_io::u8string_view key{m->name.data(), m->name.size()};
+                            out.inputs.emplace(key, n);
+                        }
+                        continue;
+                    }
+                    if(nm == u8"OUTPUT")
+                    {
+                        if(m->name.size() == 0) { continue; }
+                        if(pv.size != 1)
+                        {
+                            out.ok = false;
+                            return false;
+                        }
+                        auto* n = pv.pins[0].nodes;
+                        if(n == nullptr) { continue; }
+                        ::fast_io::u8string_view key{m->name.data(), m->name.size()};
+                        out.outputs.emplace(key, n);
+                        continue;
+                    }
+
+                    // Only support a combinational subset for verification; skip/disable verification on other devices.
+                    comb_eval_net::gate g{};
+                    bool supported{true};
+                    if(nm == u8"NOT") { g.k = comb_eval_net::gate::kind::not_gate; }
+                    else if(nm == u8"YES") { g.k = comb_eval_net::gate::kind::yes_gate; }
+                    else if(nm == u8"AND") { g.k = comb_eval_net::gate::kind::and_gate; }
+                    else if(nm == u8"OR") { g.k = comb_eval_net::gate::kind::or_gate; }
+                    else if(nm == u8"XOR") { g.k = comb_eval_net::gate::kind::xor_gate; }
+                    else if(nm == u8"XNOR") { g.k = comb_eval_net::gate::kind::xnor_gate; }
+                    else if(nm == u8"NAND") { g.k = comb_eval_net::gate::kind::nand_gate; }
+                    else if(nm == u8"NOR") { g.k = comb_eval_net::gate::kind::nor_gate; }
+                    else if(nm == u8"IMP") { g.k = comb_eval_net::gate::kind::imp_gate; }
+                    else if(nm == u8"NIMP") { g.k = comb_eval_net::gate::kind::nimp_gate; }
+                    else if(nm == u8"CASE_EQ") { g.k = comb_eval_net::gate::kind::case_eq_gate; }
+                    else if(nm == u8"IS_UNKNOWN") { g.k = comb_eval_net::gate::kind::is_unknown_gate; }
+                    else
+                    {
+                        supported = false;
+                    }
+                    if(!supported)
+                    {
+                        out.ok = false;
+                        return false;
+                    }
+
+                    // Fill inputs by position (common for these primitives).
+                    ::phy_engine::model::node_t* out_node{};
+                    if(nm == u8"NOT" || nm == u8"YES" || nm == u8"IS_UNKNOWN")
+                    {
+                        if(pv.size != 2)
+                        {
+                            out.ok = false;
+                            return false;
+                        }
+                        g.in0 = pv.pins[0].nodes;
+                        out_node = pv.pins[1].nodes;
+                        if(g.in0 == nullptr)
+                        {
+                            out.ok = false;
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        if(pv.size != 3)
+                        {
+                            out.ok = false;
+                            return false;
+                        }
+                        g.in0 = pv.pins[0].nodes;
+                        g.in1 = pv.pins[1].nodes;
+                        out_node = pv.pins[2].nodes;
+                        if(g.in0 == nullptr || g.in1 == nullptr)
+                        {
+                            out.ok = false;
+                            return false;
+                        }
+                    }
+
+                    if(out_node == nullptr)
+                    {
+                        out.ok = false;
+                        return false;
+                    }
+                    if(out.driver.contains(out_node))
+                    {
+                        out.ok = false;  // multi-driver (in the supported subset)
+                        return false;
+                    }
+                    out.driver.emplace(out_node, g);
+                }
+            }
+
+            return out.ok;
+        }
+
+        [[nodiscard]] inline bool eval_comb_node(comb_eval_net const& net,
+                                                 ::phy_engine::model::node_t* n,
+                                                 ::std::unordered_map<::phy_engine::model::node_t*, bool> const& in_assign,
+                                                 ::std::unordered_map<::phy_engine::model::node_t*, bool>& memo,
+                                                 bool& outv) noexcept
+        {
+            if(n == nullptr) { return false; }
+            if(auto it = memo.find(n); it != memo.end())
+            {
+                outv = it->second;
+                return true;
+            }
+            if(auto itc = net.const_nodes.find(n); itc != net.const_nodes.end())
+            {
+                outv = itc->second;
+                memo.emplace(n, outv);
+                return true;
+            }
+            if(auto iti = in_assign.find(n); iti != in_assign.end())
+            {
+                outv = iti->second;
+                memo.emplace(n, outv);
+                return true;
+            }
+
+            auto itg = net.driver.find(n);
+            if(itg == net.driver.end()) { return false; }
+            auto const& g = itg->second;
+
+            bool a{}, b{};
+            if(!eval_comb_node(net, g.in0, in_assign, memo, a)) { return false; }
+            if(g.k != comb_eval_net::gate::kind::not_gate && g.k != comb_eval_net::gate::kind::yes_gate && g.k != comb_eval_net::gate::kind::is_unknown_gate)
+            {
+                if(!eval_comb_node(net, g.in1, in_assign, memo, b)) { return false; }
+            }
+
+            bool r{};
+            switch(g.k)
+            {
+                case comb_eval_net::gate::kind::not_gate: r = !a; break;
+                case comb_eval_net::gate::kind::yes_gate: r = a; break;
+                case comb_eval_net::gate::kind::and_gate: r = (a & b); break;
+                case comb_eval_net::gate::kind::or_gate: r = (a | b); break;
+                case comb_eval_net::gate::kind::xor_gate: r = (a != b); break;
+                case comb_eval_net::gate::kind::xnor_gate: r = (a == b); break;
+                case comb_eval_net::gate::kind::nand_gate: r = !(a & b); break;
+                case comb_eval_net::gate::kind::nor_gate: r = !(a | b); break;
+                case comb_eval_net::gate::kind::imp_gate: r = (!a) | b; break;
+                case comb_eval_net::gate::kind::nimp_gate: r = a & (!b); break;
+                case comb_eval_net::gate::kind::case_eq_gate: r = (a == b); break;
+                case comb_eval_net::gate::kind::is_unknown_gate: r = false; break;  // binary-only mode
+            }
+
+            memo.emplace(n, r);
+            outv = r;
+            return true;
+        }
+
+        [[nodiscard]] inline bool omax_verify_equivalence(::phy_engine::netlist::netlist& ref_nl,
+                                                          ::phy_engine::netlist::netlist& cand_nl,
+                                                          pe_synth_options const& opt,
+                                                          ::fast_io::u8string* why = nullptr) noexcept
+        {
+            comb_eval_net ref{};
+            comb_eval_net cand{};
+            if(!build_comb_eval_net(ref_nl, ref) || !build_comb_eval_net(cand_nl, cand))
+            {
+                if(why)
+                {
+                    why->clear();
+                    why->append(u8"omax_verify: unsupported netlist for comb verification");
+                }
+                return false;
+            }
+
+            // Ensure IO sets are consistent (by name).
+            for(auto const& kv: ref.inputs)
+            {
+                if(!cand.inputs.contains(kv.first))
+                {
+                    if(why)
+                    {
+                        why->clear();
+                        why->append(u8"omax_verify: input set mismatch");
+                    }
+                    return false;
+                }
+            }
+            for(auto const& kv: ref.outputs)
+            {
+                if(!cand.outputs.contains(kv.first))
+                {
+                    if(why)
+                    {
+                        why->clear();
+                        why->append(u8"omax_verify: output set mismatch");
+                    }
+                    return false;
+                }
+            }
+
+            ::std::vector<::fast_io::u8string_view> in_names{};
+            in_names.reserve(ref.inputs.size());
+            for(auto const& kv: ref.inputs) { in_names.push_back(kv.first); }
+
+            ::std::vector<::fast_io::u8string_view> out_names{};
+            out_names.reserve(ref.outputs.size());
+            for(auto const& kv: ref.outputs) { out_names.push_back(kv.first); }
+
+            auto run_one = [&](auto&& assign_fn, std::size_t idx) noexcept -> bool
+            {
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> as_ref{};
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> as_cand{};
+                as_ref.reserve(in_names.size() * 2u + 8u);
+                as_cand.reserve(in_names.size() * 2u + 8u);
+                for(std::size_t i{}; i < in_names.size(); ++i)
+                {
+                    auto const nm = in_names[i];
+                    bool const bit = assign_fn(i);
+                    as_ref.emplace(ref.inputs.find(nm)->second, bit);
+                    as_cand.emplace(cand.inputs.find(nm)->second, bit);
+                }
+
+                for(auto const nm: out_names)
+                {
+                    bool vr{}, vc{};
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> memo_r{};
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> memo_c{};
+                    memo_r.reserve(256);
+                    memo_c.reserve(256);
+                    auto* nr = ref.outputs.find(nm)->second;
+                    auto* nc = cand.outputs.find(nm)->second;
+                    if(!eval_comb_node(ref, nr, as_ref, memo_r, vr) || !eval_comb_node(cand, nc, as_cand, memo_c, vc))
+                    {
+                        if(why)
+                        {
+                            why->clear();
+                            why->append(u8"omax_verify: evaluation failed");
+                        }
+                        return false;
+                    }
+                    if(vr != vc)
+                    {
+                        if(why)
+                        {
+                            // Keep it short (ASCII).
+                            why->clear();
+                            why->append(u8"omax_verify: output mismatch");
+                        }
+                        (void)idx;
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            auto const in_cnt = in_names.size();
+            auto const exact_k = opt.omax_verify_exact_max_inputs;
+            if(exact_k != 0u && in_cnt <= exact_k && in_cnt < 31u)
+            {
+                auto const total = static_cast<std::size_t>(1u) << in_cnt;
+                for(std::size_t pat{}; pat < total; ++pat)
+                {
+                    auto assign_fn = [&](std::size_t i) noexcept -> bool { return ((pat >> i) & 1u) != 0u; };
+                    if(!run_one(assign_fn, pat)) { return false; }
+                }
+                return true;
+            }
+
+            // Random vectors.
+            std::uint64_t rng = opt.omax_verify_seed;
+            auto next = [&]() noexcept -> std::uint64_t
+            {
+                // xorshift64*
+                rng ^= rng >> 12;
+                rng ^= rng << 25;
+                rng ^= rng >> 27;
+                return rng * 0x2545F4914F6CDD1Dull;
+            };
+            std::size_t vecs = opt.omax_verify_random_vectors;
+            if(vecs == 0u) { vecs = 1u; }
+            for(std::size_t v{}; v < vecs; ++v)
+            {
+                auto r = next();
+                auto assign_fn = [&](std::size_t i) noexcept -> bool
+                {
+                    if((i & 63u) == 0u) { r = next(); }
+                    return ((r >> (i & 63u)) & 1ull) != 0ull;
+                };
+                if(!run_one(assign_fn, v)) { return false; }
+            }
+            return true;
         }
 
         inline void optimize_adders_in_pe_netlist(::phy_engine::netlist::netlist& nl) noexcept
@@ -2812,7 +3465,10 @@ namespace phy_engine::verilog::digital
                     if(auto og = classify_bin(mb, {vec_pos, chunk_pos}); og && og->out != nullptr)
                     {
                         if(og->k == kind::and_gate) { and_by_out.emplace(og->out, *og); }
-                        else { or_by_out.emplace(og->out, *og); }
+                        else
+                        {
+                            or_by_out.emplace(og->out, *og);
+                        }
                     }
                 }
             }
@@ -3198,6 +3854,7 @@ namespace phy_engine::verilog::digital
                     cands.push_back(c);
                 }
             }
+            if(opt.rewrite_max_candidates != 0u && cands.size() > opt.rewrite_max_candidates) { cands.resize(opt.rewrite_max_candidates); }
 
             bool changed{};
             for(auto const& g: cands)
@@ -4428,14 +5085,1887 @@ namespace phy_engine::verilog::digital
             return changed;
         }
 
+        [[nodiscard]] inline bool optimize_cut_based_techmap_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                           ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
+                                                                           pe_synth_options const& opt) noexcept
+        {
+            if(!opt.assume_binary_inputs || !opt.techmap_enable) { return false; }
+
+            std::size_t const max_cut = (opt.techmap_max_cut > 4u) ? 4u : opt.techmap_max_cut;
+            if(max_cut == 0u) { return false; }
+            std::size_t const max_gates = (opt.techmap_max_gates == 0u) ? 64u : opt.techmap_max_gates;
+            std::size_t const max_cuts = (opt.techmap_max_cuts == 0u) ? 16u : opt.techmap_max_cuts;
+
+            enum class kind : std::uint8_t
+            {
+                not_gate,
+                and_gate,
+                or_gate,
+                xor_gate,
+                xnor_gate,
+                nand_gate,
+                nor_gate,
+                imp_gate,
+                nimp_gate,
+            };
+
+            struct gate
+            {
+                kind k{};
+                ::phy_engine::netlist::model_pos pos{};
+                ::phy_engine::model::node_t* in0{};
+                ::phy_engine::model::node_t* in1{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::model::pin const* out_pin{};
+            };
+
+            struct cut
+            {
+                ::std::vector<::phy_engine::model::node_t*> leaves{};
+            };
+
+            struct choice
+            {
+                bool valid{};
+                std::size_t pattern_idx{};
+                ::std::vector<::phy_engine::model::node_t*> leaves{};
+                ::std::array<unsigned, 4> perm{};
+                ::std::uint32_t neg_mask{};
+                std::size_t inputs{};
+            };
+
+            enum class pkind : std::uint8_t
+            {
+                not1,
+                and2,
+                or2,
+                xor2,
+                xnor2,
+                nand2,
+                nor2,
+                imp2,
+                nimp2,
+                aoi21,
+                oai21,
+                aoi22,
+                oai22,
+            };
+
+            struct pattern
+            {
+                pkind k{};
+                std::size_t inputs{};
+                ::std::uint64_t truth{};
+                std::size_t cost{};
+            };
+
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
+            protected_map.reserve(protected_nodes.size() * 2u + 1u);
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
+            auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
+
+            auto const fan = build_gate_opt_fanout(nl);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, gate> gate_by_out{};
+            gate_by_out.reserve(1 << 14);
+
+            auto classify = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<gate>
+            {
+                if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
+                auto const name = model_name_u8(mb);
+                auto pv = mb.ptr->generate_pin_view();
+
+                gate g{};
+                g.pos = pos;
+                if(name == u8"NOT")
+                {
+                    if(pv.size != 2) { return ::std::nullopt; }
+                    g.k = kind::not_gate;
+                    g.in0 = pv.pins[0].nodes;
+                    g.out = pv.pins[1].nodes;
+                    g.out_pin = __builtin_addressof(pv.pins[1]);
+                    return g;
+                }
+
+                if(name == u8"AND" || name == u8"OR" || name == u8"XOR" || name == u8"XNOR" || name == u8"NAND" || name == u8"NOR" || name == u8"IMP" ||
+                   name == u8"NIMP")
+                {
+                    if(pv.size != 3) { return ::std::nullopt; }
+                    g.in0 = pv.pins[0].nodes;
+                    g.in1 = pv.pins[1].nodes;
+                    g.out = pv.pins[2].nodes;
+                    g.out_pin = __builtin_addressof(pv.pins[2]);
+                    if(name == u8"AND") { g.k = kind::and_gate; }
+                    else if(name == u8"OR") { g.k = kind::or_gate; }
+                    else if(name == u8"XOR") { g.k = kind::xor_gate; }
+                    else if(name == u8"XNOR") { g.k = kind::xnor_gate; }
+                    else if(name == u8"NAND") { g.k = kind::nand_gate; }
+                    else if(name == u8"NOR") { g.k = kind::nor_gate; }
+                    else if(name == u8"IMP") { g.k = kind::imp_gate; }
+                    else
+                    {
+                        g.k = kind::nimp_gate;
+                    }
+                    return g;
+                }
+
+                return ::std::nullopt;
+            };
+
+            for(std::size_t chunk_pos{}; chunk_pos < nl.models.size(); ++chunk_pos)
+            {
+                auto& blk = nl.models.index_unchecked(chunk_pos);
+                for(std::size_t vec_pos{}; blk.begin + vec_pos < blk.curr; ++vec_pos)
+                {
+                    auto const& mb = blk.begin[vec_pos];
+                    auto og = classify(mb, {vec_pos, chunk_pos});
+                    if(!og || og->out == nullptr || og->out_pin == nullptr) { continue; }
+                    gate_by_out.emplace(og->out, *og);
+                }
+            }
+
+            auto truth_mask = [&](std::size_t inputs, auto&& fn) noexcept -> ::std::uint64_t
+            {
+                ::std::uint64_t mask{};
+                auto const U = static_cast<std::size_t>(1u << inputs);
+                for(std::size_t m{}; m < U; ++m)
+                {
+                    bool args[4]{};
+                    for(std::size_t i{}; i < inputs && i < 4; ++i) { args[i] = ((m >> i) & 1u) != 0u; }
+                    if(fn(args)) { mask |= (1ull << m); }
+                }
+                return mask;
+            };
+
+            ::std::vector<pattern> patterns{};
+            patterns.reserve(16);
+            patterns.push_back(pattern{pkind::not1, 1u, truth_mask(1u, [](bool const* a) noexcept { return !a[0]; }), 1u});
+            patterns.push_back(pattern{pkind::and2, 2u, truth_mask(2u, [](bool const* a) noexcept { return a[0] & a[1]; }), 1u});
+            patterns.push_back(pattern{pkind::or2, 2u, truth_mask(2u, [](bool const* a) noexcept { return a[0] | a[1]; }), 1u});
+            patterns.push_back(pattern{pkind::xor2, 2u, truth_mask(2u, [](bool const* a) noexcept { return a[0] ^ a[1]; }), 1u});
+            patterns.push_back(pattern{pkind::xnor2, 2u, truth_mask(2u, [](bool const* a) noexcept { return !(a[0] ^ a[1]); }), 1u});
+            patterns.push_back(pattern{pkind::nand2, 2u, truth_mask(2u, [](bool const* a) noexcept { return !(a[0] & a[1]); }), 1u});
+            patterns.push_back(pattern{pkind::nor2, 2u, truth_mask(2u, [](bool const* a) noexcept { return !(a[0] | a[1]); }), 1u});
+            patterns.push_back(pattern{pkind::imp2, 2u, truth_mask(2u, [](bool const* a) noexcept { return (!a[0]) | a[1]; }), 1u});
+            patterns.push_back(pattern{pkind::nimp2, 2u, truth_mask(2u, [](bool const* a) noexcept { return a[0] & (!a[1]); }), 1u});
+
+            if(opt.techmap_richer_library && max_cut >= 3u)
+            {
+                patterns.push_back(pattern{pkind::aoi21, 3u, truth_mask(3u, [](bool const* a) noexcept { return !((a[0] & a[1]) | a[2]); }), 3u});
+                patterns.push_back(pattern{pkind::oai21, 3u, truth_mask(3u, [](bool const* a) noexcept { return !((a[0] | a[1]) & a[2]); }), 3u});
+            }
+            if(opt.techmap_richer_library && max_cut >= 4u)
+            {
+                patterns.push_back(pattern{pkind::aoi22, 4u, truth_mask(4u, [](bool const* a) noexcept { return !((a[0] & a[1]) | (a[2] & a[3])); }), 4u});
+                patterns.push_back(pattern{pkind::oai22, 4u, truth_mask(4u, [](bool const* a) noexcept { return !((a[0] | a[1]) & (a[2] | a[3])); }), 4u});
+            }
+
+            auto eval_gate = [&](auto&& self,
+                                 ::phy_engine::model::node_t* node,
+                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
+                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
+                                 ::std::unordered_map<::phy_engine::model::node_t*, bool>& visiting) noexcept -> ::phy_engine::model::digital_node_statement_t
+            {
+                if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
+                if(auto it = memo.find(node); it != memo.end()) { return it->second; }
+                if(auto it = leaf_val.find(node); it != leaf_val.end())
+                {
+                    memo.emplace(node, it->second);
+                    return it->second;
+                }
+                auto itg = gate_by_out.find(node);
+                if(itg == gate_by_out.end())
+                {
+                    memo.emplace(node, ::phy_engine::model::digital_node_statement_t::indeterminate_state);
+                    return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
+                }
+                if(visiting.contains(node)) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
+                visiting.emplace(node, true);
+                auto const& g = itg->second;
+                using dns = ::phy_engine::model::digital_node_statement_t;
+                dns a = self(self, g.in0, leaf_val, memo, visiting);
+                dns b = self(self, g.in1, leaf_val, memo, visiting);
+                dns r{};
+                switch(g.k)
+                {
+                    case kind::not_gate: r = ~a; break;
+                    case kind::and_gate: r = (a & b); break;
+                    case kind::or_gate: r = (a | b); break;
+                    case kind::xor_gate: r = (a ^ b); break;
+                    case kind::xnor_gate: r = ~(a ^ b); break;
+                    case kind::nand_gate: r = ~(a & b); break;
+                    case kind::nor_gate: r = ~(a | b); break;
+                    case kind::imp_gate: r = ((~a) | b); break;
+                    case kind::nimp_gate: r = (a & (~b)); break;
+                    default: r = dns::indeterminate_state; break;
+                }
+                visiting.erase(node);
+                memo.emplace(node, r);
+                return r;
+            };
+
+            auto compute_mask = [&](::phy_engine::model::node_t* root,
+                                    ::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept -> ::std::optional<::std::uint64_t>
+            {
+                auto const n = leaves.size();
+                if(n == 0 || n > 6u) { return ::std::nullopt; }
+                auto const U = static_cast<std::size_t>(1u << n);
+                ::std::uint64_t mask{};
+                for(std::size_t m{}; m < U; ++m)
+                {
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
+                    leaf_val.reserve(n * 2u);
+                    for(std::size_t i{}; i < n; ++i)
+                    {
+                        bool const bit = ((m >> i) & 1u) != 0u;
+                        leaf_val.emplace(leaves[i],
+                                         bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                             : ::phy_engine::model::digital_node_statement_t::false_state);
+                    }
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
+                    memo.reserve(64);
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                    visiting.reserve(64);
+                    auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
+                    if(r == ::phy_engine::model::digital_node_statement_t::true_state) { mask |= (1ull << m); }
+                    else if(r != ::phy_engine::model::digital_node_statement_t::false_state) { return ::std::nullopt; }
+                }
+                return mask;
+            };
+
+            auto match_best = [&](::std::uint64_t target,
+                                  std::vector<::phy_engine::model::node_t*> const& leaves,
+                                  std::size_t leaf_cost) noexcept -> ::std::optional<::std::pair<choice, std::size_t>>
+            {
+                auto const n = leaves.size();
+                if(n == 0 || n > 4u) { return ::std::nullopt; }
+                ::std::array<unsigned, 4> base_perm{};
+                for(std::size_t i{}; i < n; ++i) { base_perm[i] = static_cast<unsigned>(i); }
+
+                auto make_variant = [&](pattern const& pat, ::std::array<unsigned, 4> const& perm, ::std::uint32_t neg_mask) noexcept -> ::std::uint64_t
+                {
+                    auto const U = static_cast<std::size_t>(1u << n);
+                    ::std::uint64_t mask{};
+                    for(std::size_t m{}; m < U; ++m)
+                    {
+                        std::size_t p_m{};
+                        for(std::size_t i{}; i < n; ++i)
+                        {
+                            bool bit = ((m >> perm[i]) & 1u) != 0u;
+                            if((neg_mask >> i) & 1u) { bit = !bit; }
+                            if(bit) { p_m |= (1u << i); }
+                        }
+                        if(((pat.truth >> p_m) & 1u) != 0u) { mask |= (1ull << m); }
+                    }
+                    return mask;
+                };
+
+                bool found{};
+                choice best_choice{};
+                std::size_t best_cost{static_cast<std::size_t>(-1)};
+
+                for(std::size_t pi{}; pi < patterns.size(); ++pi)
+                {
+                    auto const& pat = patterns[pi];
+                    if(pat.inputs != n) { continue; }
+
+                    ::std::array<unsigned, 4> perm = base_perm;
+                    do
+                    {
+                        auto const neg_max = static_cast<std::uint32_t>(1u << n);
+                        for(::std::uint32_t neg{}; neg < neg_max; ++neg)
+                        {
+                            auto const vmask = make_variant(pat, perm, neg);
+                            if(vmask != target) { continue; }
+                            auto const inv_cost = static_cast<std::size_t>(__builtin_popcount(neg));
+                            auto const total = pat.cost + inv_cost + leaf_cost;
+                            if(!found || total < best_cost)
+                            {
+                                found = true;
+                                best_cost = total;
+                                best_choice.valid = true;
+                                best_choice.pattern_idx = pi;
+                                best_choice.leaves = leaves;
+                                best_choice.perm = perm;
+                                best_choice.neg_mask = neg;
+                                best_choice.inputs = n;
+                            }
+                        }
+                    }
+                    while(::std::next_permutation(perm.begin(), perm.begin() + static_cast<std::ptrdiff_t>(n)));
+                }
+
+                if(!found) { return ::std::nullopt; }
+                return ::std::make_pair(best_choice, best_cost);
+            };
+
+            auto merge_leaves = [&](::std::vector<::phy_engine::model::node_t*> const& a,
+                                    ::std::vector<::phy_engine::model::node_t*> const& b,
+                                    ::std::vector<::phy_engine::model::node_t*>& out) noexcept -> bool
+            {
+                out.clear();
+                out.reserve(a.size() + b.size());
+                std::size_t i{};
+                std::size_t j{};
+                while(i < a.size() || j < b.size())
+                {
+                    if(j >= b.size() || (i < a.size() && reinterpret_cast<std::uintptr_t>(a[i]) < reinterpret_cast<std::uintptr_t>(b[j])))
+                    {
+                        out.push_back(a[i++]);
+                    }
+                    else if(i >= a.size() || reinterpret_cast<std::uintptr_t>(b[j]) < reinterpret_cast<std::uintptr_t>(a[i])) { out.push_back(b[j++]); }
+                    else
+                    {
+                        out.push_back(a[i]);
+                        ++i;
+                        ++j;
+                    }
+                    if(out.size() > max_cut) { return false; }
+                }
+                return true;
+            };
+
+            auto move_consumers_all = [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to) noexcept -> bool
+            {
+                if(from == nullptr || to == nullptr || from == to) { return false; }
+                if(is_protected(from)) { return false; }
+                ::std::vector<::phy_engine::model::pin*> pins_to_move{};
+                pins_to_move.reserve(from->pins.size());
+                for(auto* p: from->pins)
+                {
+                    auto it = fan.pin_out.find(p);
+                    bool const is_out = (it != fan.pin_out.end()) ? it->second : false;
+                    if(is_out) { continue; }
+                    pins_to_move.push_back(p);
+                }
+                for(auto* p: pins_to_move)
+                {
+                    from->pins.erase(p);
+                    p->nodes = to;
+                    to->pins.insert(p);
+                }
+                return true;
+            };
+
+            struct cone
+            {
+                ::phy_engine::model::node_t* root{};
+                ::std::vector<::phy_engine::model::node_t*> leaves{};
+                ::std::vector<::phy_engine::model::node_t*> topo{};
+                ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> internal{};
+            };
+
+            auto collect_cone = [&](::phy_engine::model::node_t* root, cone& c) noexcept -> bool
+            {
+                if(root == nullptr) { return false; }
+                auto it_root = gate_by_out.find(root);
+                if(it_root == gate_by_out.end()) { return false; }
+                auto const& rg = it_root->second;
+                if(rg.out_pin == nullptr) { return false; }
+                if(!has_unique_driver_pin(root, rg.out_pin, fan.pin_out)) { return false; }
+
+                c.root = root;
+                c.leaves.clear();
+                c.topo.clear();
+                c.to_delete.clear();
+                c.internal.clear();
+                c.internal.reserve(max_gates * 2u);
+
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> leaf_seen{};
+                leaf_seen.reserve(max_cut * 2u);
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> visited{};
+                visited.reserve(max_gates * 2u);
+                bool ok{true};
+                std::size_t gate_count{};
+
+                auto dfs = [&](auto&& self, ::phy_engine::model::node_t* n, bool is_root) noexcept -> void
+                {
+                    if(!ok || n == nullptr)
+                    {
+                        ok = false;
+                        return;
+                    }
+                    if(visited.contains(n)) { return; }
+                    visited.emplace(n, true);
+
+                    if(!is_root && is_protected(n))
+                    {
+                        if(!leaf_seen.contains(n))
+                        {
+                            leaf_seen.emplace(n, true);
+                            c.leaves.push_back(n);
+                        }
+                        return;
+                    }
+
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end())
+                    {
+                        if(!leaf_seen.contains(n))
+                        {
+                            leaf_seen.emplace(n, true);
+                            c.leaves.push_back(n);
+                        }
+                        return;
+                    }
+
+                    auto const& g = itg->second;
+                    if(!is_root)
+                    {
+                        auto itd = fan.driver_count.find(n);
+                        auto itc = fan.consumer_count.find(n);
+                        if(itd == fan.driver_count.end() || itc == fan.consumer_count.end() || itd->second != 1u || itc->second != 1u)
+                        {
+                            if(!leaf_seen.contains(n))
+                            {
+                                leaf_seen.emplace(n, true);
+                                c.leaves.push_back(n);
+                            }
+                            return;
+                        }
+                        if(g.out_pin == nullptr || !has_unique_driver_pin(n, g.out_pin, fan.pin_out))
+                        {
+                            if(!leaf_seen.contains(n))
+                            {
+                                leaf_seen.emplace(n, true);
+                                c.leaves.push_back(n);
+                            }
+                            return;
+                        }
+                    }
+
+                    if(g.in0 == nullptr || (g.k != kind::not_gate && g.in1 == nullptr))
+                    {
+                        ok = false;
+                        return;
+                    }
+
+                    if(++gate_count > max_gates)
+                    {
+                        ok = false;
+                        return;
+                    }
+                    c.internal.emplace(n, true);
+                    c.to_delete.push_back(g.pos);
+                    self(self, g.in0, false);
+                    if(g.k != kind::not_gate) { self(self, g.in1, false); }
+                };
+
+                dfs(dfs, root, true);
+                if(!ok) { return false; }
+                if(c.leaves.empty()) { return false; }
+                if(c.leaves.size() > max_cut) { return false; }
+
+                // Topological order (children before parents).
+                visited.clear();
+                auto topo_dfs = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> void
+                {
+                    if(n == nullptr || visited.contains(n)) { return; }
+                    visited.emplace(n, true);
+                    if(!c.internal.contains(n)) { return; }
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end()) { return; }
+                    auto const& g = itg->second;
+                    self(self, g.in0);
+                    if(g.k != kind::not_gate) { self(self, g.in1); }
+                    c.topo.push_back(n);
+                };
+
+                topo_dfs(topo_dfs, root);
+                return !c.topo.empty();
+            };
+
+            auto make_not = [&](::phy_engine::model::node_t* in,
+                                ::std::vector<::phy_engine::netlist::model_pos>& new_models) noexcept -> ::phy_engine::model::node_t*
+            {
+                if(in == nullptr) { return nullptr; }
+                auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOT{});
+                if(m == nullptr) { return nullptr; }
+                new_models.push_back(pos);
+                auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                auto* out = __builtin_addressof(out_ref);
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *in) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *out)) { return nullptr; }
+                return out;
+            };
+
+            auto make_bin = [&](pkind k,
+                                ::phy_engine::model::node_t* a,
+                                ::phy_engine::model::node_t* b,
+                                ::std::vector<::phy_engine::netlist::model_pos>& new_models) noexcept -> ::phy_engine::model::node_t*
+            {
+                if(a == nullptr || b == nullptr) { return nullptr; }
+                ::phy_engine::netlist::add_model_retstr r{};
+                switch(k)
+                {
+                    case pkind::and2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{}); break;
+                    case pkind::or2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{}); break;
+                    case pkind::xor2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::XOR{}); break;
+                    case pkind::xnor2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::XNOR{}); break;
+                    case pkind::nand2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NAND{}); break;
+                    case pkind::nor2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOR{}); break;
+                    case pkind::imp2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::IMP{}); break;
+                    case pkind::nimp2: r = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NIMP{}); break;
+                    default: return nullptr;
+                }
+                if(r.mod == nullptr) { return nullptr; }
+                new_models.push_back(r.mod_pos);
+                auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                auto* out = __builtin_addressof(out_ref);
+                if(!::phy_engine::netlist::add_to_node(nl, *r.mod, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *r.mod, 1, *b) ||
+                   !::phy_engine::netlist::add_to_node(nl, *r.mod, 2, *out))
+                {
+                    return nullptr;
+                }
+                return out;
+            };
+
+            auto build_pattern = [&](pattern const& pat,
+                                     ::std::array<::phy_engine::model::node_t*, 4> const& ins,
+                                     ::std::vector<::phy_engine::netlist::model_pos>& new_models) noexcept -> ::phy_engine::model::node_t*
+            {
+                switch(pat.k)
+                {
+                    case pkind::not1: return make_not(ins[0], new_models);
+                    case pkind::and2:
+                    case pkind::or2:
+                    case pkind::xor2:
+                    case pkind::xnor2:
+                    case pkind::nand2:
+                    case pkind::nor2:
+                    case pkind::imp2:
+                    case pkind::nimp2: return make_bin(pat.k, ins[0], ins[1], new_models);
+                    case pkind::aoi21:
+                    {
+                        auto* t = make_bin(pkind::and2, ins[0], ins[1], new_models);
+                        auto* u = make_bin(pkind::or2, t, ins[2], new_models);
+                        return make_not(u, new_models);
+                    }
+                    case pkind::oai21:
+                    {
+                        auto* t = make_bin(pkind::or2, ins[0], ins[1], new_models);
+                        auto* u = make_bin(pkind::and2, t, ins[2], new_models);
+                        return make_not(u, new_models);
+                    }
+                    case pkind::aoi22:
+                    {
+                        auto* t0 = make_bin(pkind::and2, ins[0], ins[1], new_models);
+                        auto* t1 = make_bin(pkind::and2, ins[2], ins[3], new_models);
+                        auto* u = make_bin(pkind::or2, t0, t1, new_models);
+                        return make_not(u, new_models);
+                    }
+                    case pkind::oai22:
+                    {
+                        auto* t0 = make_bin(pkind::or2, ins[0], ins[1], new_models);
+                        auto* t1 = make_bin(pkind::or2, ins[2], ins[3], new_models);
+                        auto* u = make_bin(pkind::and2, t0, t1, new_models);
+                        return make_not(u, new_models);
+                    }
+                    default: return nullptr;
+                }
+            };
+
+            bool changed{};
+            ::std::vector<::phy_engine::model::node_t*> roots{};
+            roots.reserve(gate_by_out.size());
+            for(auto const& kv: gate_by_out) { roots.push_back(kv.first); }
+
+            for(auto* root: roots)
+            {
+                cone c{};
+                if(!collect_cone(root, c)) { continue; }
+                if(c.leaves.size() > max_cut) { continue; }
+
+                ::std::unordered_map<::phy_engine::model::node_t*, ::std::vector<cut>> cuts{};
+                cuts.reserve(c.topo.size() * 2u);
+
+                auto ensure_leaf_cut = [&](::phy_engine::model::node_t* n) noexcept -> ::std::vector<cut>&
+                {
+                    auto it = cuts.find(n);
+                    if(it != cuts.end()) { return it->second; }
+                    cut ct{};
+                    ct.leaves = {n};
+                    auto [ins_it, ok] = cuts.emplace(n, ::std::vector<cut>{ct});
+                    (void)ok;
+                    return ins_it->second;
+                };
+
+                bool cuts_ok{true};
+                for(auto* n: c.topo)
+                {
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end())
+                    {
+                        cuts_ok = false;
+                        break;
+                    }
+                    auto const& g = itg->second;
+                    if(g.in0 == nullptr || (g.k != kind::not_gate && g.in1 == nullptr))
+                    {
+                        cuts_ok = false;
+                        break;
+                    }
+                    ::std::vector<cut> node_cuts{};
+                    node_cuts.reserve(max_cuts + 1u);
+
+                    // Unit cut.
+                    node_cuts.push_back(cut{::std::vector<::phy_engine::model::node_t*>{n}});
+
+                    if(g.k == kind::not_gate)
+                    {
+                        auto& cin = (c.internal.contains(g.in0)) ? cuts[g.in0] : ensure_leaf_cut(g.in0);
+                        for(auto const& ca: cin) { node_cuts.push_back(ca); }
+                    }
+                    else
+                    {
+                        auto& c0 = (c.internal.contains(g.in0)) ? cuts[g.in0] : ensure_leaf_cut(g.in0);
+                        auto& c1 = (c.internal.contains(g.in1)) ? cuts[g.in1] : ensure_leaf_cut(g.in1);
+                        ::std::vector<::phy_engine::model::node_t*> merged{};
+                        for(auto const& ca: c0)
+                        {
+                            for(auto const& cb: c1)
+                            {
+                                if(!merge_leaves(ca.leaves, cb.leaves, merged)) { continue; }
+                                node_cuts.push_back(cut{merged});
+                            }
+                        }
+                    }
+
+                    // Dedup by leaf set.
+                    auto same_leaves = [](cut const& a, cut const& b) noexcept -> bool { return a.leaves == b.leaves; };
+                    ::std::sort(node_cuts.begin(),
+                                node_cuts.end(),
+                                [](cut const& a, cut const& b) noexcept
+                                {
+                                    if(a.leaves.size() != b.leaves.size()) { return a.leaves.size() < b.leaves.size(); }
+                                    return a.leaves < b.leaves;
+                                });
+                    node_cuts.erase(::std::unique(node_cuts.begin(), node_cuts.end(), same_leaves), node_cuts.end());
+
+                    if(node_cuts.size() > max_cuts) { node_cuts.resize(max_cuts); }
+                    cuts[n] = ::std::move(node_cuts);
+                }
+                if(!cuts_ok) { continue; }
+
+                ::std::unordered_map<::phy_engine::model::node_t*, choice> best_choice{};
+                ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> best_cost{};
+                best_choice.reserve(c.topo.size() * 2u);
+                best_cost.reserve(c.topo.size() * 2u);
+
+                bool ok{true};
+                for(auto* n: c.topo)
+                {
+                    auto itc = cuts.find(n);
+                    if(itc == cuts.end())
+                    {
+                        ok = false;
+                        break;
+                    }
+                    std::size_t best{static_cast<std::size_t>(-1)};
+                    choice bestc{};
+
+                    for(auto const& ct: itc->second)
+                    {
+                        if(ct.leaves.size() == 1u && ct.leaves[0] == n) { continue; }  // unit cut only for parent enumeration
+
+                        auto mask = compute_mask(n, ct.leaves);
+                        if(!mask) { continue; }
+
+                        std::size_t leaf_cost{};
+                        for(auto* leaf: ct.leaves)
+                        {
+                            if(c.internal.contains(leaf))
+                            {
+                                auto itb = best_cost.find(leaf);
+                                if(itb == best_cost.end())
+                                {
+                                    leaf_cost = static_cast<std::size_t>(-1);
+                                    break;
+                                }
+                                leaf_cost += itb->second;
+                            }
+                        }
+                        if(leaf_cost == static_cast<std::size_t>(-1)) { continue; }
+
+                        auto match = match_best(*mask, ct.leaves, leaf_cost);
+                        if(!match) { continue; }
+                        auto const& cand_choice = match->first;
+                        auto const cand_cost = match->second;
+                        if(cand_cost < best)
+                        {
+                            best = cand_cost;
+                            bestc = cand_choice;
+                        }
+                    }
+
+                    if(best == static_cast<std::size_t>(-1))
+                    {
+                        ok = false;
+                        break;
+                    }
+                    best_cost.emplace(n, best);
+                    best_choice.emplace(n, bestc);
+                }
+                if(!ok) { continue; }
+
+                auto itb = best_cost.find(root);
+                if(itb == best_cost.end()) { continue; }
+                auto const old_cost = c.to_delete.size();
+                auto const new_cost = itb->second + (is_protected(root) ? 1u : 0u);
+                if(new_cost >= old_cost) { continue; }
+
+                ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> built{};
+                built.reserve(c.topo.size() * 2u);
+                ::std::vector<::phy_engine::netlist::model_pos> new_models{};
+                new_models.reserve(old_cost + 8u);
+
+                auto build_node = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(n == nullptr) { return nullptr; }
+                    if(!c.internal.contains(n)) { return n; }
+                    if(auto it = built.find(n); it != built.end()) { return it->second; }
+                    auto itc = best_choice.find(n);
+                    if(itc == best_choice.end() || !itc->second.valid) { return nullptr; }
+                    auto const& ch = itc->second;
+                    auto const& pat = patterns[ch.pattern_idx];
+
+                    ::std::array<::phy_engine::model::node_t*, 4> ins{};
+                    for(std::size_t i{}; i < ch.inputs; ++i)
+                    {
+                        auto idx = static_cast<std::size_t>(ch.perm[i]);
+                        if(idx >= ch.leaves.size()) { return nullptr; }
+                        auto* leaf = ch.leaves[idx];
+                        auto* in = self(self, leaf);
+                        if(in == nullptr) { return nullptr; }
+                        if((ch.neg_mask >> i) & 1u) { in = make_not(in, new_models); }
+                        ins[i] = in;
+                    }
+                    auto* out = build_pattern(pat, ins, new_models);
+                    if(out == nullptr) { return nullptr; }
+                    built.emplace(n, out);
+                    return out;
+                };
+
+                auto* new_out = build_node(build_node, root);
+                if(new_out == nullptr)
+                {
+                    for(auto const mp: new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    continue;
+                }
+
+                if(!is_protected(root))
+                {
+                    if(!move_consumers_all(root, new_out))
+                    {
+                        for(auto const mp: new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        continue;
+                    }
+                }
+
+                for(auto const mp: c.to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+
+                if(is_protected(root))
+                {
+                    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{});
+                    if(m == nullptr || !::phy_engine::netlist::add_to_node(nl, *m, 0, *new_out) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *root))
+                    {
+                        (void)::phy_engine::netlist::delete_model(nl, pos);
+                    }
+                }
+
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        [[nodiscard]] inline bool optimize_bdd_decompose_large_cones_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+                                                                                   ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
+                                                                                   pe_synth_options const& opt) noexcept
+        {
+            if(!opt.assume_binary_inputs || !opt.decompose_large_functions) { return false; }
+
+            std::size_t const min_vars = opt.decomp_min_vars;
+            std::size_t const max_vars = (opt.decomp_max_vars > 16u) ? 16u : opt.decomp_max_vars;
+            std::size_t const max_gates = (opt.decomp_max_gates == 0u) ? 256u : opt.decomp_max_gates;
+            std::size_t const bdd_limit = (opt.decomp_bdd_node_limit < 2u) ? 2u : opt.decomp_bdd_node_limit;
+            if(max_vars == 0u) { return false; }
+
+            enum class kind : std::uint8_t
+            {
+                not_gate,
+                and_gate,
+                or_gate,
+                xor_gate,
+                xnor_gate,
+                nand_gate,
+                nor_gate,
+                imp_gate,
+                nimp_gate,
+            };
+
+            struct gate
+            {
+                kind k{};
+                ::phy_engine::netlist::model_pos pos{};
+                ::phy_engine::model::node_t* in0{};
+                ::phy_engine::model::node_t* in1{};
+                ::phy_engine::model::node_t* out{};
+                ::phy_engine::model::pin const* out_pin{};
+            };
+
+            ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
+            protected_map.reserve(protected_nodes.size() * 2u + 1u);
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
+            auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
+
+            auto const fan = build_gate_opt_fanout(nl);
+
+            ::std::unordered_map<::phy_engine::model::node_t*, gate> gate_by_out{};
+            gate_by_out.reserve(1 << 14);
+
+            auto classify = [&](::phy_engine::model::model_base const& mb, ::phy_engine::netlist::model_pos pos) noexcept -> ::std::optional<gate>
+            {
+                if(mb.type != ::phy_engine::model::model_type::normal || mb.ptr == nullptr) { return ::std::nullopt; }
+                auto const name = model_name_u8(mb);
+                auto pv = mb.ptr->generate_pin_view();
+
+                gate g{};
+                g.pos = pos;
+                if(name == u8"NOT")
+                {
+                    if(pv.size != 2) { return ::std::nullopt; }
+                    g.k = kind::not_gate;
+                    g.in0 = pv.pins[0].nodes;
+                    g.out = pv.pins[1].nodes;
+                    g.out_pin = __builtin_addressof(pv.pins[1]);
+                    return g;
+                }
+
+                if(name == u8"AND" || name == u8"OR" || name == u8"XOR" || name == u8"XNOR" || name == u8"NAND" || name == u8"NOR" || name == u8"IMP" ||
+                   name == u8"NIMP")
+                {
+                    if(pv.size != 3) { return ::std::nullopt; }
+                    g.in0 = pv.pins[0].nodes;
+                    g.in1 = pv.pins[1].nodes;
+                    g.out = pv.pins[2].nodes;
+                    g.out_pin = __builtin_addressof(pv.pins[2]);
+                    if(name == u8"AND") { g.k = kind::and_gate; }
+                    else if(name == u8"OR") { g.k = kind::or_gate; }
+                    else if(name == u8"XOR") { g.k = kind::xor_gate; }
+                    else if(name == u8"XNOR") { g.k = kind::xnor_gate; }
+                    else if(name == u8"NAND") { g.k = kind::nand_gate; }
+                    else if(name == u8"NOR") { g.k = kind::nor_gate; }
+                    else if(name == u8"IMP") { g.k = kind::imp_gate; }
+                    else
+                    {
+                        g.k = kind::nimp_gate;
+                    }
+                    return g;
+                }
+
+                return ::std::nullopt;
+            };
+
+            for(std::size_t chunk_pos{}; chunk_pos < nl.models.size(); ++chunk_pos)
+            {
+                auto& blk = nl.models.index_unchecked(chunk_pos);
+                for(std::size_t vec_pos{}; blk.begin + vec_pos < blk.curr; ++vec_pos)
+                {
+                    auto const& mb = blk.begin[vec_pos];
+                    auto og = classify(mb, {vec_pos, chunk_pos});
+                    if(!og || og->out == nullptr || og->out_pin == nullptr) { continue; }
+                    gate_by_out.emplace(og->out, *og);
+                }
+            }
+
+            struct cone
+            {
+                ::phy_engine::model::node_t* root{};
+                ::phy_engine::model::pin const* root_out_pin{};
+                ::std::vector<::phy_engine::model::node_t*> leaves{};
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> internal{};
+                ::std::vector<::phy_engine::model::node_t*> topo{};
+                ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
+            };
+
+            auto collect_cone = [&](::phy_engine::model::node_t* root, cone& c) noexcept -> bool
+            {
+                auto it_root = gate_by_out.find(root);
+                if(it_root == gate_by_out.end()) { return false; }
+                auto const& rg = it_root->second;
+                if(rg.out_pin == nullptr) { return false; }
+                if(!has_unique_driver_pin(root, rg.out_pin, fan.pin_out)) { return false; }
+
+                c.root = root;
+                c.root_out_pin = rg.out_pin;
+                c.leaves.clear();
+                c.internal.clear();
+                c.topo.clear();
+                c.to_delete.clear();
+                c.internal.reserve(max_gates * 2u);
+                c.to_delete.reserve(max_gates);
+
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> visited{};
+                visited.reserve(max_gates * 2u);
+                ::std::unordered_map<::phy_engine::model::node_t*, bool> leaf_seen{};
+                leaf_seen.reserve(max_vars * 2u);
+                std::size_t gate_count{};
+                bool ok{true};
+
+                auto dfs = [&](auto&& self, ::phy_engine::model::node_t* n, bool is_root) noexcept -> void
+                {
+                    if(!ok || n == nullptr)
+                    {
+                        ok = false;
+                        return;
+                    }
+                    if(visited.contains(n)) { return; }
+                    visited.emplace(n, true);
+
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end())
+                    {
+                        if(!leaf_seen.contains(n))
+                        {
+                            leaf_seen.emplace(n, true);
+                            c.leaves.push_back(n);
+                        }
+                        return;
+                    }
+
+                    auto const& g = itg->second;
+                    if(g.in0 == nullptr || (g.k != kind::not_gate && g.in1 == nullptr))
+                    {
+                        ok = false;
+                        return;
+                    }
+
+                    if(!is_root)
+                    {
+                        // Stop at protected or shared nodes (treat as leaves).
+                        if(is_protected(n))
+                        {
+                            if(!leaf_seen.contains(n))
+                            {
+                                leaf_seen.emplace(n, true);
+                                c.leaves.push_back(n);
+                            }
+                            return;
+                        }
+
+                        auto itd = fan.driver_count.find(n);
+                        auto itc = fan.consumer_count.find(n);
+                        if(itd == fan.driver_count.end() || itc == fan.consumer_count.end() || itd->second != 1u || itc->second != 1u)
+                        {
+                            if(!leaf_seen.contains(n))
+                            {
+                                leaf_seen.emplace(n, true);
+                                c.leaves.push_back(n);
+                            }
+                            return;
+                        }
+                        if(g.out_pin == nullptr || !has_unique_driver_pin(n, g.out_pin, fan.pin_out))
+                        {
+                            if(!leaf_seen.contains(n))
+                            {
+                                leaf_seen.emplace(n, true);
+                                c.leaves.push_back(n);
+                            }
+                            return;
+                        }
+                    }
+
+                    if(++gate_count > max_gates)
+                    {
+                        ok = false;
+                        return;
+                    }
+                    c.internal.emplace(n, true);
+                    c.to_delete.push_back(g.pos);
+                    self(self, g.in0, false);
+                    if(g.k != kind::not_gate) { self(self, g.in1, false); }
+                };
+
+                dfs(dfs, root, true);
+                if(!ok) { return false; }
+                if(c.leaves.size() < min_vars || c.leaves.size() > max_vars) { return false; }
+
+                ::std::sort(c.leaves.begin(),
+                            c.leaves.end(),
+                            [](auto* a, auto* b) noexcept { return reinterpret_cast<std::uintptr_t>(a) < reinterpret_cast<std::uintptr_t>(b); });
+
+                // Topological order (children before parents) restricted to internal nodes.
+                visited.clear();
+                auto topo_dfs = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> void
+                {
+                    if(n == nullptr || visited.contains(n)) { return; }
+                    visited.emplace(n, true);
+                    if(!c.internal.contains(n)) { return; }
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end()) { return; }
+                    auto const& g = itg->second;
+                    self(self, g.in0);
+                    if(g.k != kind::not_gate) { self(self, g.in1); }
+                    c.topo.push_back(n);
+                };
+                topo_dfs(topo_dfs, root);
+                return !c.topo.empty();
+            };
+
+            auto build_truth = [&](cone const& c, ::std::vector<::std::vector<::std::uint64_t>>& out_bits) noexcept -> bool
+            {
+                auto const var_count = c.leaves.size();
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                auto const blocks = (U + 63u) / 64u;
+                auto const rem = (U % 64u);
+                auto const last_mask = (rem == 0u) ? ~0ull : ((1ull << rem) - 1ull);
+
+                ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> leaf_idx{};
+                leaf_idx.reserve(var_count * 2u);
+                for(std::size_t i{}; i < var_count; ++i) { leaf_idx.emplace(c.leaves[i], i); }
+
+                ::std::vector<::std::vector<::std::uint64_t>> leaf_bits{};
+                leaf_bits.assign(var_count, ::std::vector<::std::uint64_t>(blocks, 0ull));
+                for(std::size_t m{}; m < U; ++m)
+                {
+                    for(std::size_t v{}; v < var_count; ++v)
+                    {
+                        if(((m >> v) & 1u) == 0u) { continue; }
+                        leaf_bits[v][m >> 6] |= (1ull << (m & 63u));
+                    }
+                }
+                if(rem != 0u)
+                {
+                    for(std::size_t v{}; v < var_count; ++v) { leaf_bits[v].back() &= last_mask; }
+                }
+
+                ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> int_idx{};
+                int_idx.reserve(c.topo.size() * 2u);
+                for(std::size_t i{}; i < c.topo.size(); ++i) { int_idx.emplace(c.topo[i], i); }
+
+                out_bits.assign(c.topo.size(), ::std::vector<::std::uint64_t>(blocks, 0ull));
+
+                auto get_bits = [&](::phy_engine::model::node_t* n) noexcept -> ::std::vector<::std::uint64_t>*
+                {
+                    if(n == nullptr) { return nullptr; }
+                    if(auto it = int_idx.find(n); it != int_idx.end()) { return __builtin_addressof(out_bits[it->second]); }
+                    if(auto it = leaf_idx.find(n); it != leaf_idx.end()) { return __builtin_addressof(leaf_bits[it->second]); }
+                    return nullptr;
+                };
+
+                for(std::size_t i{}; i < c.topo.size(); ++i)
+                {
+                    auto* n = c.topo[i];
+                    auto itg = gate_by_out.find(n);
+                    if(itg == gate_by_out.end()) { return false; }
+                    auto const& g = itg->second;
+                    auto* a = get_bits(g.in0);
+                    auto* b = get_bits(g.in1);
+                    if(a == nullptr || (g.k != kind::not_gate && b == nullptr)) { return false; }
+
+                    auto& dst = out_bits[i];
+                    for(std::size_t w{}; w < blocks; ++w)
+                    {
+                        ::std::uint64_t av = (*a)[w];
+                        ::std::uint64_t bv = (g.k == kind::not_gate) ? 0ull : (*b)[w];
+                        ::std::uint64_t r{};
+                        switch(g.k)
+                        {
+                            case kind::not_gate: r = ~av; break;
+                            case kind::and_gate: r = (av & bv); break;
+                            case kind::or_gate: r = (av | bv); break;
+                            case kind::xor_gate: r = (av ^ bv); break;
+                            case kind::xnor_gate: r = ~(av ^ bv); break;
+                            case kind::nand_gate: r = ~(av & bv); break;
+                            case kind::nor_gate: r = ~(av | bv); break;
+                            case kind::imp_gate: r = ((~av) | bv); break;
+                            case kind::nimp_gate: r = (av & (~bv)); break;
+                            default: r = 0ull; break;
+                        }
+                        dst[w] = r;
+                    }
+                    if(rem != 0u) { dst.back() &= last_mask; }
+                }
+
+                return true;
+            };
+
+            auto move_consumers =
+                [&](::phy_engine::model::node_t* from, ::phy_engine::model::node_t* to, ::phy_engine::model::pin const* from_driver_pin) noexcept -> bool
+            {
+                if(from == nullptr || to == nullptr || from_driver_pin == nullptr) { return false; }
+                if(from == to) { return false; }
+                if(is_protected(from)) { return false; }
+                if(!has_unique_driver_pin(from, from_driver_pin, fan.pin_out)) { return false; }
+
+                ::std::vector<::phy_engine::model::pin*> pins_to_move{};
+                pins_to_move.reserve(from->pins.size());
+                for(auto* p: from->pins)
+                {
+                    if(p == from_driver_pin) { continue; }
+                    pins_to_move.push_back(p);
+                }
+                for(auto* p: pins_to_move)
+                {
+                    from->pins.erase(p);
+                    p->nodes = to;
+                    to->pins.insert(p);
+                }
+                return true;
+            };
+
+            auto add_yes = [&](::phy_engine::model::node_t* in, ::phy_engine::model::node_t* out) noexcept -> bool
+            {
+                if(in == nullptr || out == nullptr) { return false; }
+                auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::YES{});
+                (void)pos;
+                if(m == nullptr) { return false; }
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *in) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *out))
+                {
+                    (void)::phy_engine::netlist::delete_model(nl, pos);
+                    return false;
+                }
+                return true;
+            };
+
+            auto make_not = [&](::phy_engine::model::node_t* in,
+                                ::std::vector<::phy_engine::netlist::model_pos>& new_models) noexcept -> ::phy_engine::model::node_t*
+            {
+                if(in == nullptr) { return nullptr; }
+                auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::NOT{});
+                if(m == nullptr) { return nullptr; }
+                new_models.push_back(pos);
+                auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                auto* out = __builtin_addressof(out_ref);
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *in) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *out)) { return nullptr; }
+                return out;
+            };
+            auto make_and = [&](::phy_engine::model::node_t* a,
+                                ::phy_engine::model::node_t* b,
+                                ::phy_engine::model::node_t* const0,
+                                ::phy_engine::model::node_t* const1,
+                                ::std::vector<::phy_engine::netlist::model_pos>& new_models) noexcept -> ::phy_engine::model::node_t*
+            {
+                if(a == nullptr || b == nullptr) { return nullptr; }
+                if(a == const0 || b == const0) { return const0; }
+                if(a == const1) { return b; }
+                if(b == const1) { return a; }
+                auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::AND{});
+                if(m == nullptr) { return nullptr; }
+                new_models.push_back(pos);
+                auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                auto* out = __builtin_addressof(out_ref);
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *b) ||
+                   !::phy_engine::netlist::add_to_node(nl, *m, 2, *out))
+                {
+                    return nullptr;
+                }
+                return out;
+            };
+            auto make_or = [&](::phy_engine::model::node_t* a,
+                               ::phy_engine::model::node_t* b,
+                               ::phy_engine::model::node_t* const0,
+                               ::phy_engine::model::node_t* const1,
+                               ::std::vector<::phy_engine::netlist::model_pos>& new_models) noexcept -> ::phy_engine::model::node_t*
+            {
+                if(a == nullptr || b == nullptr) { return nullptr; }
+                if(a == const1 || b == const1) { return const1; }
+                if(a == const0) { return b; }
+                if(b == const0) { return a; }
+                auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OR{});
+                if(m == nullptr) { return nullptr; }
+                new_models.push_back(pos);
+                auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                auto* out = __builtin_addressof(out_ref);
+                if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *b) ||
+                   !::phy_engine::netlist::add_to_node(nl, *m, 2, *out))
+                {
+                    return nullptr;
+                }
+                return out;
+            };
+
+            struct bdd_node
+            {
+                ::std::uint16_t var{};
+                ::std::uint32_t lo{};
+                ::std::uint32_t hi{};
+            };
+
+            struct uniq_key
+            {
+                ::std::uint16_t var{};
+                ::std::uint32_t lo{};
+                ::std::uint32_t hi{};
+            };
+
+            struct uniq_hash
+            {
+                std::size_t operator() (uniq_key const& k) const noexcept
+                {
+                    auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
+                    { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
+                    std::size_t h{};
+                    h = mix(h, static_cast<std::size_t>(k.var));
+                    h = mix(h, static_cast<std::size_t>(k.lo));
+                    h = mix(h, static_cast<std::size_t>(k.hi));
+                    return h;
+                }
+            };
+
+            struct uniq_eq
+            {
+                bool operator() (uniq_key const& a, uniq_key const& b) const noexcept { return a.var == b.var && a.lo == b.lo && a.hi == b.hi; }
+            };
+
+            auto hash_tt = [](std::size_t depth, ::std::vector<::std::uint64_t> const& tt) noexcept -> ::std::uint64_t
+            {
+                // 64-bit FNV-1a-ish over words (bounded, deterministic).
+                ::std::uint64_t h = 1469598103934665603ull;
+                h ^= static_cast<::std::uint64_t>(depth) + 0x9e3779b97f4a7c15ull;
+                h *= 1099511628211ull;
+                for(auto const w: tt)
+                {
+                    h ^= w;
+                    h *= 1099511628211ull;
+                }
+                return h;
+            };
+
+            auto tt_all_zero = [](std::vector<std::uint64_t> const& tt) noexcept -> bool
+            {
+                for(auto const w: tt)
+                {
+                    if(w != 0ull) { return false; }
+                }
+                return true;
+            };
+
+            auto tt_all_one = [](std::vector<std::uint64_t> const& tt, std::uint64_t last_mask) noexcept -> bool
+            {
+                if(tt.empty()) { return false; }
+                for(std::size_t i{}; i + 1 < tt.size(); ++i)
+                {
+                    if(tt[i] != ~0ull) { return false; }
+                }
+                return (tt.back() & last_mask) == last_mask;
+            };
+
+            auto tt_get_bit = [](std::vector<std::uint64_t> const& tt, std::size_t idx) noexcept -> bool
+            { return ((tt[idx >> 6] >> (idx & 63u)) & 1ull) != 0ull; };
+
+            auto tt_set_bit = [](std::vector<std::uint64_t>& tt, std::size_t idx) noexcept -> void { tt[idx >> 6] |= (1ull << (idx & 63u)); };
+
+            bool changed{};
+            ::std::vector<::phy_engine::model::node_t*> roots{};
+            roots.reserve(gate_by_out.size());
+            for(auto const& kv: gate_by_out) { roots.push_back(kv.first); }
+
+            for(auto* root: roots)
+            {
+                cone c{};
+                if(!collect_cone(root, c)) { continue; }
+
+                auto const var_count = c.leaves.size();
+                if(var_count < min_vars || var_count > max_vars) { continue; }
+
+                // Build truth table for the root.
+                ::std::vector<::std::vector<::std::uint64_t>> bits{};
+                if(!build_truth(c, bits)) { continue; }
+                if(c.topo.empty()) { continue; }
+
+                auto it_root = gate_by_out.find(root);
+                if(it_root == gate_by_out.end()) { continue; }
+
+                // Root value is the last topo element because we DFS from root and push after children.
+                // However, to be robust, locate it by pointer.
+                std::size_t root_topo_idx = SIZE_MAX;
+                for(std::size_t i{}; i < c.topo.size(); ++i)
+                {
+                    if(c.topo[i] == root)
+                    {
+                        root_topo_idx = i;
+                        break;
+                    }
+                }
+                if(root_topo_idx == SIZE_MAX) { continue; }
+
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                auto const rem = (U % 64u);
+                auto const last_mask = (rem == 0u) ? ~0ull : ((1ull << rem) - 1ull);
+                auto root_tt = bits[root_topo_idx];
+                if(tt_all_zero(root_tt) || tt_all_one(root_tt, last_mask))
+                {
+                    // Let constprop handle this cheaply.
+                    continue;
+                }
+
+                // Build a reduced ordered BDD. Try a few small variable-order variants and pick the smallest BDD (bounded).
+                auto permute_tt = [&](::std::vector<::std::uint64_t> const& tt, ::std::vector<unsigned> const& perm) noexcept -> ::std::vector<::std::uint64_t>
+                {
+                    auto const UU = static_cast<std::size_t>(1u << var_count);
+                    auto const blocks = (UU + 63u) / 64u;
+                    ::std::vector<::std::uint64_t> out{};
+                    out.assign(blocks, 0ull);
+                    for(std::size_t m{}; m < UU; ++m)
+                    {
+                        std::size_t old_idx{};
+                        for(std::size_t i{}; i < var_count; ++i)
+                        {
+                            unsigned const ov = perm[i];
+                            bool const bit = ((m >> i) & 1u) != 0u;
+                            if(bit) { old_idx |= (1u << ov); }
+                        }
+                        if(tt_get_bit(tt, old_idx)) { tt_set_bit(out, m); }
+                    }
+                    if(rem != 0u) { out.back() &= last_mask; }
+                    return out;
+                };
+
+                auto influence_order = [&]() noexcept -> ::std::vector<unsigned>
+                {
+                    struct item
+                    {
+                        unsigned v{};
+                        std::size_t inf{};
+                    };
+                    ::std::vector<item> items{};
+                    items.reserve(var_count);
+                    for(unsigned v{}; v < static_cast<unsigned>(var_count); ++v)
+                    {
+                        std::size_t cnt{};
+                        auto const step = static_cast<std::size_t>(1u << v);
+                        for(std::size_t base{}; base < U; base += (step << 1u))
+                        {
+                            for(std::size_t i{}; i < step; ++i)
+                            {
+                                auto const a = base + i;
+                                auto const b = a + step;
+                                cnt += static_cast<std::size_t>(tt_get_bit(root_tt, a) != tt_get_bit(root_tt, b));
+                            }
+                        }
+                        items.push_back(item{v, cnt});
+                    }
+                    ::std::sort(items.begin(),
+                                items.end(),
+                                [](item const& a, item const& b) noexcept
+                                {
+                                    if(a.inf != b.inf) { return a.inf > b.inf; }
+                                    return a.v < b.v;
+                                });
+                    ::std::vector<unsigned> perm{};
+                    perm.reserve(var_count);
+                    for(auto const& it: items) { perm.push_back(it.v); }
+                    return perm;
+                };
+
+                auto try_build_bdd = [&](::std::vector<::std::uint64_t>&& tt_in, ::std::vector<bdd_node>& out_bdd) noexcept -> std::uint32_t
+                {
+                    out_bdd.clear();
+                    out_bdd.reserve(1024);
+                    out_bdd.push_back(bdd_node{0u, 0u, 0u});  // 0-terminal
+                    out_bdd.push_back(bdd_node{0u, 1u, 1u});  // 1-terminal (dummy)
+
+                    ::std::unordered_map<uniq_key, std::uint32_t, uniq_hash, uniq_eq> uniq{};
+                    uniq.reserve(bdd_limit * 2u);
+
+                    struct memo_entry
+                    {
+                        std::size_t depth{};
+                        ::std::vector<::std::uint64_t> tt{};
+                        std::uint32_t id{};
+                    };
+                    ::std::unordered_map<::std::uint64_t, ::std::vector<memo_entry>> memo{};
+                    memo.reserve(1 << 12);
+
+                    auto mk = [&](std::uint16_t v, std::uint32_t lo, std::uint32_t hi) noexcept -> std::uint32_t
+                    {
+                        if(lo == hi) { return lo; }
+                        uniq_key k{v, lo, hi};
+                        if(auto it = uniq.find(k); it != uniq.end()) { return it->second; }
+                        if(out_bdd.size() >= bdd_limit) { return static_cast<std::uint32_t>(-1); }
+                        auto const id = static_cast<std::uint32_t>(out_bdd.size());
+                        out_bdd.push_back(bdd_node{v, lo, hi});
+                        uniq.emplace(k, id);
+                        return id;
+                    };
+
+                    auto build_bdd = [&](auto&& self, std::size_t depth, ::std::vector<std::uint64_t>&& tt) noexcept -> std::uint32_t
+                    {
+                        auto const bits_n = static_cast<std::size_t>(1u << (var_count - depth));
+                        auto const remn = (bits_n % 64u);
+                        auto const lastm = (remn == 0u) ? ~0ull : ((1ull << remn) - 1ull);
+
+                        auto const h = hash_tt(depth, tt);
+                        auto& bucket = memo[h];
+                        for(auto const& e: bucket)
+                        {
+                            if(e.depth == depth && e.tt == tt) { return e.id; }
+                        }
+
+                        if(tt_all_zero(tt))
+                        {
+                            bucket.push_back(memo_entry{depth, ::std::move(tt), 0u});
+                            return 0u;
+                        }
+                        if(tt_all_one(tt, lastm))
+                        {
+                            bucket.push_back(memo_entry{depth, ::std::move(tt), 1u});
+                            return 1u;
+                        }
+                        if(depth >= var_count) { return 0u; }
+
+                        auto const half = bits_n / 2u;
+                        ::std::vector<std::uint64_t> t0((half + 63u) / 64u, 0ull);
+                        ::std::vector<std::uint64_t> t1((half + 63u) / 64u, 0ull);
+                        for(std::size_t i{}; i < half; ++i)
+                        {
+                            if(tt_get_bit(tt, 2u * i)) { tt_set_bit(t0, i); }
+                            if(tt_get_bit(tt, 2u * i + 1u)) { tt_set_bit(t1, i); }
+                        }
+                        if((half % 64u) != 0u)
+                        {
+                            auto const lm2 = (1ull << (half % 64u)) - 1ull;
+                            t0.back() &= lm2;
+                            t1.back() &= lm2;
+                        }
+
+                        if(t0 == t1)
+                        {
+                            auto lo = self(self, depth + 1u, ::std::move(t0));
+                            if(lo == static_cast<std::uint32_t>(-1)) { return lo; }
+                            bucket.push_back(memo_entry{depth, ::std::move(tt), lo});
+                            return lo;
+                        }
+
+                        auto lo = self(self, depth + 1u, ::std::move(t0));
+                        if(lo == static_cast<std::uint32_t>(-1)) { return lo; }
+                        auto hi = self(self, depth + 1u, ::std::move(t1));
+                        if(hi == static_cast<std::uint32_t>(-1)) { return hi; }
+
+                        auto id = mk(static_cast<std::uint16_t>(depth), lo, hi);
+                        if(id == static_cast<std::uint32_t>(-1)) { return id; }
+                        bucket.push_back(memo_entry{depth, ::std::move(tt), id});
+                        return id;
+                    };
+
+                    return build_bdd(build_bdd, 0u, ::std::move(tt_in));
+                };
+
+                auto is_ident_perm = [&](::std::vector<unsigned> const& p) noexcept -> bool
+                {
+                    if(p.size() != var_count) { return false; }
+                    for(std::size_t i{}; i < p.size(); ++i)
+                    {
+                        if(p[i] != i) { return false; }
+                    }
+                    return true;
+                };
+
+                ::std::vector<::std::vector<unsigned>> perms{};
+                perms.reserve(4);
+                {
+                    ::std::vector<unsigned> id{};
+                    id.reserve(var_count);
+                    for(unsigned i{}; i < static_cast<unsigned>(var_count); ++i) { id.push_back(i); }
+                    perms.push_back(::std::move(id));
+                }
+                perms.push_back(influence_order());
+                {
+                    auto rev = perms.front();
+                    ::std::reverse(rev.begin(), rev.end());
+                    perms.push_back(::std::move(rev));
+                }
+                {
+                    auto inv = influence_order();
+                    ::std::reverse(inv.begin(), inv.end());
+                    perms.push_back(::std::move(inv));
+                }
+
+                // Limit + (optional) randomized extra variable orders (Omax).
+                std::size_t perm_limit = opt.decomp_var_order_tries;
+                if(perm_limit == 0u) { perm_limit = 1u; }
+                if(perm_limit > 64u) { perm_limit = 64u; }
+
+                if(opt.omax_randomize && perms.size() < perm_limit)
+                {
+                    auto seed = opt.omax_rand_seed;
+                    seed ^= static_cast<::std::uint64_t>(reinterpret_cast<::std::uintptr_t>(root) >> 4);
+                    seed ^= static_cast<::std::uint64_t>(var_count) * 0x9e3779b97f4a7c15ull;
+                    ::std::mt19937_64 rng{seed};
+
+                    ::std::vector<unsigned> base{};
+                    base.reserve(var_count);
+                    for(unsigned i{}; i < static_cast<unsigned>(var_count); ++i) { base.push_back(i); }
+
+                    // Over-generate a bit; stable dedup below will trim.
+                    std::size_t attempts{};
+                    while(perms.size() < perm_limit && attempts++ < perm_limit * 8u)
+                    {
+                        auto p = base;
+                        ::std::shuffle(p.begin(), p.end(), rng);
+                        perms.push_back(::std::move(p));
+                    }
+                }
+
+                // Stable dedup (keep insertion order) and apply limit.
+                ::std::vector<::std::vector<unsigned>> uniq{};
+                uniq.reserve(perms.size());
+                ::std::vector<::std::uint64_t> keys{};
+                keys.reserve(perms.size());
+                auto perm_key = [&](::std::vector<unsigned> const& p) noexcept -> ::std::uint64_t
+                {
+                    // var_count is <= 16, so 4 bits per entry is enough.
+                    ::std::uint64_t k = static_cast<::std::uint64_t>(p.size());
+                    for(std::size_t i{}; i < p.size() && i < 16u; ++i) { k ^= (static_cast<::std::uint64_t>(p[i] & 0xFu) << (4u * i)); }
+                    return k;
+                };
+                for(auto& p: perms)
+                {
+                    auto const k = perm_key(p);
+                    bool seen{};
+                    for(auto const kk: keys)
+                    {
+                        if(kk == k)
+                        {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if(seen) { continue; }
+                    keys.push_back(k);
+                    uniq.push_back(::std::move(p));
+                    if(uniq.size() >= perm_limit) { break; }
+                }
+                perms = ::std::move(uniq);
+
+                ::std::vector<unsigned> best_perm{};
+                ::std::vector<bdd_node> bdd{};
+                std::uint32_t root_id{static_cast<std::uint32_t>(-1)};
+                std::size_t best_nodes{static_cast<std::size_t>(-1)};
+
+                for(auto const& perm: perms)
+                {
+                    ::std::vector<std::uint64_t> tt_try = is_ident_perm(perm) ? root_tt : permute_tt(root_tt, perm);
+                    ::std::vector<bdd_node> tmp_bdd{};
+                    auto tmp_root = try_build_bdd(::std::move(tt_try), tmp_bdd);
+                    if(tmp_root == static_cast<std::uint32_t>(-1)) { continue; }
+                    if(tmp_bdd.size() < best_nodes)
+                    {
+                        best_nodes = tmp_bdd.size();
+                        best_perm = perm;
+                        bdd = ::std::move(tmp_bdd);
+                        root_id = tmp_root;
+                    }
+                }
+
+                if(root_id == static_cast<std::uint32_t>(-1) || bdd.size() < 2u) { continue; }
+                ::std::vector<::phy_engine::model::node_t*> leaves_ord{};
+                leaves_ord.reserve(var_count);
+                for(std::size_t i{}; i < best_perm.size(); ++i)
+                {
+                    auto const old = static_cast<std::size_t>(best_perm[i]);
+                    if(old >= c.leaves.size())
+                    {
+                        leaves_ord.clear();
+                        break;
+                    }
+                    leaves_ord.push_back(c.leaves[old]);
+                }
+                if(leaves_ord.size() != var_count) { continue; }
+
+                // Synthesize BDD into primitives (mux tree).
+                auto* const0 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::false_state);
+                auto* const1 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::true_state);
+                if(const0 == nullptr || const1 == nullptr) { continue; }
+
+                ::std::unordered_map<std::uint32_t, ::phy_engine::model::node_t*> net{};
+                net.reserve(bdd.size() * 2u);
+                net.emplace(0u, const0);
+                net.emplace(1u, const1);
+
+                ::std::vector<::phy_engine::netlist::model_pos> new_models{};
+                new_models.reserve(c.to_delete.size() + 16u);
+                ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::node_t*> not_cache{};
+                not_cache.reserve(1024);
+                ::std::vector<::phy_engine::model::node_t*> neg_var{};
+                neg_var.assign(var_count, nullptr);
+
+                struct bin_key
+                {
+                    std::uint8_t op{};
+                    ::phy_engine::model::node_t* a{};
+                    ::phy_engine::model::node_t* b{};
+                };
+
+                struct bin_hash
+                {
+                    std::size_t operator() (bin_key const& k) const noexcept
+                    {
+                        auto const mix = [](std::size_t h, std::size_t v) noexcept -> std::size_t
+                        { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
+                        std::size_t h{};
+                        h = mix(h, static_cast<std::size_t>(k.op));
+                        h = mix(h, reinterpret_cast<std::size_t>(k.a));
+                        h = mix(h, reinterpret_cast<std::size_t>(k.b));
+                        return h;
+                    }
+                };
+
+                struct bin_eq
+                {
+                    bool operator() (bin_key const& x, bin_key const& y) const noexcept { return x.op == y.op && x.a == y.a && x.b == y.b; }
+                };
+
+                ::std::unordered_map<bin_key, ::phy_engine::model::node_t*, bin_hash, bin_eq> bin_cache{};
+                bin_cache.reserve(4096);
+
+                auto get_not_node = [&](::phy_engine::model::node_t* in) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(in == nullptr) { return nullptr; }
+                    if(in == const0) { return const1; }
+                    if(in == const1) { return const0; }
+                    if(auto it = not_cache.find(in); it != not_cache.end()) { return it->second; }
+                    auto* out = make_not(in, new_models);
+                    if(out != nullptr) { not_cache.emplace(in, out); }
+                    return out;
+                };
+
+                auto get_not_var = [&](std::size_t v) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(v >= var_count) { return nullptr; }
+                    if(neg_var[v] != nullptr) { return neg_var[v]; }
+                    neg_var[v] = get_not_node(leaves_ord[v]);
+                    return neg_var[v];
+                };
+
+                auto make_and_cached = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(a == nullptr || b == nullptr) { return nullptr; }
+                    if(a == const0 || b == const0) { return const0; }
+                    if(a == const1) { return b; }
+                    if(b == const1) { return a; }
+                    if(reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
+                    bin_key k{1u, a, b};
+                    if(auto it = bin_cache.find(k); it != bin_cache.end()) { return it->second; }
+                    auto* out = make_and(a, b, const0, const1, new_models);
+                    if(out != nullptr) { bin_cache.emplace(k, out); }
+                    return out;
+                };
+                auto make_or_cached = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(a == nullptr || b == nullptr) { return nullptr; }
+                    if(a == const1 || b == const1) { return const1; }
+                    if(a == const0) { return b; }
+                    if(b == const0) { return a; }
+                    if(reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
+                    bin_key k{2u, a, b};
+                    if(auto it = bin_cache.find(k); it != bin_cache.end()) { return it->second; }
+                    auto* out = make_or(a, b, const0, const1, new_models);
+                    if(out != nullptr) { bin_cache.emplace(k, out); }
+                    return out;
+                };
+                auto make_xor_cached = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(a == nullptr || b == nullptr) { return nullptr; }
+                    if(a == const0) { return b; }
+                    if(b == const0) { return a; }
+                    if(a == const1) { return get_not_node(b); }
+                    if(b == const1) { return get_not_node(a); }
+                    if(a == b) { return const0; }
+                    if(reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
+                    bin_key k{3u, a, b};
+                    if(auto it = bin_cache.find(k); it != bin_cache.end()) { return it->second; }
+                    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::XOR{});
+                    if(m == nullptr) { return nullptr; }
+                    new_models.push_back(pos);
+                    auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                    auto* out = __builtin_addressof(out_ref);
+                    if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *b) ||
+                       !::phy_engine::netlist::add_to_node(nl, *m, 2, *out))
+                    {
+                        (void)::phy_engine::netlist::delete_model(nl, pos);
+                        new_models.pop_back();
+                        return nullptr;
+                    }
+                    bin_cache.emplace(k, out);
+                    return out;
+                };
+                auto make_xnor_cached = [&](::phy_engine::model::node_t* a, ::phy_engine::model::node_t* b) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(a == nullptr || b == nullptr) { return nullptr; }
+                    if(a == const0) { return get_not_node(b); }
+                    if(b == const0) { return get_not_node(a); }
+                    if(a == const1) { return b; }
+                    if(b == const1) { return a; }
+                    if(a == b) { return const1; }
+                    if(reinterpret_cast<std::uintptr_t>(a) > reinterpret_cast<std::uintptr_t>(b)) { ::std::swap(a, b); }
+                    bin_key k{4u, a, b};
+                    if(auto it = bin_cache.find(k); it != bin_cache.end()) { return it->second; }
+                    auto [m, pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::XNOR{});
+                    if(m == nullptr) { return nullptr; }
+                    new_models.push_back(pos);
+                    auto& out_ref = ::phy_engine::netlist::create_node(nl);
+                    auto* out = __builtin_addressof(out_ref);
+                    if(!::phy_engine::netlist::add_to_node(nl, *m, 0, *a) || !::phy_engine::netlist::add_to_node(nl, *m, 1, *b) ||
+                       !::phy_engine::netlist::add_to_node(nl, *m, 2, *out))
+                    {
+                        (void)::phy_engine::netlist::delete_model(nl, pos);
+                        new_models.pop_back();
+                        return nullptr;
+                    }
+                    bin_cache.emplace(k, out);
+                    return out;
+                };
+
+                auto build_net = [&](auto&& self, std::uint32_t id) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(id == 0u) { return const0; }
+                    if(id == 1u) { return const1; }
+                    if(auto it = net.find(id); it != net.end()) { return it->second; }
+                    if(id >= bdd.size()) { return nullptr; }
+                    auto const& bn = bdd[id];
+                    if(static_cast<std::size_t>(bn.var) >= var_count) { return nullptr; }
+                    auto* x = leaves_ord[bn.var];
+                    if(x == nullptr) { return nullptr; }
+                    auto* lo = self(self, bn.lo);
+                    auto* hi = self(self, bn.hi);
+                    if(lo == nullptr || hi == nullptr) { return nullptr; }
+                    if(lo == hi)
+                    {
+                        net.emplace(id, lo);
+                        return lo;
+                    }
+                    if(x == const0)
+                    {
+                        net.emplace(id, lo);
+                        return lo;
+                    }
+                    if(x == const1)
+                    {
+                        net.emplace(id, hi);
+                        return hi;
+                    }
+
+                    if(lo == const0 && hi == const1)
+                    {
+                        net.emplace(id, x);
+                        return x;
+                    }
+                    if(lo == const1 && hi == const0)
+                    {
+                        auto* nx = get_not_var(bn.var);
+                        if(nx == nullptr) { return nullptr; }
+                        net.emplace(id, nx);
+                        return nx;
+                    }
+
+                    if(lo == const0)
+                    {
+                        auto* out = make_and_cached(x, hi);
+                        net.emplace(id, out);
+                        return out;
+                    }
+                    if(hi == const0)
+                    {
+                        auto* nx = get_not_var(bn.var);
+                        if(nx == nullptr) { return nullptr; }
+                        auto* out = make_and_cached(nx, lo);
+                        net.emplace(id, out);
+                        return out;
+                    }
+                    if(lo == const1)
+                    {
+                        auto* nx = get_not_var(bn.var);
+                        if(nx == nullptr) { return nullptr; }
+                        auto* out = make_or_cached(nx, hi);
+                        net.emplace(id, out);
+                        return out;
+                    }
+                    if(hi == const1)
+                    {
+                        auto* out = make_or_cached(x, lo);
+                        net.emplace(id, out);
+                        return out;
+                    }
+
+                    auto* nx = get_not_var(bn.var);
+                    if(nx == nullptr) { return nullptr; }
+
+                    // Complemented child shortcut (only when we already have the NOT node available):
+                    // mux(x, a, ~a) == a ^ x ; mux(x, ~a, a) == a XNOR x.
+                    if(auto it = not_cache.find(lo); it != not_cache.end() && it->second == hi)
+                    {
+                        auto* out = make_xor_cached(x, lo);
+                        net.emplace(id, out);
+                        return out;
+                    }
+                    if(auto it = not_cache.find(hi); it != not_cache.end() && it->second == lo)
+                    {
+                        auto* out = make_xnor_cached(x, hi);
+                        net.emplace(id, out);
+                        return out;
+                    }
+
+                    auto* t1 = make_and_cached(x, hi);
+                    auto* t0 = make_and_cached(nx, lo);
+                    auto* out = make_or_cached(t0, t1);
+                    net.emplace(id, out);
+                    return out;
+                };
+
+                auto* new_out = build_net(build_net, root_id);
+                if(new_out == nullptr)
+                {
+                    for(auto const mp: new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    continue;
+                }
+
+                auto const old_cost = c.to_delete.size();
+                auto const new_cost = new_models.size() + (is_protected(root) ? 1u : 0u);
+                if(new_cost >= old_cost)
+                {
+                    for(auto const mp: new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    continue;
+                }
+
+                if(is_protected(root))
+                {
+                    // Delete old driver cone, then connect via YES buffer to keep the protected node intact.
+                    for(auto const mp: c.to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                    if(!add_yes(new_out, root))
+                    {
+                        // best-effort; leave the new cone to be DCE'd if unconnected.
+                    }
+                }
+                else
+                {
+                    if(!move_consumers(root, new_out, c.root_out_pin))
+                    {
+                        for(auto const mp: new_models) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                        continue;
+                    }
+                    for(auto const mp: c.to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
+                }
+
+                changed = true;
+            }
+
+            return changed;
+        }
+
         [[nodiscard]] inline bool optimize_bounded_resubstitute_in_pe_netlist(::phy_engine::netlist::netlist& nl,
                                                                               ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
                                                                               pe_synth_options const& opt) noexcept
         {
             if(!opt.assume_binary_inputs) { return false; }
 
-            constexpr std::size_t max_vars = 6;
-            constexpr std::size_t max_gates = 64;
+            if(opt.resub_max_vars == 0u) { return false; }
+
+            // The implementation uses a 64-bit truth-table mask, so vars are capped at 6.
+            std::size_t const max_vars = ::std::min<std::size_t>(6u, opt.resub_max_vars);
+            std::size_t const max_gates = (opt.resub_max_gates == 0u) ? 64u : opt.resub_max_gates;
 
             enum class kind : std::uint8_t
             {
@@ -4474,22 +7004,19 @@ namespace phy_engine::verilog::digital
                     { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
                     std::size_t h{};
                     h = mix(h, static_cast<std::size_t>(k.mask ^ (k.mask >> 32)));
-                    for(auto* p : k.leaves) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
+                    for(auto* p: k.leaves) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
                     return h;
                 }
             };
 
             struct key_eq
             {
-                bool operator() (key const& a, key const& b) const noexcept
-                {
-                    return a.mask == b.mask && a.leaves == b.leaves;
-                }
+                bool operator() (key const& a, key const& b) const noexcept { return a.mask == b.mask && a.leaves == b.leaves; }
             };
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -4532,7 +7059,10 @@ namespace phy_engine::verilog::digital
                     else if(name == u8"NAND") { g.k = kind::nand_gate; }
                     else if(name == u8"NOR") { g.k = kind::nor_gate; }
                     else if(name == u8"IMP") { g.k = kind::imp_gate; }
-                    else { g.k = kind::nimp_gate; }
+                    else
+                    {
+                        g.k = kind::nimp_gate;
+                    }
                     return g;
                 }
 
@@ -4548,18 +7078,15 @@ namespace phy_engine::verilog::digital
                     auto og = classify(mb, {vec_pos, chunk_pos});
                     if(!og || og->out == nullptr || og->out_pin == nullptr) { continue; }
                     gate_by_out.emplace(og->out, *og);
-                    if(og->k == kind::not_gate && og->in0 != nullptr)
-                    {
-                        not_of.emplace(og->in0, og->out);
-                    }
+                    if(og->k == kind::not_gate && og->in0 != nullptr) { not_of.emplace(og->in0, og->out); }
                 }
             }
 
             auto eval_gate = [&](auto&& self,
                                  ::phy_engine::model::node_t* node,
                                  ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
-                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo) noexcept
-                -> ::phy_engine::model::digital_node_statement_t
+                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
+                                 ::std::unordered_map<::phy_engine::model::node_t*, bool>& visiting) noexcept -> ::phy_engine::model::digital_node_statement_t
             {
                 if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
                 if(auto it = memo.find(node); it != memo.end()) { return it->second; }
@@ -4574,10 +7101,12 @@ namespace phy_engine::verilog::digital
                     memo.emplace(node, ::phy_engine::model::digital_node_statement_t::indeterminate_state);
                     return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
                 }
+                if(visiting.contains(node)) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
+                visiting.emplace(node, true);
                 auto const& g = itg->second;
                 using dns = ::phy_engine::model::digital_node_statement_t;
-                dns a = self(self, g.in0, leaf_val, memo);
-                dns b = self(self, g.in1, leaf_val, memo);
+                dns a = self(self, g.in0, leaf_val, memo, visiting);
+                dns b = self(self, g.in1, leaf_val, memo, visiting);
                 dns r{};
                 switch(g.k)
                 {
@@ -4592,6 +7121,7 @@ namespace phy_engine::verilog::digital
                     case kind::nimp_gate: r = (a & (~b)); break;
                     default: r = dns::indeterminate_state; break;
                 }
+                visiting.erase(node);
                 memo.emplace(node, r);
                 return r;
             };
@@ -4626,9 +7156,9 @@ namespace phy_engine::verilog::digital
             bool changed{};
             ::std::vector<::phy_engine::model::node_t*> roots{};
             roots.reserve(gate_by_out.size());
-            for(auto const& kv : gate_by_out) { roots.push_back(kv.first); }
+            for(auto const& kv: gate_by_out) { roots.push_back(kv.first); }
 
-            for(auto* root : roots)
+            for(auto* root: roots)
             {
                 auto it_root = gate_by_out.find(root);
                 if(it_root == gate_by_out.end()) { continue; }
@@ -4659,14 +7189,22 @@ namespace phy_engine::verilog::digital
                     {
                         if(!leaf_seen.contains(n))
                         {
-                            if(leaves.size() >= max_vars) { ok = false; return; }
+                            if(leaves.size() >= max_vars)
+                            {
+                                ok = false;
+                                return;
+                            }
                             leaf_seen.emplace(n, true);
                             leaves.push_back(n);
                         }
                         return;
                     }
 
-                    if(++gate_count > max_gates) { ok = false; return; }
+                    if(++gate_count > max_gates)
+                    {
+                        ok = false;
+                        return;
+                    }
                     auto const& gg = itg->second;
                     self(self, gg.in0);
                     if(gg.k != kind::not_gate) { self(self, gg.in1); }
@@ -4698,11 +7236,10 @@ namespace phy_engine::verilog::digital
                     }
                     ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
                     memo.reserve(gate_count * 2u + 8u);
-                    auto const r = eval_gate(eval_gate, root, leaf_val, memo);
-                    if(r == ::phy_engine::model::digital_node_statement_t::true_state)
-                    {
-                        mask |= (1ull << m);
-                    }
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                    visiting.reserve(gate_count * 2u + 8u);
+                    auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
+                    if(r == ::phy_engine::model::digital_node_statement_t::true_state) { mask |= (1ull << m); }
                     else if(r != ::phy_engine::model::digital_node_statement_t::false_state)
                     {
                         ok = false;
@@ -4738,10 +7275,7 @@ namespace phy_engine::verilog::digital
                     }
                 }
 
-                if(rep.find(k) == rep.end())
-                {
-                    rep.emplace(::std::move(k), root);
-                }
+                if(rep.find(k) == rep.end()) { rep.emplace(::std::move(k), root); }
             }
 
             return changed;
@@ -4753,8 +7287,11 @@ namespace phy_engine::verilog::digital
         {
             if(!opt.assume_binary_inputs) { return false; }
 
-            constexpr std::size_t max_vars = 6;
-            constexpr std::size_t max_gates = 64;
+            if(opt.sweep_max_vars == 0u) { return false; }
+
+            // The implementation uses a 64-bit truth-table mask, so vars are capped at 6.
+            std::size_t const max_vars = ::std::min<std::size_t>(6u, opt.sweep_max_vars);
+            std::size_t const max_gates = (opt.sweep_max_gates == 0u) ? 64u : opt.sweep_max_gates;
 
             enum class kind : std::uint8_t
             {
@@ -4793,22 +7330,19 @@ namespace phy_engine::verilog::digital
                     { return (h ^ (v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2))); };
                     std::size_t h{};
                     h = mix(h, static_cast<std::size_t>(k.mask ^ (k.mask >> 32)));
-                    for(auto* p : k.leaves) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
+                    for(auto* p: k.leaves) { h = mix(h, reinterpret_cast<std::size_t>(p)); }
                     return h;
                 }
             };
 
             struct key_eq
             {
-                bool operator() (key const& a, key const& b) const noexcept
-                {
-                    return a.mask == b.mask && a.leaves == b.leaves;
-                }
+                bool operator() (key const& a, key const& b) const noexcept { return a.mask == b.mask && a.leaves == b.leaves; }
             };
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
-            for(auto* n : protected_nodes) { protected_map.emplace(n, true); }
+            for(auto* n: protected_nodes) { protected_map.emplace(n, true); }
             auto const is_protected = [&](::phy_engine::model::node_t* n) noexcept -> bool { return protected_map.contains(n); };
 
             auto const fan = build_gate_opt_fanout(nl);
@@ -4849,7 +7383,10 @@ namespace phy_engine::verilog::digital
                     else if(name == u8"NAND") { g.k = kind::nand_gate; }
                     else if(name == u8"NOR") { g.k = kind::nor_gate; }
                     else if(name == u8"IMP") { g.k = kind::imp_gate; }
-                    else { g.k = kind::nimp_gate; }
+                    else
+                    {
+                        g.k = kind::nimp_gate;
+                    }
                     return g;
                 }
 
@@ -4871,8 +7408,8 @@ namespace phy_engine::verilog::digital
             auto eval_gate = [&](auto&& self,
                                  ::phy_engine::model::node_t* node,
                                  ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
-                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo) noexcept
-                -> ::phy_engine::model::digital_node_statement_t
+                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
+                                 ::std::unordered_map<::phy_engine::model::node_t*, bool>& visiting) noexcept -> ::phy_engine::model::digital_node_statement_t
             {
                 if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
                 if(auto it = memo.find(node); it != memo.end()) { return it->second; }
@@ -4887,10 +7424,12 @@ namespace phy_engine::verilog::digital
                     memo.emplace(node, ::phy_engine::model::digital_node_statement_t::indeterminate_state);
                     return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
                 }
+                if(visiting.contains(node)) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
+                visiting.emplace(node, true);
                 auto const& g = itg->second;
                 using dns = ::phy_engine::model::digital_node_statement_t;
-                dns a = self(self, g.in0, leaf_val, memo);
-                dns b = self(self, g.in1, leaf_val, memo);
+                dns a = self(self, g.in0, leaf_val, memo, visiting);
+                dns b = self(self, g.in1, leaf_val, memo, visiting);
                 dns r{};
                 switch(g.k)
                 {
@@ -4905,6 +7444,7 @@ namespace phy_engine::verilog::digital
                     case kind::nimp_gate: r = (a & (~b)); break;
                     default: r = dns::indeterminate_state; break;
                 }
+                visiting.erase(node);
                 memo.emplace(node, r);
                 return r;
             };
@@ -4939,9 +7479,9 @@ namespace phy_engine::verilog::digital
             bool changed{};
             ::std::vector<::phy_engine::model::node_t*> roots{};
             roots.reserve(gate_by_out.size());
-            for(auto const& kv : gate_by_out) { roots.push_back(kv.first); }
+            for(auto const& kv: gate_by_out) { roots.push_back(kv.first); }
 
-            for(auto* root : roots)
+            for(auto* root: roots)
             {
                 auto it_root = gate_by_out.find(root);
                 if(it_root == gate_by_out.end()) { continue; }
@@ -4974,14 +7514,22 @@ namespace phy_engine::verilog::digital
                     {
                         if(!leaf_seen.contains(n))
                         {
-                            if(leaves.size() >= max_vars) { ok = false; return; }
+                            if(leaves.size() >= max_vars)
+                            {
+                                ok = false;
+                                return;
+                            }
                             leaf_seen.emplace(n, true);
                             leaves.push_back(n);
                         }
                         return;
                     }
 
-                    if(++gate_count > max_gates) { ok = false; return; }
+                    if(++gate_count > max_gates)
+                    {
+                        ok = false;
+                        return;
+                    }
                     auto const& gg = itg->second;
                     self(self, gg.in0);
                     if(gg.k != kind::not_gate) { self(self, gg.in1); }
@@ -5014,11 +7562,10 @@ namespace phy_engine::verilog::digital
                     }
                     ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
                     memo.reserve(gate_count * 2u + 8u);
-                    auto const r = eval_gate(eval_gate, root, leaf_val, memo);
-                    if(r == ::phy_engine::model::digital_node_statement_t::true_state)
-                    {
-                        mask |= (1ull << m);
-                    }
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                    visiting.reserve(gate_count * 2u + 8u);
+                    auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
+                    if(r == ::phy_engine::model::digital_node_statement_t::true_state) { mask |= (1ull << m); }
                     else if(r != ::phy_engine::model::digital_node_statement_t::false_state)
                     {
                         ok = false;
@@ -6714,10 +9261,13 @@ namespace phy_engine::verilog::digital
             // - Quine–McCluskey prime implicants + exact cover (very small) / greedy cover (moderate)
             // - Espresso-style expand+irredundant heuristic (moderate), choose the best cost
             // Only safe when the cone's internal nets have fanout=1 (exclusive to the cone).
+            if(!opt.assume_binary_inputs) { return false; }
+            if(opt.qm_max_vars == 0u) { return false; }
+
             constexpr std::size_t exact_vars = 6;
-            constexpr std::size_t max_vars = 10;
-            constexpr std::size_t max_gates = 64;
-            constexpr std::size_t max_primes = 4096;
+            std::size_t const max_vars = ::std::min<std::size_t>(16u, (opt.qm_max_vars == 0u) ? 10u : opt.qm_max_vars);
+            std::size_t const max_gates = (opt.qm_max_gates == 0u) ? 64u : opt.qm_max_gates;
+            std::size_t const max_primes = (opt.qm_max_primes == 0u) ? 4096u : opt.qm_max_primes;
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
@@ -6826,32 +9376,39 @@ namespace phy_engine::verilog::digital
                 ::std::vector<bool> allowed{};
             };
 
-            auto build_dc_group_views = [&](::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept
-                -> ::std::vector<dc_group_view>
+            auto build_dc_group_views = [&](::std::vector<::phy_engine::model::node_t*> const& leaves) noexcept -> ::std::vector<dc_group_view>
             {
                 ::std::vector<dc_group_view> views{};
                 if(dc == nullptr || dc->groups.empty()) { return views; }
-                for(auto const& g : dc->groups)
+                for(auto const& g: dc->groups)
                 {
                     if(g.nodes.empty() || g.allowed.empty() || g.nodes.size() > 16u) { continue; }
                     ::std::vector<std::size_t> pos{};
                     pos.reserve(g.nodes.size());
                     bool ok{true};
-                    for(auto* n : g.nodes)
+                    for(auto* n: g.nodes)
                     {
                         std::size_t idx = SIZE_MAX;
                         for(std::size_t i{}; i < leaves.size(); ++i)
                         {
-                            if(leaves[i] == n) { idx = i; break; }
+                            if(leaves[i] == n)
+                            {
+                                idx = i;
+                                break;
+                            }
                         }
-                        if(idx == SIZE_MAX) { ok = false; break; }
+                        if(idx == SIZE_MAX)
+                        {
+                            ok = false;
+                            break;
+                        }
                         pos.push_back(idx);
                     }
                     if(!ok) { continue; }
                     dc_group_view view{};
                     view.leaf_pos = ::std::move(pos);
                     view.allowed.assign(1u << g.nodes.size(), false);
-                    for(auto const v : g.allowed)
+                    for(auto const v: g.allowed)
                     {
                         if(v < view.allowed.size()) { view.allowed[v] = true; }
                     }
@@ -6871,11 +9428,11 @@ namespace phy_engine::verilog::digital
                 ::std::vector<bool> is_dc{};
                 is_on.assign(U, false);
                 is_dc.assign(U, false);
-                for(auto const m : on_list)
+                for(auto const m: on_list)
                 {
                     if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
                 }
-                for(auto const m : dc_list)
+                for(auto const m: dc_list)
                 {
                     if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
                 }
@@ -6883,7 +9440,7 @@ namespace phy_engine::verilog::digital
                 {
                     if(is_on[m] || is_dc[m]) { continue; }
                     bool dc_hit{false};
-                    for(auto const& v : views)
+                    for(auto const& v: views)
                     {
                         ::std::uint16_t sub{};
                         for(std::size_t bi{}; bi < v.leaf_pos.size(); ++bi)
@@ -6913,9 +9470,9 @@ namespace phy_engine::verilog::digital
                 bool value{};
             };
 
-            auto build_odc_conditions = [&](::phy_engine::model::node_t* root,
-                                            ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> const& leaf_index) noexcept
-                -> ::std::vector<odc_condition>
+            auto build_odc_conditions =
+                [&](::phy_engine::model::node_t* root,
+                    ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> const& leaf_index) noexcept -> ::std::vector<odc_condition>
             {
                 ::std::vector<odc_condition> conds{};
                 if(!opt.infer_dc_from_odc || root == nullptr) { return conds; }
@@ -6956,11 +9513,11 @@ namespace phy_engine::verilog::digital
                 ::std::vector<bool> is_dc{};
                 is_on.assign(U, false);
                 is_dc.assign(U, false);
-                for(auto const m : on_list)
+                for(auto const m: on_list)
                 {
                     if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
                 }
-                for(auto const m : dc_list)
+                for(auto const m: dc_list)
                 {
                     if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
                 }
@@ -6968,7 +9525,7 @@ namespace phy_engine::verilog::digital
                 {
                     if(is_dc[m]) { continue; }
                     bool dc_hit{false};
-                    for(auto const& c : conds)
+                    for(auto const& c: conds)
                     {
                         if(((m >> c.leaf_idx) & 1u) == (c.value ? 1u : 0u))
                         {
@@ -6996,8 +9553,8 @@ namespace phy_engine::verilog::digital
             auto eval_gate = [&](auto&& self,
                                  ::phy_engine::model::node_t* node,
                                  ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> const& leaf_val,
-                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo) noexcept
-                -> ::phy_engine::model::digital_node_statement_t
+                                 ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t>& memo,
+                                 ::std::unordered_map<::phy_engine::model::node_t*, bool>& visiting) noexcept -> ::phy_engine::model::digital_node_statement_t
             {
                 if(node == nullptr) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
                 if(auto it = memo.find(node); it != memo.end()) { return it->second; }
@@ -7012,10 +9569,12 @@ namespace phy_engine::verilog::digital
                     memo.emplace(node, ::phy_engine::model::digital_node_statement_t::indeterminate_state);
                     return ::phy_engine::model::digital_node_statement_t::indeterminate_state;
                 }
+                if(visiting.contains(node)) { return ::phy_engine::model::digital_node_statement_t::indeterminate_state; }
+                visiting.emplace(node, true);
                 auto const& g = itg->second;
                 using dns = ::phy_engine::model::digital_node_statement_t;
-                dns a = self(self, g.in0, leaf_val, memo);
-                dns b = self(self, g.in1, leaf_val, memo);
+                dns a = self(self, g.in0, leaf_val, memo, visiting);
+                dns b = self(self, g.in1, leaf_val, memo, visiting);
                 dns r{};
                 switch(g.k)
                 {
@@ -7030,6 +9589,7 @@ namespace phy_engine::verilog::digital
                     case gkind::nimp_gate: r = (a & (~b)); break;
                     default: r = dns::indeterminate_state; break;
                 }
+                visiting.erase(node);
                 memo.emplace(node, r);
                 return r;
             };
@@ -7258,7 +9818,9 @@ namespace phy_engine::verilog::digital
                         }
                         ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
                         memo.reserve(out.to_delete.size() * 2u + 8u);
-                        auto const r = eval_gate(eval_gate, root, leaf_val, memo);
+                        ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                        visiting.reserve(out.to_delete.size() * 2u + 8u);
+                        auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
                         if(r == ::phy_engine::model::digital_node_statement_t::true_state) { out.on.push_back(m); }
                         else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
                         else
@@ -7355,6 +9917,11 @@ namespace phy_engine::verilog::digital
                     if(grp.cones.size() < 2u) { continue; }
                     auto const var_count = grp.leaves.size();
                     if(var_count == 0 || var_count > max_vars) { continue; }
+                    if(opt.qm_max_minterms != 0u)
+                    {
+                        auto const universe = (var_count >= 63u) ? ::std::numeric_limits<std::size_t>::max() : (static_cast<std::size_t>(1u) << var_count);
+                        if(universe > opt.qm_max_minterms) { continue; }
+                    }
 
                     ::std::vector<::std::vector<::std::uint16_t>> on_list{};
                     ::std::vector<::std::vector<::std::uint16_t>> dc_list{};
@@ -7748,7 +10315,9 @@ namespace phy_engine::verilog::digital
                     }
                     ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
                     memo.reserve(to_delete.size() * 2u + 8u);
-                    auto const r = eval_gate(eval_gate, root, leaf_val, memo);
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                    visiting.reserve(to_delete.size() * 2u + 8u);
+                    auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
                     if(r == ::phy_engine::model::digital_node_statement_t::true_state) { on.push_back(m); }
                     else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
                     else
@@ -10277,7 +12846,19 @@ namespace phy_engine::verilog::digital
         if(!ctx.synth_instance(top, nullptr, top_port_nodes)) { return false; }
         if(!ctx.resolve_multi_driver_digital_nets()) { return false; }
 
-        auto const lvl = static_cast<::std::uint8_t>(opt.opt_level > 3 ? 3 : opt.opt_level);
+        auto* rep = (opt.report_enable && opt.report != nullptr) ? opt.report : nullptr;
+        if(rep != nullptr)
+        {
+            rep->passes.clear();
+            rep->iter_gate_count.clear();
+            rep->omax_best_gate_count.clear();
+            rep->omax_best_cost.clear();
+            rep->omax_summary.clear();
+        }
+
+        auto const raw_lvl = opt.opt_level;
+        bool const is_omax = (raw_lvl >= 4u);
+        auto const lvl = static_cast<::std::uint8_t>(raw_lvl > 3u ? 3u : raw_lvl);
 
         bool const do_wires = opt.optimize_wires || (lvl >= 1);
         bool const do_mul2 = opt.optimize_mul2 || (lvl >= 2);
@@ -10298,45 +12879,241 @@ namespace phy_engine::verilog::digital
         bool const do_aig_rewrite = (lvl >= 2) && opt.assume_binary_inputs;
         bool const do_resub = (lvl >= 3) && opt.assume_binary_inputs;
         bool const do_sweep = (lvl >= 3) && opt.assume_binary_inputs;
+        bool const do_techmap = (lvl >= 3) && opt.assume_binary_inputs && opt.techmap_enable;
+        bool const do_decompose = (lvl >= 3) && opt.assume_binary_inputs && opt.decompose_large_functions;
 
-        auto run_once = [&]() noexcept -> void
+        auto run_once = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept -> void
         {
-            if(do_wires) { details::optimize_eliminate_yes_buffers(nl, top_port_nodes); }
-            if(do_mul2) { details::optimize_mul2_in_pe_netlist(nl); }
-            if(do_adders) { details::optimize_adders_in_pe_netlist(nl); }
+            bool node_budget_hit{};
 
-            if(do_constprop) { (void)details::optimize_constant_propagation_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_factoring) { (void)details::optimize_factor_common_terms_in_pe_netlist(nl, top_port_nodes); }
-            if(do_absorption) { (void)details::optimize_absorption_in_pe_netlist(nl, top_port_nodes); }
-            if(do_xor_rewrite) { (void)details::optimize_rewrite_xor_xnor_in_pe_netlist(nl, top_port_nodes); }
-            if(do_flatten) { (void)details::optimize_flatten_associative_and_or_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_binary_simplify) { (void)details::optimize_binary_complement_simplify_in_pe_netlist(nl, top_port_nodes); }
-            if(do_binary_simplify) { (void)details::optimize_constant_propagation_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_aig_rewrite) { (void)details::optimize_aig_rewrite_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_qm) { (void)details::optimize_qm_two_level_minimize_in_pe_netlist(nl, top_port_nodes, opt, __builtin_addressof(ctx.dc)); }
-            if(do_input_inv_map) { (void)details::optimize_push_input_inverters_in_pe_netlist(nl, top_port_nodes); }
-            if(do_double_not) { (void)details::optimize_eliminate_double_not_in_pe_netlist(nl, top_port_nodes); }
-            if(do_fuse_inverters) { (void)details::optimize_fuse_inverters_in_pe_netlist(nl, top_port_nodes); }
-            if(do_strash) { (void)details::optimize_strash_in_pe_netlist(nl, top_port_nodes); }
-            if(do_resub) { (void)details::optimize_bounded_resubstitute_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_sweep) { (void)details::optimize_bounded_sweep_in_pe_netlist(nl, top_port_nodes, opt); }
-            if(do_dce) { (void)details::optimize_dce_in_pe_netlist(nl, top_port_nodes); }
+            auto run_pass = [&](bool en, ::fast_io::u8string_view name, auto&& fn) noexcept -> void
+            {
+                if(!en) { return; }
+                if(node_budget_hit) { return; }
+
+                if(opt_run.max_total_nodes != 0u && details::count_total_nodes(net) > opt_run.max_total_nodes)
+                {
+                    node_budget_hit = true;
+                    return;
+                }
+
+                bool const need_rollback = (opt_run.max_total_models != 0u) || (opt_run.max_total_logic_gates != 0u);
+                ::std::optional<::phy_engine::netlist::netlist> snap{};
+                if(need_rollback) { snap.emplace(net); }
+
+                auto const before = details::count_logic_gates(net);
+
+                fn();
+
+                if(opt_run.max_total_nodes != 0u && details::count_total_nodes(net) > opt_run.max_total_nodes)
+                {
+                    // Can't reclaim node storage; stop running subsequent passes to prevent further growth.
+                    node_budget_hit = true;
+                }
+
+                if(need_rollback)
+                {
+                    bool const too_many_models = (opt_run.max_total_models != 0u) && (details::count_total_models(net) > opt_run.max_total_models);
+                    bool const too_many_gates = (opt_run.max_total_logic_gates != 0u) && (details::count_logic_gates(net) > opt_run.max_total_logic_gates);
+                    if((too_many_models || too_many_gates) && snap.has_value()) { details::restore_from_snapshot(net, *snap); }
+                }
+
+                if(rep_run != nullptr)
+                {
+                    auto const after = details::count_logic_gates(net);
+                    rep_run->passes.push_back(pe_synth_pass_stat{.pass = name, .before = before, .after = after});
+                }
+            };
+
+            run_pass(do_wires, u8"wires", [&]() noexcept { details::optimize_eliminate_yes_buffers(net, top_port_nodes); });
+            run_pass(do_mul2, u8"mul2", [&]() noexcept { details::optimize_mul2_in_pe_netlist(net); });
+            run_pass(do_adders, u8"adders", [&]() noexcept { details::optimize_adders_in_pe_netlist(net); });
+
+            run_pass(do_constprop, u8"constprop", [&]() noexcept { (void)details::optimize_constant_propagation_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_factoring, u8"factor", [&]() noexcept { (void)details::optimize_factor_common_terms_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_absorption, u8"absorb", [&]() noexcept { (void)details::optimize_absorption_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_xor_rewrite, u8"xor_rewrite", [&]() noexcept { (void)details::optimize_rewrite_xor_xnor_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_flatten,
+                     u8"flatten",
+                     [&]() noexcept { (void)details::optimize_flatten_associative_and_or_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_binary_simplify,
+                     u8"binary_simplify",
+                     [&]() noexcept { (void)details::optimize_binary_complement_simplify_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_binary_simplify,
+                     u8"constprop2",
+                     [&]() noexcept { (void)details::optimize_constant_propagation_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_aig_rewrite, u8"aig_rewrite", [&]() noexcept { (void)details::optimize_aig_rewrite_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_decompose,
+                     u8"bdd_decompose",
+                     [&]() noexcept { (void)details::optimize_bdd_decompose_large_cones_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_qm,
+                     u8"qm_2lvl",
+                     [&]() noexcept
+                     { (void)details::optimize_qm_two_level_minimize_in_pe_netlist(net, top_port_nodes, opt_run, __builtin_addressof(ctx.dc)); });
+            run_pass(do_input_inv_map, u8"push_inv", [&]() noexcept { (void)details::optimize_push_input_inverters_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_double_not, u8"double_not", [&]() noexcept { (void)details::optimize_eliminate_double_not_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_fuse_inverters, u8"fuse_inv", [&]() noexcept { (void)details::optimize_fuse_inverters_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_strash, u8"strash", [&]() noexcept { (void)details::optimize_strash_in_pe_netlist(net, top_port_nodes); });
+            run_pass(do_techmap, u8"techmap", [&]() noexcept { (void)details::optimize_cut_based_techmap_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_resub, u8"resub", [&]() noexcept { (void)details::optimize_bounded_resubstitute_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_sweep, u8"sweep", [&]() noexcept { (void)details::optimize_bounded_sweep_in_pe_netlist(net, top_port_nodes, opt_run); });
+            run_pass(do_dce, u8"dce", [&]() noexcept { (void)details::optimize_dce_in_pe_netlist(net, top_port_nodes); });
         };
 
-        if(lvl >= 3)
+        auto run_o3_fixpoint = [&](::phy_engine::netlist::netlist& net, pe_synth_options const& opt_run, pe_synth_report* rep_run) noexcept
         {
-            // Best-effort fixpoint-ish pipeline for gate count reduction.
-            for(::std::size_t iter{}; iter < 8u; ++iter)
+            if(lvl >= 3)
             {
-                auto const before = ::phy_engine::netlist::get_num_of_model(nl);
-                run_once();
-                auto const after = ::phy_engine::netlist::get_num_of_model(nl);
-                if(after >= before) { break; }
+                // Best-effort fixpoint-ish pipeline for gate count reduction.
+                for(::std::size_t iter{}; iter < 8u; ++iter)
+                {
+                    auto const before = details::count_logic_gates(net);
+                    if(rep_run != nullptr) { rep_run->iter_gate_count.push_back(before); }
+                    run_once(net, opt_run, rep_run);
+                    auto const after = details::count_logic_gates(net);
+                    if(rep_run != nullptr) { rep_run->iter_gate_count.push_back(after); }
+                    if(after >= before) { break; }
+                }
             }
-        }
+            else
+            {
+                run_once(net, opt_run, rep_run);
+            }
+        };
+
+        if(!is_omax) { run_o3_fixpoint(nl, opt, rep); }
         else
         {
-            run_once();
+            using clock = ::std::chrono::steady_clock;
+            auto const t0 = clock::now();
+
+            auto timed_out = [&]() noexcept -> bool
+            {
+                if(opt.omax_timeout_ms == 0u) { return false; }
+                auto const ms = ::std::chrono::duration_cast<::std::chrono::milliseconds>(clock::now() - t0).count();
+                return ms >= static_cast<::std::int64_t>(opt.omax_timeout_ms);
+            };
+
+            auto make_try_opt = [&](::std::size_t iter) noexcept -> pe_synth_options
+            {
+                pe_synth_options o = opt;
+                // Force the O3 pipeline; Omax is the orchestration/search layer.
+                if(o.opt_level > 3u) { o.opt_level = 3u; }
+
+                // Gradually relax small internal heuristics where it is cheap and safe.
+                // BDD decomposition can benefit from exploring more variable orders in Omax.
+                {
+                    std::size_t base = opt.decomp_var_order_tries;
+                    if(base < 8u) { base = 8u; }
+                    std::size_t target = base + iter * 4u;
+                    if(target > 64u) { target = 64u; }
+                    if(target > o.decomp_var_order_tries) { o.decomp_var_order_tries = target; }
+                }
+
+                // Per-try seed tweak (only affects passes that consult omax_randomize).
+                o.omax_rand_seed = opt.omax_rand_seed ^ (0x9e3779b97f4a7c15ull + static_cast<::std::uint64_t>(iter));
+                return o;
+            };
+
+            // Omax must not invalidate `top_port_nodes` pointers (they are owned by `nl` and expected to remain stable).
+            // So we keep node storage in-place and restore models/connections from snapshots without clearing `nl.nodes`.
+            auto restore_from_snapshot = [&](::phy_engine::netlist::netlist& dst, ::phy_engine::netlist::netlist const& src) noexcept
+            { details::restore_from_snapshot(dst, src); };
+
+            std::size_t tries = opt.omax_max_iter;
+            if(tries == 0u) { tries = 1u; }
+
+            ::std::size_t best_cost = details::compute_omax_cost(nl, opt);
+            ::std::size_t best_gate = details::count_logic_gates(nl);
+            ::phy_engine::netlist::netlist best_snapshot{nl};
+            ::phy_engine::netlist::netlist ref_snapshot{nl};
+
+            pe_synth_report best_rep{};
+            bool have_best_rep{};
+
+            for(std::size_t iter{}; iter < tries; ++iter)
+            {
+                if(timed_out()) { break; }
+
+                // By default, always restart from the best-so-far snapshot.
+                if(iter != 0u && !opt.omax_allow_regress) { restore_from_snapshot(nl, best_snapshot); }
+
+                pe_synth_report cand_rep{};
+                pe_synth_report* cand_rep_ptr = (rep != nullptr) ? __builtin_addressof(cand_rep) : nullptr;
+
+                auto const opt_try = make_try_opt(iter);
+                run_o3_fixpoint(nl, opt_try, cand_rep_ptr);
+
+                if(opt.omax_verify)
+                {
+                    ::fast_io::u8string why{};
+                    if(!details::omax_verify_equivalence(ref_snapshot, nl, opt, __builtin_addressof(why)))
+                    {
+                        if(err != nullptr) { err->message = why; }
+                        return false;
+                    }
+                }
+
+                auto const cand_cost = details::compute_omax_cost(nl, opt);
+                auto const cand_gate = details::count_logic_gates(nl);
+                if(cand_cost < best_cost)
+                {
+                    best_cost = cand_cost;
+                    best_gate = cand_gate;
+                    best_snapshot = nl;  // snapshot the new best (node pointers differ, but we'll restore by ordinal mapping)
+                    if(opt.omax_dump_best_cb != nullptr) { opt.omax_dump_best_cb(best_snapshot, opt.omax_dump_best_user); }
+                    if(cand_rep_ptr != nullptr)
+                    {
+                        best_rep = cand_rep;
+                        have_best_rep = true;
+                    }
+                }
+                if(rep != nullptr)
+                {
+                    rep->omax_best_gate_count.push_back(best_gate);
+                    rep->omax_best_cost.push_back(best_cost);
+                }
+            }
+
+            // Ensure the returned netlist matches the best snapshot, without invalidating `top_port_nodes`.
+            restore_from_snapshot(nl, best_snapshot);
+
+            if(rep != nullptr && have_best_rep)
+            {
+                rep->passes = ::std::move(best_rep.passes);
+                rep->iter_gate_count = ::std::move(best_rep.iter_gate_count);
+            }
+
+            if(rep != nullptr)
+            {
+                auto append_num = [](::fast_io::u8string& s, ::std::uint64_t v) noexcept
+                {
+                    char buf[32];
+                    auto [p, ec] = ::std::to_chars(buf, buf + 32, v);
+                    (void)ec;
+                    for(char* c = buf; c != p; ++c) { s.push_back(static_cast<char8_t>(*c)); }
+                };
+
+                ::fast_io::u8string sum{};
+                sum.reserve(256);
+                sum.append(u8"omax seed=");
+                append_num(sum, opt.omax_rand_seed);
+                sum.append(u8" tries=");
+                append_num(sum, tries);
+                sum.append(u8" timeout_ms=");
+                append_num(sum, opt.omax_timeout_ms);
+                sum.append(u8" randomize=");
+                sum.push_back(static_cast<char8_t>(opt.omax_randomize ? '1' : '0'));
+                sum.append(u8" allow_regress=");
+                sum.push_back(static_cast<char8_t>(opt.omax_allow_regress ? '1' : '0'));
+                sum.append(u8" verify=");
+                sum.push_back(static_cast<char8_t>(opt.omax_verify ? '1' : '0'));
+                sum.append(u8" best_gate=");
+                append_num(sum, best_gate);
+                sum.append(u8" best_cost=");
+                append_num(sum, best_cost);
+                rep->omax_summary = ::std::move(sum);
+            }
         }
         return ctx.ok();
     }

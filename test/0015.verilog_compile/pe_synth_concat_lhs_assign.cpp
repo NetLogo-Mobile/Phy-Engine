@@ -29,7 +29,8 @@ module adder8 (
     output wire [7:0] sum,
     output wire       cout
 );
-    assign {cout, sum} = a + b + cin;
+    // Note: in this subset, '+' result width is max operand width (carry-out is discarded unless widened).
+    assign {cout, sum} = {1'b0, a} + {1'b0, b} + cin;
 endmodule
 )";
 
@@ -136,10 +137,16 @@ endmodule
 
     for(std::size_t i{}; i < 8; ++i)
     {
+        // Mark as external IO so pe_synth doesn't treat them as constant INPUTs.
+        in_a[i]->name = ::fast_io::u8string{a_names[i]};
+        in_b[i]->name = ::fast_io::u8string{b_names[i]};
         if(!::phy_engine::netlist::add_to_node(nl, *in_a[i], 0, *ports[a_idx[i]])) { return 13; }
         if(!::phy_engine::netlist::add_to_node(nl, *in_b[i], 0, *ports[b_idx[i]])) { return 14; }
         if(!::phy_engine::netlist::add_to_node(nl, *out_sum[i], 0, *ports[sum_idx[i]])) { return 15; }
     }
+    in_cin->name = ::fast_io::u8string{u8"cin"};
+    out_cout->name = ::fast_io::u8string{u8"cout"};
+    for(std::size_t i{}; i < 8; ++i) { out_sum[i]->name = ::fast_io::u8string{sum_names[i]}; }
     if(!::phy_engine::netlist::add_to_node(nl, *in_cin, 0, *ports[cin_idx])) { return 16; }
     if(!::phy_engine::netlist::add_to_node(nl, *out_cout, 0, *ports[cout_idx])) { return 17; }
 
@@ -206,8 +213,30 @@ endmodule
 
                 std::uint16_t const ref =
                     static_cast<std::uint16_t>(a) + static_cast<std::uint16_t>(b) + static_cast<std::uint16_t>(cin ? 1u : 0u);
-                if(*sum != static_cast<std::uint8_t>(ref & 0xFFu)) { return 21; }
-                if(*cout != (((ref >> 8) & 1u) != 0u)) { return 22; }
+                if(*sum != static_cast<std::uint8_t>(ref & 0xFFu))
+                {
+                    std::fprintf(stderr,
+                                 "sum mismatch: a=%u b=%u cin=%u sum=%u expected=%u\n",
+                                 static_cast<unsigned>(a),
+                                 static_cast<unsigned>(b),
+                                 static_cast<unsigned>(cin),
+                                 static_cast<unsigned>(*sum),
+                                 static_cast<unsigned>(ref & 0xFFu));
+                    return 21;
+                }
+                bool const exp_cout = (((ref >> 8) & 1u) != 0u);
+                if(*cout != exp_cout)
+                {
+                    std::fprintf(stderr,
+                                 "cout mismatch: a=%u b=%u cin=%u cout=%u expected=%u (ref=%u)\n",
+                                 static_cast<unsigned>(a),
+                                 static_cast<unsigned>(b),
+                                 static_cast<unsigned>(cin),
+                                 static_cast<unsigned>(*cout),
+                                 static_cast<unsigned>(exp_cout),
+                                 static_cast<unsigned>(ref));
+                    return 22;
+                }
             }
         }
     }

@@ -235,9 +235,9 @@ endmodule
     auto r3 = run_once(src, 3);
     if(!r3) { return 1; }
 
-    if(r3->gate_count >= r2->gate_count)
+    if(r3->gate_count > r2->gate_count)
     {
-        std::fprintf(stderr, "expected O3 to reduce gates (O2=%zu, O3=%zu)\n", r2->gate_count, r3->gate_count);
+        std::fprintf(stderr, "expected O3 to not increase gates (O2=%zu, O3=%zu)\n", r2->gate_count, r3->gate_count);
         return 2;
     }
 

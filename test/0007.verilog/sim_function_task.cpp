@@ -5,7 +5,7 @@ int main()
     decltype(auto) src = u8R"(
 module top(input a, input b, output y_func, output reg y_task);
   function f_and(input x, input y);
-    return x & y;
+    f_and = x & y;
   endfunction
 
   task set_or(input x, input y, output z);
@@ -72,4 +72,3 @@ endmodule
 
     return 0;
 }
-

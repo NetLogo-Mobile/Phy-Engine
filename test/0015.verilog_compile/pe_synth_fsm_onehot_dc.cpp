@@ -40,7 +40,7 @@ std::optional<run_result> run_once(bool infer_dc) noexcept
     setting.tr.t_stop = 1e-9;
     auto& nl = c.get_netlist();
 
-    auto const src = u8R"(
+    constexpr ::fast_io::u8string_view src = u8R"(
 module top(input clk, input rst_n, output y);
   reg [2:0] state;
   always_ff @(posedge clk or negedge rst_n) begin

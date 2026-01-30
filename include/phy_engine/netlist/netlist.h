@@ -406,7 +406,8 @@ namespace phy_engine::netlist
                     // copy with node ptr, and can use the mapping table to search for new node
                     copy.copy_with_node_ptr(*c);
 
-                    auto const copy_pin_view{copy.ptr->generate_pin_view()};
+                    auto const copy_is_normal = (copy.type == ::phy_engine::model::model_type::normal && copy.ptr != nullptr);
+                    auto const copy_pin_view = copy_is_normal ? copy.ptr->generate_pin_view() : ::phy_engine::model::pin_view{};
 
                     if(models.empty()) [[unlikely]]
                     {
@@ -424,6 +425,7 @@ namespace phy_engine::netlist
                         else { ::new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)}; }
                     }
 
+                    if(!copy_is_normal) { continue; }
                     for(auto c{copy_pin_view.pins}; c != copy_pin_view.pins + copy_pin_view.size; ++c)
                     {
                         auto& this_node{c->nodes};
@@ -444,6 +446,11 @@ namespace phy_engine::netlist
             if(__builtin_addressof(other) == this) [[unlikely]] { return *this; }
             models.clear();
             nodes.clear();
+            // The ground node is a persistent member; clear any stale pin pointers before rebuilding.
+            ground_node.pins.clear();
+            ground_node.num_of_analog_node = 0;
+            ground_node.node_index = SIZE_MAX;
+            ground_node.node_information = {};
 
             // deep copy
             ::absl::btree_map<::phy_engine::model::node_t const*, ::phy_engine::model::node_t*> node_map{};
@@ -491,7 +498,8 @@ namespace phy_engine::netlist
                     // copy with node ptr, and can use the mapping table to search for new node
                     copy.copy_with_node_ptr(*c);
 
-                    auto const copy_pin_view{copy.ptr->generate_pin_view()};
+                    auto const copy_is_normal = (copy.type == ::phy_engine::model::model_type::normal && copy.ptr != nullptr);
+                    auto const copy_pin_view = copy_is_normal ? copy.ptr->generate_pin_view() : ::phy_engine::model::pin_view{};
 
                     if(models.empty()) [[unlikely]]
                     {
@@ -509,6 +517,7 @@ namespace phy_engine::netlist
                         else { ::new(nlb.curr++)::phy_engine::model::model_base{::std::move(copy)}; }
                     }
 
+                    if(!copy_is_normal) { continue; }
                     for(auto c{copy_pin_view.pins}; c != copy_pin_view.pins + copy_pin_view.size; ++c)
                     {
                         auto& this_node{c->nodes};
@@ -527,4 +536,3 @@ namespace phy_engine::netlist
     };
 
 }  // namespace phy_engine::netlist
-

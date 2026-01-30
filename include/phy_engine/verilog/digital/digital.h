@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 
@@ -1018,6 +1019,16 @@ namespace phy_engine::verilog::digital
                 ::std::size_t const c0{col};
                 char8_t const* const b{p};
 
+                char8_t const v0{p[1]};
+                if(v0 == u8'0' || v0 == u8'1' || v0 == u8'x' || v0 == u8'X' || v0 == u8'z' || v0 == u8'Z')
+                {
+                    bump(*p);
+                    bump(p[1]);
+                    p += 2;
+                    make_tok(token_kind::number, b, p, l0, c0);
+                    continue;
+                }
+
                 // Peek base marker.
                 ::std::size_t q{1};
                 if(p + q < e && (p[q] == u8's' || p[q] == u8'S')) { ++q; }
@@ -1357,6 +1368,7 @@ namespace phy_engine::verilog::digital
         {
             empty,
             block,
+            subprogram_block,  // like block, but consumes `return;` (does not propagate to caller)
             blocking_assign,
             blocking_assign_vec,
             nonblocking_assign,
@@ -1364,7 +1376,11 @@ namespace phy_engine::verilog::digital
             if_stmt,
             case_stmt,
             for_stmt,
-            while_stmt
+            while_stmt,
+            do_while_stmt,
+            return_stmt,
+            break_stmt,
+            continue_stmt
         };
 
         enum class case_kind : ::std::uint_fast8_t
@@ -1394,7 +1410,7 @@ namespace phy_engine::verilog::digital
         // loops:
         ::std::size_t init_stmt{SIZE_MAX};  // for_stmt only
         ::std::size_t step_stmt{SIZE_MAX};  // for_stmt only
-        ::std::size_t body_stmt{SIZE_MAX};  // for_stmt/while_stmt only
+        ::std::size_t body_stmt{SIZE_MAX};  // for_stmt/while_stmt/do_while_stmt only
     };
 
     struct sensitivity_event
@@ -1421,6 +1437,12 @@ namespace phy_engine::verilog::digital
     {
         bool is_star{true};                               // @* / always_comb (implicit sensitivity)
         ::fast_io::vector<::std::size_t> sens_signals{};  // when !is_star: explicit sensitivity signals
+        ::fast_io::vector<stmt_node> stmt_nodes{};
+        ::fast_io::vector<::std::size_t> roots{};
+    };
+
+    struct initial_block
+    {
         ::fast_io::vector<stmt_node> stmt_nodes{};
         ::fast_io::vector<::std::size_t> roots{};
     };
@@ -1502,16 +1524,49 @@ namespace phy_engine::verilog::digital
 
     struct function_def
     {
-        ::fast_io::vector<::fast_io::u8string> params{};
-        ::fast_io::u8string expr_text{};
+        struct param_decl
+        {
+            ::fast_io::u8string name{};
+            bool has_range{};
+            int msb{};
+            int lsb{};
+            bool is_signed{};
+            ::std::size_t width{1};  // derived: range width or base type width
+        };
+
+        bool ret_has_range{};
+        int ret_msb{};
+        int ret_lsb{};
+        bool ret_is_signed{};
+        ::std::size_t ret_width{1};  // derived: range width or base type width
+
+        ::fast_io::vector<param_decl> params{};
+        ::fast_io::vector<::fast_io::u8string> locals{};  // declared locals (excluding params); includes implicit return variable name
+        ::fast_io::u8string body_text{};                  // tokens between ';' and 'endfunction' (rebuilt, whitespace-normalized)
     };
 
     struct task_def
     {
-        ::fast_io::vector<::fast_io::u8string> params{};
-        ::fast_io::vector<bool> param_is_output{};  // true => output, false => input
-        ::fast_io::u8string lhs_param{};            // which output param is assigned
-        ::fast_io::u8string rhs_expr_text{};        // expression text for the single assignment body
+        enum class param_dir : ::std::uint_fast8_t
+        {
+            input,
+            output,
+            inout
+        };
+
+        struct param_decl
+        {
+            ::fast_io::u8string name{};
+            param_dir dir{param_dir::input};
+            bool has_range{};
+            int msb{};
+            int lsb{};
+            bool is_signed{};
+            ::std::size_t width{1};
+        };
+
+        ::fast_io::vector<param_decl> params{};
+        ::fast_io::u8string body_text{};  // tokens between ';' and 'endtask' (rebuilt, whitespace-normalized)
     };
 
     struct compiled_module
@@ -1546,10 +1601,13 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<continuous_assign> assigns{};
         ::fast_io::vector<always_ff> always_ffs{};
         ::fast_io::vector<always_comb> always_combs{};
+        ::fast_io::vector<initial_block> initials{};
         ::fast_io::vector<instance> instances{};
 
         ::absl::btree_map<::fast_io::u8string, function_def> functions{};
         ::absl::btree_map<::fast_io::u8string, task_def> tasks{};
+
+        ::std::uint64_t inline_counter{};  // unique id for inlined constructs (e.g. function-call lowering)
     };
 
     struct compile_result
@@ -1752,6 +1810,14 @@ namespace phy_engine::verilog::digital
             // supported: 0/1, 1'b0/1'b1/1'bx/1'bz (case-insensitive on base+digit)
             if(t == u8"0") { return logic_t::false_state; }
             if(t == u8"1") { return logic_t::true_state; }
+            if(t.size() == 2 && t[0] == u8'\'')
+            {
+                char8_t const v{t[1]};
+                if(v == u8'0') { return logic_t::false_state; }
+                if(v == u8'1') { return logic_t::true_state; }
+                if(v == u8'x' || v == u8'X') { return logic_t::indeterminate_state; }
+                if(v == u8'z' || v == u8'Z') { return logic_t::high_impedence_state; }
+            }
 
             if(t.size() >= 4 && t[1] == u8'\'' && (t[2] == u8'b' || t[2] == u8'B'))
             {
@@ -1827,14 +1893,22 @@ namespace phy_engine::verilog::digital
             if(is_signed_out) { *is_signed_out = false; }
 
             if(t.empty()) { return false; }
-            if(t == u8"0")
+            if(t.size() == 2 && t[0] == u8'\'')
             {
-                bits_out.push_back(logic_t::false_state);
-                return true;
-            }
-            if(t == u8"1")
-            {
-                bits_out.push_back(logic_t::true_state);
+                char8_t const v{t[1]};
+                logic_t fill{logic_t::indeterminate_state};
+                if(v == u8'0') { fill = logic_t::false_state; }
+                else if(v == u8'1') { fill = logic_t::true_state; }
+                else if(v == u8'x' || v == u8'X') { fill = logic_t::indeterminate_state; }
+                else if(v == u8'z' || v == u8'Z') { fill = logic_t::high_impedence_state; }
+                else
+                {
+                    return false;
+                }
+                // SystemVerilog fill literal: width is context-determined (e.g. `logic [7:0] x = '0;`).
+                // Represent as a 1-bit signed literal so sign-extension replicates the fill bit in resize/coercion.
+                if(is_signed_out) { *is_signed_out = true; }
+                bits_out.assign(1, fill);
                 return true;
             }
 
@@ -2008,9 +2082,10 @@ namespace phy_engine::verilog::digital
                 return false;
             }
 
-            // Unsized decimal (treat as 32-bit unsigned for this subset)
+            // Unsized decimal (Verilog/SV: 32-bit signed)
             ::std::uint64_t value{};
             if(!parse_dec_uint64(t, value)) { return false; }
+            if(is_signed_out) { *is_signed_out = true; }
             constexpr ::std::size_t width{32};
             bits_out.assign(width, logic_t::false_state);
             for(::std::size_t i{}; i < width; ++i)
@@ -2026,6 +2101,8 @@ namespace phy_engine::verilog::digital
             ::fast_io::vector<token> const* toks{};
             ::std::size_t pos{};
             ::fast_io::vector<compile_error>* errors{};
+            // When non-empty, `return <expr>;` is lowered to an assignment into this variable name (subset; used for inlined functions).
+            ::fast_io::u8string_view return_target{};
 
             [[nodiscard]] token const& peek() const noexcept { return toks->index_unchecked(pos); }
 
@@ -2134,6 +2211,27 @@ namespace phy_engine::verilog::digital
             for(auto const* p{b}; p != r.ptr; ++p) { s.push_back(static_cast<char8_t>(*p)); }
         }
 
+        inline void append_u64_decimal(::fast_io::u8string& s, ::std::uint64_t v) noexcept
+        {
+            char buf[32];
+            auto const* const b{buf};
+            auto const* const e{buf + sizeof(buf)};
+            auto const r{::std::to_chars(const_cast<char*>(b), const_cast<char*>(e), v)};
+            if(r.ec != ::std::errc{}) [[unlikely]] { return; }
+            for(auto const* p{b}; p != r.ptr; ++p) { s.push_back(static_cast<char8_t>(*p)); }
+        }
+
+        inline ::fast_io::u8string make_scoped_local_name(compiled_module& m, ::fast_io::u8string_view visible) noexcept
+        {
+            ::fast_io::u8string out{};
+            out.reserve(8 + visible.size());
+            out.append(u8"$blk");
+            append_u64_decimal(out, m.inline_counter++);
+            out.append(u8"__");
+            for(char8_t c: visible) { out.push_back(c); }
+            return out;
+        }
+
         inline bool parse_dec_int(::fast_io::u8string_view t, int& out) noexcept
         {
             if(t.empty()) { return false; }
@@ -2164,40 +2262,7 @@ namespace phy_engine::verilog::digital
             int lsb{};
         };
 
-        inline bool accept_range(parser& p, range_desc& r) noexcept
-        {
-            if(!p.accept_sym(u8'[')) { return false; }
-
-            int a{};
-            auto const& t0{p.peek()};
-            if(t0.kind != token_kind::number || !parse_dec_int(t0.text, a))
-            {
-                p.err(t0, u8"expected integer in range");
-                while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
-                return false;
-            }
-            p.consume();
-
-            int b{a};
-            if(p.accept_sym(u8':'))
-            {
-                auto const& t1{p.peek()};
-                if(t1.kind != token_kind::number || !parse_dec_int(t1.text, b))
-                {
-                    p.err(t1, u8"expected integer after ':'");
-                    while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
-                    return false;
-                }
-                p.consume();
-            }
-
-            if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
-
-            r.has_range = true;
-            r.msb = a;
-            r.lsb = b;
-            return true;
-        }
+        inline bool accept_range(parser& p, compiled_module& m, range_desc& r) noexcept;
 
         inline ::fast_io::u8string make_bit_name(::fast_io::u8string_view base, int idx) noexcept
         {
@@ -2369,6 +2434,76 @@ namespace phy_engine::verilog::digital
             int msb{};                                        // index range for bit/part-select mapping
             int lsb{};
         };
+
+        struct proc_scope
+        {
+            struct undo_entry
+            {
+                ::fast_io::u8string name{};
+                bool had_alias{};
+                ::fast_io::u8string prev_alias{};
+                bool had_subst{};
+                expr_value prev_subst{};
+            };
+
+            ::absl::btree_map<::fast_io::u8string, ::fast_io::u8string> aliases{};
+            ::absl::btree_map<::fast_io::u8string, expr_value> subst{};
+
+            ::fast_io::vector<undo_entry> undo_stack{};
+            ::fast_io::vector<::std::size_t> frame_marks{};
+
+            void push_frame() noexcept { frame_marks.push_back(undo_stack.size()); }
+
+            void pop_frame() noexcept
+            {
+                if(frame_marks.empty()) { return; }
+                ::std::size_t const mark{frame_marks.back_unchecked()};
+                frame_marks.pop_back();
+
+                while(undo_stack.size() > mark)
+                {
+                    auto u{::std::move(undo_stack.back_unchecked())};
+                    undo_stack.pop_back();
+
+                    if(u.had_alias) { aliases.insert_or_assign(u.name, ::std::move(u.prev_alias)); }
+                    else
+                    {
+                        aliases.erase(u.name);
+                    }
+
+                    if(u.had_subst) { subst.insert_or_assign(u.name, ::std::move(u.prev_subst)); }
+                    else
+                    {
+                        subst.erase(u.name);
+                    }
+                }
+            }
+
+            void bind(::fast_io::u8string const& visible, ::fast_io::u8string internal, expr_value ev) noexcept
+            {
+                undo_entry u{};
+                u.name = visible;
+
+                if(auto it{aliases.find(visible)}; it != aliases.end())
+                {
+                    u.had_alias = true;
+                    u.prev_alias = it->second;
+                }
+                if(auto it{subst.find(visible)}; it != subst.end())
+                {
+                    u.had_subst = true;
+                    u.prev_subst = it->second;
+                }
+
+                undo_stack.push_back(::std::move(u));
+                aliases.insert_or_assign(visible, ::std::move(internal));
+                subst.insert_or_assign(visible, ::std::move(ev));
+            }
+        };
+
+        // Forward declaration (used by expr_parser for function inlining).
+        inline ::std::size_t
+            parse_proc_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool allow_nonblocking, proc_scope* scope = nullptr) noexcept;
 
         struct expr_parser
         {
@@ -3636,6 +3771,93 @@ namespace phy_engine::verilog::digital
 
                 if(t0.kind == token_kind::identifier)
                 {
+                    auto is_cast_type = [&](::fast_io::u8string_view v) noexcept -> bool
+                    {
+                        return v == u8"int" || v == u8"integer" || v == u8"logic" || v == u8"reg" || v == u8"wire" || v == u8"bit" || v == u8"byte" ||
+                               v == u8"shortint" || v == u8"longint";
+                    };
+
+                    if(is_cast_type(t0.text))
+                    {
+                        ::std::size_t const saved{p->pos};
+                        auto const type_kw{t0.text};
+                        p->consume();  // base type keyword
+
+                        bool cast_signed{};
+                        bool cast_signed_seen{};
+                        auto set_signed = [&](bool v) noexcept
+                        {
+                            cast_signed_seen = true;
+                            cast_signed = v;
+                        };
+
+                        // Default signedness per SV rules.
+                        if(type_kw == u8"int" || type_kw == u8"integer" || type_kw == u8"byte" || type_kw == u8"shortint" || type_kw == u8"longint")
+                        {
+                            cast_signed = true;
+                        }
+                        else
+                        {
+                            cast_signed = false;
+                        }
+
+                        while(p->accept_kw(u8"signed") || p->accept_kw(u8"unsigned"))
+                        {
+                            if(p->toks->index_unchecked(p->pos - 1).text == u8"signed") { set_signed(true); }
+                            else
+                            {
+                                set_signed(false);
+                            }
+                        }
+
+                        range_desc tr{};
+                        bool const has_range{accept_range(*p, *m, tr)};
+                        while(p->accept_kw(u8"signed") || p->accept_kw(u8"unsigned"))
+                        {
+                            if(p->toks->index_unchecked(p->pos - 1).text == u8"signed") { set_signed(true); }
+                            else
+                            {
+                                set_signed(false);
+                            }
+                        }
+
+                        ::std::size_t cast_w{1};
+                        if(has_range && tr.has_range)
+                        {
+                            cast_w = static_cast<::std::size_t>((tr.msb - tr.lsb) >= 0 ? (tr.msb - tr.lsb + 1) : (tr.lsb - tr.msb + 1));
+                        }
+                        else
+                        {
+                            if(type_kw == u8"byte") { cast_w = 8; }
+                            else if(type_kw == u8"shortint") { cast_w = 16; }
+                            else if(type_kw == u8"longint") { cast_w = 64; }
+                            else if(type_kw == u8"int" || type_kw == u8"integer") { cast_w = 32; }
+                            else
+                            {
+                                cast_w = 1;
+                            }
+                        }
+
+                        if(p->accept_sym(u8'\''))
+                        {
+                            if(!p->accept_sym(u8'(')) { p->err(p->peek(), u8"expected '(' after cast"); }
+                            auto const v{parse_expr()};
+                            if(!p->accept_sym(u8')')) { p->err(p->peek(), u8"expected ')' after cast"); }
+                            auto roots{resize_to_vector(v, cast_w, cast_signed)};
+                            if(cast_w <= 1)
+                            {
+                                return make_scalar(roots.empty() ? make_literal(logic_t::indeterminate_state) : roots.back_unchecked(), 0, 0, cast_signed);
+                            }
+                            int const out_msb{has_range ? tr.msb : static_cast<int>(cast_w - 1)};
+                            int const out_lsb{has_range ? tr.lsb : 0};
+                            return make_vector_with_range(::std::move(roots), out_msb, out_lsb, cast_signed);
+                        }
+                        p->pos = saved;
+                    }
+                }
+
+                if(t0.kind == token_kind::identifier)
+                {
                     ::fast_io::u8string name{t0.text};
                     p->consume();
 
@@ -3667,6 +3889,66 @@ namespace phy_engine::verilog::digital
                         roots.resize(vd.bits.size());
                         for(::std::size_t i{}; i < vd.bits.size(); ++i) { roots.index_unchecked(i) = make_signal_root(vd.bits.index_unchecked(i)); }
                         return make_vector_with_range(::std::move(roots), vd.msb, vd.lsb, false);
+                    }
+
+                    // `$clog2(expr)` (subset: argument must be constant; returns 32-bit unsigned).
+                    if(name == u8"$clog2")
+                    {
+                        if(!p->accept_sym(u8'(')) { p->err(p->peek(), u8"expected '(' after $clog2"); }
+                        auto const arg{parse_expr()};
+                        if(!p->accept_sym(u8')'))
+                        {
+                            p->err(p->peek(), u8"expected ')' after $clog2");
+                            while(!p->eof() && !p->accept_sym(u8')')) { p->consume(); }
+                        }
+
+                        ::std::uint64_t v{};
+                        if(!try_eval_const_uint64(arg, v))
+                        {
+                            p->err(t0, u8"$clog2 argument must be a constant integer expression in this subset");
+                            return make_uint_literal(0, 32);
+                        }
+
+                        ::std::uint64_t r{};
+                        if(v <= 1) { r = 0; }
+                        else
+                        {
+                            ::std::uint64_t x{v - 1};
+                            while(x != 0)
+                            {
+                                ++r;
+                                x >>= 1;
+                            }
+                        }
+                        return make_uint_literal(r, 32);
+                    }
+
+                    // `$bits(expr)` (subset: expression only; returns 32-bit unsigned).
+                    if(name == u8"$bits")
+                    {
+                        if(!p->accept_sym(u8'(')) { p->err(p->peek(), u8"expected '(' after $bits"); }
+                        auto const arg{parse_expr()};
+                        if(!p->accept_sym(u8')'))
+                        {
+                            p->err(p->peek(), u8"expected ')' after $bits");
+                            while(!p->eof() && !p->accept_sym(u8')')) { p->consume(); }
+                        }
+                        return make_uint_literal(static_cast<::std::uint64_t>(width(arg)), 32);
+                    }
+
+                    // `$signed(expr)` / `$unsigned(expr)` (subset: 1-arg; preserves width, only changes signedness flag).
+                    if(name == u8"$signed" || name == u8"$unsigned")
+                    {
+                        bool const sgn{name == u8"$signed"};
+                        if(!p->accept_sym(u8'(')) { p->err(p->peek(), u8"expected '(' after $signed/$unsigned"); }
+                        auto v{parse_expr()};
+                        if(!p->accept_sym(u8')'))
+                        {
+                            p->err(p->peek(), u8"expected ')' after $signed/$unsigned");
+                            while(!p->eof() && !p->accept_sym(u8')')) { p->consume(); }
+                        }
+                        v.is_signed = sgn;
+                        return v;
                     }
 
                     if(subst_idents && (base.scalar_root == SIZE_MAX && !base.is_vector))
@@ -3824,16 +4106,254 @@ namespace phy_engine::verilog::digital
                                 auto const& fd{itf->second};
                                 if(args.size() != fd.params.size()) { p->err(t0, u8"function argument count mismatch"); }
 
-                                ::absl::btree_map<::fast_io::u8string, expr_value> subst{};
-                                for(::std::size_t i{}; i < args.size() && i < fd.params.size(); ++i)
+                                // Lower function call by inlining it into a dedicated always_comb block:
+                                // - Create unique internal signals for params + locals + return variable.
+                                // - Connect param signals from the argument expressions using continuous assigns.
+                                // - Parse the (renamed) function body as a procedural block to drive the return variable.
+                                ::std::uint64_t const call_id{m->inline_counter++};
+
+                                auto append_u64 = [&](::fast_io::u8string& s, ::std::uint64_t v) noexcept
                                 {
-                                    subst.insert_or_assign(fd.params.index_unchecked(i), args.index_unchecked(i));
+                                    char buf[32];
+                                    auto const r{::std::to_chars(buf, buf + sizeof(buf), v)};
+                                    if(r.ec != ::std::errc{}) { return; }
+                                    for(char const* q{buf}; q != r.ptr; ++q) { s.push_back(static_cast<char8_t>(*q)); }
+                                };
+
+                                ::fast_io::u8string prefix{};
+                                prefix.assign(u8"$fncall");
+                                append_u64(prefix, call_id);
+                                prefix.append(u8"__");
+
+                                auto mangle = [&](::fast_io::u8string_view nm) noexcept -> ::fast_io::u8string
+                                {
+                                    ::fast_io::u8string out{prefix};
+                                    out.append(nm);
+                                    return out;
+                                };
+
+                                struct rename_pair
+                                {
+                                    ::fast_io::u8string from{};
+                                    ::fast_io::u8string to{};
+                                };
+
+                                ::fast_io::vector<rename_pair> renames{};
+                                renames.reserve(fd.locals.size() + fd.params.size() + 1);
+
+                                ::fast_io::u8string const mangled_ret{mangle(::fast_io::u8string_view{name.data(), name.size()})};
+                                renames.push_back({::fast_io::u8string{name}, mangled_ret});
+
+                                for(auto const& pd: fd.params)
+                                {
+                                    if(pd.name.empty()) { continue; }
+                                    renames.push_back({pd.name, mangle(::fast_io::u8string_view{pd.name.data(), pd.name.size()})});
+                                }
+                                for(auto const& lv: fd.locals)
+                                {
+                                    if(lv.empty()) { continue; }
+                                    if(lv == ::fast_io::u8string_view{name.data(), name.size()}) { continue; }
+                                    renames.push_back({lv, mangle(::fast_io::u8string_view{lv.data(), lv.size()})});
                                 }
 
-                                auto const lr2{lex(::fast_io::u8string_view{fd.expr_text.data(), fd.expr_text.size()})};
-                                details::parser fp{__builtin_addressof(lr2.tokens), 0, p->errors};
-                                expr_parser fep{__builtin_addressof(fp), m, nullptr, __builtin_addressof(subst)};
-                                base = fep.parse_expr();
+                                auto lookup_rename = [&](::fast_io::u8string_view id) noexcept -> ::fast_io::u8string_view
+                                {
+                                    for(auto const& rp: renames)
+                                    {
+                                        if(::fast_io::u8string_view{rp.from.data(), rp.from.size()} == id)
+                                        {
+                                            return ::fast_io::u8string_view{rp.to.data(), rp.to.size()};
+                                        }
+                                    }
+                                    return {};
+                                };
+
+                                auto declare_scalar = [&](::fast_io::u8string const& nm, bool is_reg, bool is_signed) noexcept -> ::std::size_t
+                                {
+                                    auto const sig{get_or_create_signal(*m, nm)};
+                                    if(sig < m->signal_is_reg.size() && is_reg) { m->signal_is_reg.index_unchecked(sig) = true; }
+                                    if(sig < m->signal_is_signed.size() && is_signed) { m->signal_is_signed.index_unchecked(sig) = true; }
+                                    return sig;
+                                };
+
+                                auto declare_vector_like =
+                                    [&](::fast_io::u8string const& nm, bool is_reg, bool is_signed, bool has_range, int msb, int lsb, ::std::size_t w) noexcept
+                                    -> vector_desc const*
+                                {
+                                    if(w <= 1 && !has_range)
+                                    {
+                                        (void)declare_scalar(nm, is_reg, is_signed);
+                                        return nullptr;
+                                    }
+                                    int use_msb{has_range ? msb : static_cast<int>(w - 1)};
+                                    int use_lsb{has_range ? lsb : 0};
+                                    return __builtin_addressof(
+                                        declare_vector_range(p, *m, ::fast_io::u8string_view{nm.data(), nm.size()}, use_msb, use_lsb, is_reg, is_signed));
+                                };
+
+                                // Declare + connect parameters.
+                                for(::std::size_t i{}; i < fd.params.size() && i < args.size(); ++i)
+                                {
+                                    auto const& pd{fd.params.index_unchecked(i)};
+                                    if(pd.name.empty()) { continue; }
+
+                                    ::fast_io::u8string const mn{mangle(::fast_io::u8string_view{pd.name.data(), pd.name.size()})};
+                                    ::std::size_t const w{pd.width == 0 ? 1u : pd.width};
+                                    auto const* vd = declare_vector_like(mn, false, pd.is_signed, pd.has_range, pd.msb, pd.lsb, w);
+
+                                    auto rhs_bits = resize_to_vector(args.index_unchecked(i), w, pd.is_signed);
+                                    if(vd != nullptr)
+                                    {
+                                        if(vd->bits.size() == rhs_bits.size())
+                                        {
+                                            for(::std::size_t bi{}; bi < rhs_bits.size(); ++bi)
+                                            {
+                                                m->assigns.push_back({vd->bits.index_unchecked(bi), rhs_bits.index_unchecked(bi), SIZE_MAX});
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        auto const sig{get_or_create_signal(*m, mn)};
+                                        if(!rhs_bits.empty()) { m->assigns.push_back({sig, rhs_bits.back_unchecked(), SIZE_MAX}); }
+                                    }
+                                }
+
+                                // Declare return variable (reg-like).
+                                vector_desc const* ret_vd = declare_vector_like(mangled_ret,
+                                                                                true,
+                                                                                fd.ret_is_signed,
+                                                                                fd.ret_has_range,
+                                                                                fd.ret_msb,
+                                                                                fd.ret_lsb,
+                                                                                fd.ret_width == 0 ? 1u : fd.ret_width);
+                                if(ret_vd == nullptr && (fd.ret_width > 1))
+                                {
+                                    // Scalar fallback shouldn't happen for multi-bit returns, but keep state consistent.
+                                    (void)declare_scalar(mangled_ret, true, fd.ret_is_signed);
+                                }
+
+                                // Rewrite and parse function body as a procedural block.
+                                ::fast_io::u8string body_renamed{};
+                                {
+                                    auto const lr_body{lex(::fast_io::u8string_view{fd.body_text.data(), fd.body_text.size()})};
+                                    bool prev_word{};
+                                    auto emit = [&](::fast_io::u8string_view txt, bool is_word) noexcept
+                                    {
+                                        if(!body_renamed.empty() && prev_word && is_word) { body_renamed.push_back(u8' '); }
+                                        body_renamed.append(txt);
+                                        prev_word = is_word;
+                                    };
+
+                                    for(::std::size_t ti{}; ti < lr_body.tokens.size(); ++ti)
+                                    {
+                                        auto const& tk{lr_body.tokens.index_unchecked(ti)};
+                                        if(tk.kind == token_kind::eof) { break; }
+                                        bool const is_word{tk.kind == token_kind::identifier || tk.kind == token_kind::number};
+
+                                        // Lower `return <expr>;` into `<retvar> = <expr>; return;` so the procedural subset can handle early exit.
+                                        if(tk.kind == token_kind::identifier && tk.text == u8"return")
+                                        {
+                                            // Peek next token; if immediate ';' => plain `return;`.
+                                            if(ti + 1 < lr_body.tokens.size())
+                                            {
+                                                auto const& t1{lr_body.tokens.index_unchecked(ti + 1)};
+                                                if(t1.kind == token_kind::symbol && is_sym(t1.text, u8';'))
+                                                {
+                                                    emit(tk.text, true);
+                                                    continue;
+                                                }
+                                            }
+
+                                            // Emit: <retvar> = <expr> ; return ;
+                                            emit(::fast_io::u8string_view{mangled_ret.data(), mangled_ret.size()}, true);
+                                            emit(u8"=", false);
+
+                                            // Copy expr tokens until ';', applying renames.
+                                            for(++ti; ti < lr_body.tokens.size(); ++ti)
+                                            {
+                                                auto const& te{lr_body.tokens.index_unchecked(ti)};
+                                                if(te.kind == token_kind::eof) { break; }
+                                                if(te.kind == token_kind::symbol && is_sym(te.text, u8';'))
+                                                {
+                                                    emit(u8";", false);
+                                                    emit(u8"return", true);
+                                                    emit(u8";", false);
+                                                    break;
+                                                }
+
+                                                bool const ew{te.kind == token_kind::identifier || te.kind == token_kind::number};
+                                                if(te.kind == token_kind::identifier)
+                                                {
+                                                    auto const rep{lookup_rename(te.text)};
+                                                    if(!rep.empty()) { emit(rep, true); }
+                                                    else
+                                                    {
+                                                        emit(te.text, true);
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    emit(te.text, ew);
+                                                }
+                                            }
+
+                                            continue;
+                                        }
+
+                                        if(tk.kind == token_kind::identifier)
+                                        {
+                                            auto const rep{lookup_rename(tk.text)};
+                                            if(!rep.empty()) { emit(rep, true); }
+                                            else
+                                            {
+                                                emit(tk.text, true);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            emit(tk.text, is_word);
+                                        }
+                                    }
+                                }
+
+                                ::fast_io::u8string proc_text{};
+                                proc_text.reserve(16 + body_renamed.size());
+                                proc_text.append(u8"begin ");
+                                proc_text.append(body_renamed);
+                                proc_text.append(u8" end");
+
+	                                auto const lr2{lex(::fast_io::u8string_view{proc_text.data(), proc_text.size()})};
+	                                details::parser fp{__builtin_addressof(lr2.tokens), 0, p->errors};
+	                                fp.return_target = ::fast_io::u8string_view{mangled_ret.data(), mangled_ret.size()};
+
+	                                always_comb ac{};
+	                                ac.is_star = true;
+                                ac.stmt_nodes.reserve(64);
+                                auto const root_idx = parse_proc_stmt(fp, *m, ac.stmt_nodes, true);
+                                if(root_idx < ac.stmt_nodes.size() && ac.stmt_nodes.index_unchecked(root_idx).k == stmt_node::kind::block)
+                                {
+                                    ac.stmt_nodes.index_unchecked(root_idx).k = stmt_node::kind::subprogram_block;
+                                }
+                                ac.roots.push_back(root_idx);
+                                m->always_combs.push_back(::std::move(ac));
+
+                                // Return expression is the return variable signal(s).
+                                if(ret_vd != nullptr && !ret_vd->bits.empty())
+                                {
+                                    ::fast_io::vector<::std::size_t> bits{};
+                                    bits.resize(ret_vd->bits.size());
+                                    for(::std::size_t bi{}; bi < ret_vd->bits.size(); ++bi)
+                                    {
+                                        bits.index_unchecked(bi) = make_signal_root(ret_vd->bits.index_unchecked(bi));
+                                    }
+                                    base = make_vector_with_range(::std::move(bits), ret_vd->msb, ret_vd->lsb, fd.ret_is_signed);
+                                }
+                                else
+                                {
+                                    auto const sig{get_or_create_signal(*m, mangled_ret)};
+                                    base = make_scalar(make_signal_root(sig), 0, 0, fd.ret_is_signed);
+                                }
                             }
                         }
                         else
@@ -4362,8 +4882,34 @@ namespace phy_engine::verilog::digital
         {
             for(;;)
             {
-                // optional type tokens: int/integer
-                if(p.accept_kw(u8"int") || p.accept_kw(u8"integer")) { /* ignored */ }
+                // optional SV type/qualifiers in parameter declaration (subset; params still modeled as [31:0]):
+                //   parameter int unsigned W = 4
+                //   localparam logic [7:0] MASK = 8'hff
+                // We accept/ignore most of the type and range syntax for compatibility.
+                for(;;)
+                {
+                    if(p.accept_kw(u8"signed") || p.accept_kw(u8"unsigned")) { continue; }
+                    break;
+                }
+
+                auto is_int_type = [&](::fast_io::u8string_view kw) noexcept -> bool
+                { return kw == u8"int" || kw == u8"integer" || kw == u8"byte" || kw == u8"shortint" || kw == u8"longint"; };
+                auto is_logic_type = [&](::fast_io::u8string_view kw) noexcept -> bool
+                { return kw == u8"logic" || kw == u8"reg" || kw == u8"wire" || kw == u8"bit"; };
+
+                auto const& t0{p.peek()};
+                if(t0.kind == token_kind::identifier && (is_int_type(t0.text) || is_logic_type(t0.text)))
+                {
+                    p.consume();
+                    for(;;)
+                    {
+                        if(p.accept_kw(u8"signed") || p.accept_kw(u8"unsigned")) { continue; }
+                        break;
+                    }
+
+                    range_desc r{};
+                    (void)accept_range(p, m, r);  // ignored
+                }
 
                 auto const pname{p.expect_ident(u8"expected parameter identifier")};
                 ::std::uint64_t value{};
@@ -4398,6 +4944,40 @@ namespace phy_engine::verilog::digital
             }
         }
 
+        inline bool accept_range(parser& p, compiled_module& m, range_desc& r) noexcept
+        {
+            if(!p.accept_sym(u8'[')) { return false; }
+
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            auto const a_expr{ep.parse_expr()};
+            int a{};
+            if(!ep.try_eval_const_int(a_expr, a))
+            {
+                p.err(p.peek(), u8"expected constant integer in range");
+                while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                return false;
+            }
+
+            int b{a};
+            if(p.accept_sym(u8':'))
+            {
+                auto const b_expr{ep.parse_expr()};
+                if(!ep.try_eval_const_int(b_expr, b))
+                {
+                    p.err(p.peek(), u8"expected constant integer after ':'");
+                    while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                    return false;
+                }
+            }
+
+            if(!p.accept_sym(u8']')) { p.err(p.peek(), u8"expected ']'"); }
+
+            r.has_range = true;
+            r.msb = a;
+            r.lsb = b;
+            return true;
+        }
+
         struct lvalue_ref
         {
             enum class kind : ::std::uint_fast8_t
@@ -4420,7 +5000,13 @@ namespace phy_engine::verilog::digital
             expr_value lsb_expr{};                              // only for dynamic_part_select
         };
 
-        inline bool parse_lvalue_ref(parser& p, compiled_module& m, lvalue_ref& out, bool mark_reg, bool allow_vector) noexcept
+        inline bool parse_lvalue_ref(parser& p,
+                                     compiled_module& m,
+                                     lvalue_ref& out,
+                                     bool mark_reg,
+                                     bool allow_vector,
+                                     ::absl::btree_map<::fast_io::u8string, ::fast_io::u8string> const* aliases = nullptr,
+                                     ::absl::btree_map<::fast_io::u8string, expr_value> const* subst_idents = nullptr) noexcept
         {
             if(p.accept_sym(u8'{'))
             {
@@ -4436,7 +5022,7 @@ namespace phy_engine::verilog::digital
                     if(p.accept_sym(u8'}')) { break; }
 
                     lvalue_ref part{};
-                    if(!parse_lvalue_ref(p, m, part, mark_reg, true))
+                    if(!parse_lvalue_ref(p, m, part, mark_reg, true, aliases, subst_idents))
                     {
                         ok = false;
                         // best-effort recovery: skip until ',' or '}'
@@ -4487,9 +5073,16 @@ namespace phy_engine::verilog::digital
             auto const name{p.expect_ident(u8"expected identifier")};
             if(name.empty()) { return false; }
 
+            ::fast_io::u8string base{name};
+            if(aliases)
+            {
+                if(auto it{aliases->find(base)}; it != aliases->end()) { base = it->second; }
+            }
+
             if(p.accept_sym(u8'['))
             {
                 expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+                ep.subst_idents = subst_idents;
                 auto const first_e{ep.parse_expr()};
 
                 bool indexed{};
@@ -4525,7 +5118,7 @@ namespace phy_engine::verilog::digital
                         out.vector_signals.clear();
                         out.vector_signals.reserve(static_cast<::std::size_t>(w));
 
-                        auto itv{m.vectors.find(name)};
+                        auto itv{m.vectors.find(base)};
                         bool const desc{itv != m.vectors.end() ? (itv->second.msb >= itv->second.lsb) : true};
 
                         int sel_msb{};
@@ -4561,14 +5154,14 @@ namespace phy_engine::verilog::digital
                         {
                             for(int idx{sel_msb}; idx >= sel_lsb; --idx)
                             {
-                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{base.data(), base.size()}, idx, mark_reg));
                             }
                         }
                         else
                         {
                             for(int idx{sel_msb}; idx <= sel_lsb; ++idx)
                             {
-                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{base.data(), base.size()}, idx, mark_reg));
                             }
                         }
 
@@ -4582,12 +5175,12 @@ namespace phy_engine::verilog::digital
                         return true;
                     }
 
-                    auto itv{m.vectors.find(name)};
+                    auto itv{m.vectors.find(base)};
                     if(itv == m.vectors.end() || details::vector_width(itv->second) <= 1)
                     {
                         p.err(p.peek(), u8"indexed part-select requires a declared vector");
                         out.k = lvalue_ref::kind::scalar;
-                        out.scalar_signal = get_or_create_signal(m, name);
+                        out.scalar_signal = get_or_create_signal(m, base);
                         return true;
                     }
 
@@ -4634,14 +5227,14 @@ namespace phy_engine::verilog::digital
                         {
                             for(int idx{msb}; idx >= lsb; --idx)
                             {
-                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{base.data(), base.size()}, idx, mark_reg));
                             }
                         }
                         else
                         {
                             for(int idx{msb}; idx <= lsb; ++idx)
                             {
-                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx, mark_reg));
+                                out.vector_signals.push_back(get_or_create_vector_bit(m, ::fast_io::u8string_view{base.data(), base.size()}, idx, mark_reg));
                             }
                         }
 
@@ -4656,12 +5249,12 @@ namespace phy_engine::verilog::digital
                     }
 
                     // dynamic part-select lvalue: a[msb:lsb] where msb/lsb are expressions
-                    auto itv{m.vectors.find(name)};
+                    auto itv{m.vectors.find(base)};
                     if(itv == m.vectors.end() || details::vector_width(itv->second) <= 1)
                     {
                         p.err(p.peek(), u8"dynamic part-select requires a declared vector");
                         out.k = lvalue_ref::kind::scalar;
-                        out.scalar_signal = get_or_create_signal(m, name);
+                        out.scalar_signal = get_or_create_signal(m, base);
                         if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
                         return true;
                     }
@@ -4688,17 +5281,17 @@ namespace phy_engine::verilog::digital
                 if(ep.try_eval_const_int(first_e, idx_const))
                 {
                     out.k = lvalue_ref::kind::scalar;
-                    out.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{name.data(), name.size()}, idx_const, mark_reg);
+                    out.scalar_signal = get_or_create_vector_bit(m, ::fast_io::u8string_view{base.data(), base.size()}, idx_const, mark_reg);
                     if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
                     return true;
                 }
 
-                auto itv{m.vectors.find(name)};
+                auto itv{m.vectors.find(base)};
                 if(itv == m.vectors.end() || details::vector_width(itv->second) <= 1)
                 {
                     p.err(p.peek(), u8"dynamic bit-select requires a declared vector");
                     out.k = lvalue_ref::kind::scalar;
-                    out.scalar_signal = get_or_create_signal(m, name);
+                    out.scalar_signal = get_or_create_signal(m, base);
                     if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
                     return true;
                 }
@@ -4720,7 +5313,7 @@ namespace phy_engine::verilog::digital
 
             if(allow_vector)
             {
-                auto it{m.vectors.find(name)};
+                auto it{m.vectors.find(base)};
                 if(it != m.vectors.end() && !it->second.bits.empty() && details::vector_width(it->second) > 1)
                 {
                     out.k = lvalue_ref::kind::vector;
@@ -4737,7 +5330,7 @@ namespace phy_engine::verilog::digital
             }
 
             out.k = lvalue_ref::kind::scalar;
-            out.scalar_signal = get_or_create_signal(m, name);
+            out.scalar_signal = get_or_create_signal(m, base);
             if(mark_reg && out.scalar_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(out.scalar_signal) = true; }
             return true;
         }
@@ -5536,14 +6129,97 @@ namespace phy_engine::verilog::digital
 
         inline void parse_function_def(parser& p, compiled_module& m) noexcept
         {
-            // function <name>(input a, input b); return <expr>; endfunction
-            // function <name>(input a, input b); <name> = <expr>; endfunction
+            // SystemVerilog function (subset):
+            // - Accept return types like: logic, logic [W-1:0], [W-1:0], int/integer, int unsigned, etc.
+            // - Body is stored as raw text and later lowered by inlining at call sites.
+
             if(p.accept_kw(u8"automatic")) { /* ignored */ }
-            if(p.accept_kw(u8"int") || p.accept_kw(u8"integer")) { /* ignored */ }
-            if(p.accept_sym(u8'['))
+
+            auto is_int_type = [&](::fast_io::u8string_view kw) noexcept -> bool
+            { return kw == u8"int" || kw == u8"integer" || kw == u8"byte" || kw == u8"shortint" || kw == u8"longint"; };
+            auto is_logic_type = [&](::fast_io::u8string_view kw) noexcept -> bool
+            { return kw == u8"logic" || kw == u8"reg" || kw == u8"wire" || kw == u8"bit"; };
+
+            auto parse_type_and_range = [&](bool& out_has_range, int& out_msb, int& out_lsb, bool& out_signed, ::std::size_t& out_width) noexcept
             {
-                while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
-            }
+                bool signed_seen{};
+                bool signed_val{};
+                for(;;)
+                {
+                    if(p.accept_kw(u8"signed"))
+                    {
+                        signed_seen = true;
+                        signed_val = true;
+                        continue;
+                    }
+                    if(p.accept_kw(u8"unsigned"))
+                    {
+                        signed_seen = true;
+                        signed_val = false;
+                        continue;
+                    }
+                    break;
+                }
+
+                bool base_is_signed{};
+                ::std::size_t base_width{1};
+                bool saw_base{};
+                auto const& t0{p.peek()};
+                if(t0.kind == token_kind::identifier && (is_int_type(t0.text) || is_logic_type(t0.text)))
+                {
+                    saw_base = true;
+                    base_is_signed = is_int_type(t0.text) && (t0.text != u8"bit");
+                    // byte/shortint/longint/int/integer are signed by default in SV; logic/reg/wire/bit are unsigned.
+                    if(t0.text == u8"byte" || t0.text == u8"shortint" || t0.text == u8"longint") { base_is_signed = true; }
+                    if(t0.text == u8"int" || t0.text == u8"integer") { base_is_signed = true; }
+                    if(is_logic_type(t0.text)) { base_is_signed = false; }
+                    if(t0.text == u8"byte") { base_width = 8; }
+                    else if(t0.text == u8"shortint") { base_width = 16; }
+                    else if(t0.text == u8"longint") { base_width = 64; }
+                    else if(t0.text == u8"int" || t0.text == u8"integer") { base_width = 32; }
+                    else if(is_logic_type(t0.text)) { base_width = 1; }
+                    p.consume();
+                }
+
+                for(;;)
+                {
+                    if(p.accept_kw(u8"signed"))
+                    {
+                        signed_seen = true;
+                        signed_val = true;
+                        continue;
+                    }
+                    if(p.accept_kw(u8"unsigned"))
+                    {
+                        signed_seen = true;
+                        signed_val = false;
+                        continue;
+                    }
+                    break;
+                }
+
+                out_signed = signed_seen ? signed_val : base_is_signed;
+
+                range_desc r{};
+                out_has_range = false;
+                out_msb = 0;
+                out_lsb = 0;
+                out_width = base_width;
+                if(accept_range(p, m, r))
+                {
+                    out_has_range = r.has_range;
+                    out_msb = r.msb;
+                    out_lsb = r.lsb;
+                    out_width = static_cast<::std::size_t>((r.msb - r.lsb) >= 0 ? (r.msb - r.lsb + 1) : (r.lsb - r.msb + 1));
+                }
+                else
+                {
+                    (void)saw_base;
+                }
+            };
+
+            function_def fd{};
+            parse_type_and_range(fd.ret_has_range, fd.ret_msb, fd.ret_lsb, fd.ret_is_signed, fd.ret_width);
 
             auto const fname{p.expect_ident(u8"expected function name")};
             if(fname.empty())
@@ -5552,23 +6228,24 @@ namespace phy_engine::verilog::digital
                 return;
             }
 
-            function_def fd{};
+            // Implicit return variable.
+            fd.locals.push_back(fname);
 
             if(p.accept_sym(u8'('))
             {
                 if(!p.accept_sym(u8')'))
                 {
+                    // Parse ANSI-style parameter list (subset): input [type] name (, ... )
                     for(;;)
                     {
                         if(p.accept_kw(u8"input")) { /* ignored */ }
-                        if(p.accept_kw(u8"int") || p.accept_kw(u8"integer")) { /* ignored */ }
-                        if(p.accept_sym(u8'['))
-                        {
-                            while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
-                        }
+
+                        function_def::param_decl pd{};
+                        parse_type_and_range(pd.has_range, pd.msb, pd.lsb, pd.is_signed, pd.width);
 
                         auto const pn{p.expect_ident(u8"expected function parameter identifier")};
-                        if(!pn.empty()) { fd.params.push_back(pn); }
+                        if(!pn.empty()) { pd.name = pn; }
+                        fd.params.push_back(::std::move(pd));
 
                         if(p.accept_sym(u8')')) { break; }
                         if(!p.accept_sym(u8','))
@@ -5583,53 +6260,84 @@ namespace phy_engine::verilog::digital
 
             if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after function header"); }
 
-            ::std::size_t expr_b{SIZE_MAX};
-            ::std::size_t expr_e{SIZE_MAX};
+            ::std::size_t const body_b{p.pos};
 
+            // Scan body to collect declared locals and find endfunction.
             while(!p.eof())
             {
-                if(p.accept_kw(u8"endfunction")) { break; }
-
                 auto const& t{p.peek()};
-                if(t.kind == token_kind::identifier && t.text == u8"return")
-                {
-                    p.consume();
-                    expr_b = p.pos;
-                    while(!p.eof() && !p.accept_sym(u8';')) { p.consume(); }
-                    expr_e = (p.pos == 0) ? 0 : (p.pos - 1);
-                    continue;
-                }
+                if(t.kind == token_kind::identifier && t.text == u8"endfunction") { break; }
 
-                if(t.kind == token_kind::identifier && t.text == ::fast_io::u8string_view{fname.data(), fname.size()})
+                // Local decls: logic/reg/wire/bit/int/integer/byte/shortint/longint ...
+                if(t.kind == token_kind::identifier &&
+                   (t.text == u8"logic" || t.text == u8"reg" || t.text == u8"wire" || t.text == u8"bit" || t.text == u8"int" || t.text == u8"integer" ||
+                    t.text == u8"byte" || t.text == u8"shortint" || t.text == u8"longint"))
                 {
-                    ::std::size_t const name_pos{p.pos};
+                    ::std::size_t const save_pos{p.pos};
+                    // consume base type
                     p.consume();
-                    if(p.accept_sym(u8'='))
+                    while(p.accept_kw(u8"signed") || p.accept_kw(u8"unsigned")) { /* ignored */ }
+                    range_desc r{};
+                    (void)accept_range(p, m, r);
+
+                    // Disambiguate casts like `int'(x)` / `logic'(x)` from declarations.
+                    if(p.peek().kind == token_kind::symbol && is_sym(p.peek().text, u8'\''))
                     {
-                        expr_b = p.pos;
-                        while(!p.eof() && !p.accept_sym(u8';')) { p.consume(); }
-                        expr_e = (p.pos == 0) ? 0 : (p.pos - 1);
+                        p.pos = save_pos;
+                        p.consume();
                         continue;
                     }
-                    p.pos = name_pos;
+
+                    for(;;)
+                    {
+                        auto const vn{p.expect_ident(u8"expected identifier in local declaration")};
+                        if(!vn.empty()) { fd.locals.push_back(vn); }
+
+                        // Allow local declaration initializers: `logic x = expr;`
+                        if(p.accept_sym(u8'='))
+                        {
+                            int paren{};
+                            int bracket{};
+                            int brace{};
+                            while(!p.eof())
+                            {
+                                auto const& te{p.peek()};
+                                if(te.kind == token_kind::symbol)
+                                {
+                                    if(is_sym(te.text, u8'(')) { ++paren; }
+                                    else if(is_sym(te.text, u8')') && paren > 0) { --paren; }
+                                    else if(is_sym(te.text, u8'[')) { ++bracket; }
+                                    else if(is_sym(te.text, u8']') && bracket > 0) { --bracket; }
+                                    else if(is_sym(te.text, u8'{')) { ++brace; }
+                                    else if(is_sym(te.text, u8'}') && brace > 0) { --brace; }
+
+                                    if(paren == 0 && bracket == 0 && brace == 0 && (is_sym(te.text, u8',') || is_sym(te.text, u8';'))) { break; }
+                                }
+                                p.consume();
+                            }
+                        }
+                        if(!p.accept_sym(u8',')) { break; }
+                    }
+                    if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after local declaration"); }
+                    continue;
                 }
 
                 p.consume();
             }
 
-            if(expr_b != SIZE_MAX && expr_e != SIZE_MAX && expr_e >= expr_b) { fd.expr_text = tokens_to_text(*p.toks, expr_b, expr_e + 1); }
-            else
-            {
-                p.err(p.peek(), u8"function body must contain 'return <expr>;' or '<name> = <expr>;'");
-                fd.expr_text.assign(u8"1'bx");
-            }
+            ::std::size_t const body_e{p.pos};
+            fd.body_text = tokens_to_text(*p.toks, body_b, body_e);
+
+            if(!p.accept_kw(u8"endfunction")) { p.err(p.peek(), u8"expected 'endfunction'"); }
 
             m.functions.insert_or_assign(::fast_io::u8string{fname}, ::std::move(fd));
         }
 
         inline void parse_task_def(parser& p, compiled_module& m) noexcept
         {
-            // task <name>(input a, output y); y = <expr>; endtask
+            // SystemVerilog task (subset):
+            // - ANSI-style port list with optional packed ranges and signedness.
+            // - Body supports procedural statements (same subset as always blocks).
             if(p.accept_kw(u8"automatic")) { /* ignored */ }
             auto const tname{p.expect_ident(u8"expected task name")};
             if(tname.empty())
@@ -5640,27 +6348,90 @@ namespace phy_engine::verilog::digital
 
             task_def td{};
 
+            auto base_type_width_signed = [&](::fast_io::u8string_view kw, ::std::size_t& w, bool& sgn) noexcept -> bool
+            {
+                if(kw == u8"int" || kw == u8"integer")
+                {
+                    w = 32;
+                    sgn = true;
+                    return true;
+                }
+                if(kw == u8"byte")
+                {
+                    w = 8;
+                    sgn = true;
+                    return true;
+                }
+                if(kw == u8"shortint")
+                {
+                    w = 16;
+                    sgn = true;
+                    return true;
+                }
+                if(kw == u8"longint")
+                {
+                    w = 64;
+                    sgn = true;
+                    return true;
+                }
+                if(kw == u8"logic" || kw == u8"reg" || kw == u8"wire" || kw == u8"bit")
+                {
+                    w = 1;
+                    sgn = false;
+                    return true;
+                }
+                return false;
+            };
+
             if(p.accept_sym(u8'('))
             {
                 if(!p.accept_sym(u8')'))
                 {
+                    task_def::param_dir cur_dir{task_def::param_dir::input};
+
                     for(;;)
                     {
-                        bool is_output{};
-                        if(p.accept_kw(u8"input")) { is_output = false; }
-                        else if(p.accept_kw(u8"output")) { is_output = true; }
+                        if(p.accept_kw(u8"input")) { cur_dir = task_def::param_dir::input; }
+                        else if(p.accept_kw(u8"output")) { cur_dir = task_def::param_dir::output; }
+                        else if(p.accept_kw(u8"inout")) { cur_dir = task_def::param_dir::inout; }
 
-                        if(p.accept_kw(u8"int") || p.accept_kw(u8"integer")) { /* ignored */ }
-                        if(p.accept_sym(u8'['))
+                        ::std::size_t base_w{1};
+                        bool base_signed{};
+                        bool have_base{};
+                        if(p.peek().kind == token_kind::identifier)
                         {
-                            while(!p.eof() && !p.accept_sym(u8']')) { p.consume(); }
+                            have_base = base_type_width_signed(p.peek().text, base_w, base_signed);
+                            if(have_base) { p.consume(); }
                         }
+
+                        bool is_signed{have_base ? base_signed : false};
+                        if(p.accept_kw(u8"signed")) { is_signed = true; }
+                        else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
+                        range_desc r{};
+                        (void)accept_range(p, m, r);
 
                         auto const pn{p.expect_ident(u8"expected task parameter identifier")};
                         if(!pn.empty())
                         {
-                            td.params.push_back(pn);
-                            td.param_is_output.push_back(is_output);
+                            task_def::param_decl pd{};
+                            pd.name = pn;
+                            pd.dir = cur_dir;
+                            pd.has_range = r.has_range;
+                            pd.msb = r.msb;
+                            pd.lsb = r.lsb;
+                            pd.is_signed = is_signed;
+                            if(r.has_range)
+                            {
+                                int const d{r.msb - r.lsb};
+                                pd.width = static_cast<::std::size_t>(d >= 0 ? d + 1 : -d + 1);
+                            }
+                            else
+                            {
+                                pd.width = base_w;
+                            }
+                            if(pd.width == 0) { pd.width = 1; }
+                            td.params.push_back(::std::move(pd));
                         }
 
                         if(p.accept_sym(u8')')) { break; }
@@ -5676,43 +6447,17 @@ namespace phy_engine::verilog::digital
 
             if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after task header"); }
 
-            ::std::size_t expr_b{SIZE_MAX};
-            ::std::size_t expr_e{SIZE_MAX};
-            ::fast_io::u8string lhs{};
-
+            ::std::size_t const body_b{p.pos};
             while(!p.eof())
             {
-                if(p.accept_kw(u8"endtask")) { break; }
                 auto const& t{p.peek()};
-                if(t.kind == token_kind::identifier)
-                {
-                    ::fast_io::u8string lhs_name{t.text};
-                    ::std::size_t const save{p.pos};
-                    p.consume();
-                    if(p.accept_sym(u8'='))
-                    {
-                        lhs = ::std::move(lhs_name);
-                        expr_b = p.pos;
-                        while(!p.eof() && !p.accept_sym(u8';')) { p.consume(); }
-                        expr_e = (p.pos == 0) ? 0 : (p.pos - 1);
-                        continue;
-                    }
-                    p.pos = save;
-                }
+                if(t.kind == token_kind::identifier && t.text == u8"endtask") { break; }
                 p.consume();
             }
+            ::std::size_t const body_e{p.pos};
+            td.body_text = tokens_to_text(*p.toks, body_b, body_e);
 
-            if(lhs.empty() || expr_b == SIZE_MAX || expr_e == SIZE_MAX || expr_e < expr_b)
-            {
-                p.err(p.peek(), u8"task body must contain '<outparam> = <expr>;'");
-                td.lhs_param.clear();
-                td.rhs_expr_text.assign(u8"1'bx");
-            }
-            else
-            {
-                td.lhs_param = lhs;
-                td.rhs_expr_text = tokens_to_text(*p.toks, expr_b, expr_e + 1);
-            }
+            if(!p.accept_kw(u8"endtask")) { p.err(p.peek(), u8"expected 'endtask'"); }
 
             m.tasks.insert_or_assign(::fast_io::u8string{tname}, ::std::move(td));
         }
@@ -5761,20 +6506,194 @@ namespace phy_engine::verilog::digital
             return static_cast<::std::uint64_t>(v);
         }
 
-        inline ::std::size_t parse_proc_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool allow_nonblocking) noexcept
+        // Forward declarations (used by parse_proc_stmt).
+        inline void parse_wire_list(parser& p, compiled_module& m, bool is_reg) noexcept;
+        inline void parse_integer_list(parser& p, compiled_module& m, bool is_signed_default) noexcept;
+        inline void parse_packed_int_list(parser& p, compiled_module& m, int msb, int lsb, bool is_signed_default) noexcept;
+        inline static ::std::size_t parse_wire_list_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool is_reg) noexcept;
+        inline static ::std::size_t
+            parse_packed_int_list_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, int msb, int lsb, bool is_signed_default) noexcept;
+        inline static ::std::size_t
+            parse_wire_list_scoped(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool is_reg, proc_scope& scope) noexcept;
+        inline static ::std::size_t
+            parse_integer_list_scoped(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool is_signed_default, proc_scope& scope) noexcept;
+        inline static ::std::size_t parse_packed_int_list_scoped(parser& p,
+                                                                 compiled_module& m,
+                                                                 ::fast_io::vector<stmt_node>& arena,
+                                                                 int msb,
+                                                                 int lsb,
+                                                                 bool is_signed_default,
+                                                                 proc_scope& scope) noexcept;
+
+        inline ::std::size_t
+            parse_proc_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool allow_nonblocking, proc_scope* scope) noexcept
         {
             if(p.accept_sym(u8';')) { return add_stmt(arena, {}); }
 
             ::std::uint64_t delay{};
             if(p.accept_sym(u8'#')) { delay = parse_delay_ticks(p, m); }
 
+            // SystemVerilog statement qualifiers (ignored in this subset but accepted for compatibility):
+            // - `unique` / `unique0` / `priority` before `if` / `case`.
+            if(p.accept_kw(u8"unique") || p.accept_kw(u8"unique0") || p.accept_kw(u8"priority")) { /* ignored */ }
+
+            if(p.accept_kw(u8"return"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before return is not supported"); }
+                if(p.accept_sym(u8';'))
+                {
+                    stmt_node st{};
+                    st.k = stmt_node::kind::return_stmt;
+                    return add_stmt(arena, ::std::move(st));
+                }
+
+                // `return <expr>;` (SV functions). If a return target is provided, lower to:
+                //   <ret> = <expr>; return;
+                expr_parser ep{&p, &m};
+                ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
+                auto const rv{ep.parse_expr()};
+                if(!p.accept_sym(u8';'))
+                {
+                    p.err(p.peek(), u8"expected ';' after return");
+                    p.skip_until_semicolon();
+                }
+
+                stmt_node ret{};
+                ret.k = stmt_node::kind::return_stmt;
+
+                if(p.return_target.empty())
+                {
+                    // Outside of inlined function contexts we accept it but ignore the value.
+                    return add_stmt(arena, ::std::move(ret));
+                }
+
+                stmt_node blk{};
+                blk.k = stmt_node::kind::block;
+                blk.stmts.reserve(2);
+
+                ::fast_io::u8string const rt_name{p.return_target};
+                auto itv{m.vectors.find(rt_name)};
+                if(itv != m.vectors.end() && !itv->second.bits.empty())
+                {
+                    auto& vd{itv->second};
+                    auto rhs_bits{ep.resize_to_vector(rv, vd.bits.size(), rv.is_signed)};
+                    stmt_node asn{};
+                    asn.k = stmt_node::kind::blocking_assign_vec;
+                    asn.delay_ticks = 0;
+                    asn.lhs_signals = vd.bits;
+                    asn.rhs_roots = ::std::move(rhs_bits);
+                    for(auto const sig: asn.lhs_signals)
+                    {
+                        if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    }
+                    blk.stmts.push_back(add_stmt(arena, ::std::move(asn)));
+                }
+                else
+                {
+                    auto const sig{get_or_create_signal(m, rt_name)};
+                    auto const rhs1{ep.resize(rv, 1)};
+                    stmt_node asn{};
+                    asn.k = stmt_node::kind::blocking_assign;
+                    asn.delay_ticks = 0;
+                    asn.lhs_signal = sig;
+                    asn.expr_root = rhs1.scalar_root;
+                    if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    blk.stmts.push_back(add_stmt(arena, ::std::move(asn)));
+                }
+
+                blk.stmts.push_back(add_stmt(arena, ::std::move(ret)));
+                return add_stmt(arena, ::std::move(blk));
+            }
+
+            if(p.accept_kw(u8"break"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before break is not supported"); }
+                if(!p.accept_sym(u8';'))
+                {
+                    p.err(p.peek(), u8"expected ';' after break");
+                    p.skip_until_semicolon();
+                }
+                stmt_node st{};
+                st.k = stmt_node::kind::break_stmt;
+                return add_stmt(arena, ::std::move(st));
+            }
+
+            if(p.accept_kw(u8"continue"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before continue is not supported"); }
+                if(!p.accept_sym(u8';'))
+                {
+                    p.err(p.peek(), u8"expected ';' after continue");
+                    p.skip_until_semicolon();
+                }
+                stmt_node st{};
+                st.k = stmt_node::kind::continue_stmt;
+                return add_stmt(arena, ::std::move(st));
+            }
+
+            if(p.accept_kw(u8"logic"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_wire_list_scoped(p, m, arena, true, *scope); }
+                return parse_wire_list_stmt(p, m, arena, true);
+            }
+            if(p.accept_kw(u8"bit"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_wire_list_scoped(p, m, arena, true, *scope); }
+                return parse_wire_list_stmt(p, m, arena, true);
+            }
+            if(p.accept_kw(u8"reg"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_wire_list_scoped(p, m, arena, true, *scope); }
+                return parse_wire_list_stmt(p, m, arena, true);
+            }
+            if(p.accept_kw(u8"wire"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_wire_list_scoped(p, m, arena, false, *scope); }
+                return parse_wire_list_stmt(p, m, arena, false);
+            }
+            if(p.accept_kw(u8"int") || p.accept_kw(u8"integer"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_integer_list_scoped(p, m, arena, true, *scope); }
+                return parse_packed_int_list_stmt(p, m, arena, 31, 0, true);
+            }
+            if(p.accept_kw(u8"byte"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_packed_int_list_scoped(p, m, arena, 7, 0, true, *scope); }
+                return parse_packed_int_list_stmt(p, m, arena, 7, 0, true);
+            }
+            if(p.accept_kw(u8"shortint"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_packed_int_list_scoped(p, m, arena, 15, 0, true, *scope); }
+                return parse_packed_int_list_stmt(p, m, arena, 15, 0, true);
+            }
+            if(p.accept_kw(u8"longint"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before declaration is not supported"); }
+                if(scope) { return parse_packed_int_list_scoped(p, m, arena, 63, 0, true, *scope); }
+                return parse_packed_int_list_stmt(p, m, arena, 63, 0, true);
+            }
+
             if(p.accept_kw(u8"begin"))
             {
                 if(delay != 0) { p.err(p.peek(), u8"delay before begin/end block is not supported"); }
 
+                if(scope) { scope->push_frame(); }
+                // Named block: begin : label ... end (label is ignored in this subset).
+                if(p.accept_sym(u8':')) { (void)p.expect_ident(u8"expected block label after ':'"); }
+
                 stmt_node blk{};
                 blk.k = stmt_node::kind::block;
-                while(!p.eof() && !p.accept_kw(u8"end")) { blk.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking)); }
+                while(!p.eof() && !p.accept_kw(u8"end")) { blk.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking, scope)); }
+                // SV allows `end : label` (ignored).
+                if(p.accept_sym(u8':')) { (void)p.expect_ident(u8"expected block label after end ':'"); }
+                if(scope) { scope->pop_frame(); }
                 return add_stmt(arena, ::std::move(blk));
             }
 
@@ -5784,6 +6703,7 @@ namespace phy_engine::verilog::digital
 
                 if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after if"); }
                 expr_parser ep{&p, &m};
+                ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
                 auto const cond_v{ep.parse_expr()};
                 ::std::size_t const cond{ep.to_bool_root(cond_v)};
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after if condition"); }
@@ -5791,8 +6711,8 @@ namespace phy_engine::verilog::digital
                 stmt_node st{};
                 st.k = stmt_node::kind::if_stmt;
                 st.expr_root = cond;
-                st.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking));
-                if(p.accept_kw(u8"else")) { st.else_stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking)); }
+                st.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking, scope));
+                if(p.accept_kw(u8"else")) { st.else_stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking, scope)); }
                 return add_stmt(arena, ::std::move(st));
             }
 
@@ -5801,6 +6721,7 @@ namespace phy_engine::verilog::digital
                 if(delay != 0) { p.err(p.peek(), u8"delay before repeat is not supported"); }
                 if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after repeat"); }
                 expr_parser ep{&p, &m};
+                ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
                 auto const count_v{ep.parse_expr()};
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after repeat count"); }
 
@@ -5812,7 +6733,7 @@ namespace phy_engine::verilog::digital
                 }
                 if(count > 4096ull) { count = 4096ull; }
 
-                ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking)};
+                ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking, scope)};
                 if(count == 0) { return add_stmt(arena, {}); }
 
                 stmt_node blk{};
@@ -5822,11 +6743,34 @@ namespace phy_engine::verilog::digital
                 return add_stmt(arena, ::std::move(blk));
             }
 
+            if(p.accept_kw(u8"do"))
+            {
+                if(delay != 0) { p.err(p.peek(), u8"delay before do-while is not supported"); }
+
+                ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking, scope)};
+
+                if(!p.accept_kw(u8"while")) { p.err(p.peek(), u8"expected 'while' after do body"); }
+                if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after while"); }
+                expr_parser ep{&p, &m};
+                ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
+                auto const cond_v{ep.parse_expr()};
+                ::std::size_t const cond{ep.to_bool_root(cond_v)};
+                if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after while condition"); }
+                if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after do-while"); }
+
+                stmt_node st{};
+                st.k = stmt_node::kind::do_while_stmt;
+                st.expr_root = cond;
+                st.body_stmt = body;
+                return add_stmt(arena, ::std::move(st));
+            }
+
             if(p.accept_kw(u8"while"))
             {
                 if(delay != 0) { p.err(p.peek(), u8"delay before while is not supported"); }
                 if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after while"); }
                 expr_parser ep{&p, &m};
+                ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
                 auto const cond_v{ep.parse_expr()};
                 ::std::size_t const cond{ep.to_bool_root(cond_v)};
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after while condition"); }
@@ -5834,7 +6778,7 @@ namespace phy_engine::verilog::digital
                 stmt_node st{};
                 st.k = stmt_node::kind::while_stmt;
                 st.expr_root = cond;
-                st.body_stmt = parse_proc_stmt(p, m, arena, allow_nonblocking);
+                st.body_stmt = parse_proc_stmt(p, m, arena, allow_nonblocking, scope);
                 return add_stmt(arena, ::std::move(st));
             }
 
@@ -5843,16 +6787,225 @@ namespace phy_engine::verilog::digital
                 if(delay != 0) { p.err(p.peek(), u8"delay before for is not supported"); }
                 if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after for"); }
 
-                auto parse_for_assign = [&](char8_t terminator) noexcept -> ::std::size_t
+                if(scope) { scope->push_frame(); }  // SV: `for(int i=...)` introduces a scope for `i`.
+
+                auto parse_for_stmt = [&](char8_t terminator) noexcept -> ::std::size_t
                 {
                     if(p.accept_sym(terminator)) { return SIZE_MAX; }
 
-                    lvalue_ref lhs{};
-                    if(!parse_lvalue_ref(p, m, lhs, true, true)) { return SIZE_MAX; }
-                    if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '=' in for-loop assignment"); }
+                    if(terminator == u8';' && scope && (p.accept_kw(u8"int") || p.accept_kw(u8"integer")))
+                    {
+                        // `for (int i = 0; ... )` (subset: int/integer only; declared names are scoped to the loop).
+                        return parse_integer_list_scoped(p, m, arena, true, *scope);
+                    }
 
+                    // Optional prefix ++/-- (subset).
+                    bool prefix_inc{};
+                    bool prefix_dec{};
+                    if(p.accept_sym(u8'+'))
+                    {
+                        if(!p.accept_sym(u8'+')) { p.err(p.peek(), u8"expected '++'"); }
+                        prefix_inc = true;
+                    }
+                    else if(p.accept_sym(u8'-'))
+                    {
+                        if(!p.accept_sym(u8'-')) { p.err(p.peek(), u8"expected '--'"); }
+                        prefix_dec = true;
+                    }
+
+                    lvalue_ref lhs{};
+                    if(!parse_lvalue_ref(p,
+                                         m,
+                                         lhs,
+                                         true,
+                                         true,
+                                         scope ? __builtin_addressof(scope->aliases) : nullptr,
+                                         scope ? __builtin_addressof(scope->subst) : nullptr))
+                    {
+                        while(!p.eof() && !p.accept_sym(terminator)) { p.consume(); }
+                        return SIZE_MAX;
+                    }
                     expr_parser ep{&p, &m};
-                    auto const rhs{ep.parse_expr()};
+                    ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
+                    enum class compound_kind : ::std::uint_fast8_t
+                    {
+                        assign,
+                        or_assign,
+                        and_assign,
+                        xor_assign,
+                        add_assign,
+                        sub_assign,
+                        mul_assign,
+                        div_assign,
+                        mod_assign,
+                        shl_assign,
+                        shr_assign
+                    };
+
+                    auto make_lhs_value = [&]() noexcept -> expr_value
+                    {
+                        if(lhs.k == lvalue_ref::kind::vector)
+                        {
+                            ::fast_io::vector<::std::size_t> roots{};
+                            roots.resize(lhs.vector_signals.size());
+                            for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
+                            {
+                                roots.index_unchecked(i) = ep.make_signal_root(lhs.vector_signals.index_unchecked(i));
+                            }
+                            bool const sgn{!lhs.vector_signals.empty() && lhs.vector_signals.front_unchecked() < m.signal_is_signed.size() &&
+                                           m.signal_is_signed.index_unchecked(lhs.vector_signals.front_unchecked())};
+                            return ep.make_vector_with_range(::std::move(roots), static_cast<int>(lhs.vector_signals.size() - 1), 0, sgn);
+                        }
+
+                        bool const sgn{lhs.scalar_signal < m.signal_is_signed.size() && m.signal_is_signed.index_unchecked(lhs.scalar_signal)};
+                        return ep.make_scalar(ep.make_signal_root(lhs.scalar_signal), 0, 0, sgn);
+                    };
+
+                    auto apply_compound = [&](expr_value const& cur, expr_value const& arg, compound_kind op) noexcept -> expr_value
+                    {
+                        switch(op)
+                        {
+                            case compound_kind::assign: return arg;
+                            case compound_kind::or_assign: return ep.bitwise_binary(cur, arg, expr_kind::binary_or);
+                            case compound_kind::and_assign: return ep.bitwise_binary(cur, arg, expr_kind::binary_and);
+                            case compound_kind::xor_assign: return ep.bitwise_binary(cur, arg, expr_kind::binary_xor);
+                            case compound_kind::add_assign: return ep.arith_add(cur, arg);
+                            case compound_kind::sub_assign: return ep.arith_sub(cur, arg);
+                            case compound_kind::mul_assign: return ep.arith_mul(cur, arg);
+                            case compound_kind::div_assign: return ep.arith_div(cur, arg);
+                            case compound_kind::mod_assign: return ep.arith_mod(cur, arg);
+                            case compound_kind::shl_assign: return ep.shift_left(cur, arg);
+                            case compound_kind::shr_assign: return ep.shift_right(cur, arg);
+                            default: return arg;
+                        }
+                    };
+
+                    expr_value rhs{};
+                    bool rhs_is_present{true};
+                    compound_kind op{compound_kind::assign};
+
+                    if(prefix_inc || prefix_dec)
+                    {
+                        op = prefix_inc ? compound_kind::add_assign : compound_kind::sub_assign;
+                        rhs_is_present = false;
+                    }
+                    else
+                    {
+                        // Postfix ++/-- in for-loop clause.
+                        bool postfix_inc{};
+                        bool postfix_dec{};
+                        if(p.pos + 1 < p.toks->size())
+                        {
+                            auto const& a{p.peek()};
+                            auto const& b{p.toks->index_unchecked(p.pos + 1)};
+                            if(a.kind == token_kind::symbol && b.kind == token_kind::symbol && a.text.size() == 1 && b.text.size() == 1)
+                            {
+                                if(a.text[0] == u8'+' && b.text[0] == u8'+') { postfix_inc = true; }
+                                if(a.text[0] == u8'-' && b.text[0] == u8'-') { postfix_dec = true; }
+                            }
+                        }
+
+                        if(postfix_inc || postfix_dec)
+                        {
+                            p.consume();
+                            p.consume();
+                            op = postfix_inc ? compound_kind::add_assign : compound_kind::sub_assign;
+                            rhs_is_present = false;
+                        }
+                        else if(p.accept_sym(u8'='))
+                        {
+                            op = compound_kind::assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym(u8'|'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '|='"); }
+                            op = compound_kind::or_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym(u8'&'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '&='"); }
+                            op = compound_kind::and_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym(u8'^'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '^='"); }
+                            op = compound_kind::xor_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym(u8'+'))
+                        {
+                            if(p.accept_sym(u8'='))
+                            {
+                                op = compound_kind::add_assign;
+                                rhs = ep.parse_expr();
+                            }
+                            else if(p.accept_sym(u8'+'))
+                            {
+                                op = compound_kind::add_assign;
+                                rhs_is_present = false;
+                            }
+                            else
+                            {
+                                p.err(p.peek(), u8"expected '+=' or '++'");
+                            }
+                        }
+                        else if(p.accept_sym(u8'-'))
+                        {
+                            if(p.accept_sym(u8'='))
+                            {
+                                op = compound_kind::sub_assign;
+                                rhs = ep.parse_expr();
+                            }
+                            else if(p.accept_sym(u8'-'))
+                            {
+                                op = compound_kind::sub_assign;
+                                rhs_is_present = false;
+                            }
+                            else
+                            {
+                                p.err(p.peek(), u8"expected '-=' or '--'");
+                            }
+                        }
+                        else if(p.accept_sym(u8'*'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '*='"); }
+                            op = compound_kind::mul_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym(u8'/'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '/='"); }
+                            op = compound_kind::div_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym(u8'%'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '%='"); }
+                            op = compound_kind::mod_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym2(u8'<', u8'<'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '<<='"); }
+                            op = compound_kind::shl_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else if(p.accept_sym2(u8'>', u8'>'))
+                        {
+                            if(!p.accept_sym(u8'=')) { p.err(p.peek(), u8"expected '>>='"); }
+                            op = compound_kind::shr_assign;
+                            rhs = ep.parse_expr();
+                        }
+                        else
+                        {
+                            p.err(p.peek(), u8"expected assignment operator in for-loop clause");
+                            rhs_is_present = false;
+                            op = compound_kind::assign;
+                        }
+                    }
 
                     if(!p.accept_sym(terminator)) { p.err(p.peek(), u8"expected terminator in for-loop header"); }
 
@@ -5862,9 +7015,13 @@ namespace phy_engine::verilog::digital
                         return add_stmt(arena, {});
                     }
 
+                    auto cur{make_lhs_value()};
+                    if(!rhs_is_present) { rhs = ep.make_uint_literal(1u, ep.width(cur)); }
+                    auto res{apply_compound(cur, rhs, op)};
+
                     if(lhs.k == lvalue_ref::kind::vector)
                     {
-                        auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
+                        auto rhs_bits{ep.resize_to_vector(res, lhs.vector_signals.size(), res.is_signed)};
                         stmt_node st{};
                         st.k = stmt_node::kind::blocking_assign_vec;
                         st.delay_ticks = 0;
@@ -5877,7 +7034,7 @@ namespace phy_engine::verilog::digital
                         return add_stmt(arena, ::std::move(st));
                     }
 
-                    auto const rhs1{ep.resize(rhs, 1)};
+                    auto const rhs1{ep.resize(res, 1)};
                     stmt_node st{};
                     st.k = stmt_node::kind::blocking_assign;
                     st.delay_ticks = 0;
@@ -5891,18 +7048,20 @@ namespace phy_engine::verilog::digital
                 if(p.accept_sym(u8';')) { init_stmt = SIZE_MAX; }
                 else
                 {
-                    init_stmt = parse_for_assign(u8';');
+                    init_stmt = parse_for_stmt(u8';');
                 }
 
                 ::std::size_t cond_root{SIZE_MAX};
                 if(p.accept_sym(u8';'))
                 {
                     expr_parser ep{&p, &m};
+                    ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
                     cond_root = ep.make_literal(logic_t::true_state);
                 }
                 else
                 {
                     expr_parser ep{&p, &m};
+                    ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
                     auto const cond_v{ep.parse_expr()};
                     cond_root = ep.to_bool_root(cond_v);
                     if(!p.accept_sym(u8';')) { p.err(p.peek(), u8"expected ';' after for-loop condition"); }
@@ -5912,7 +7071,7 @@ namespace phy_engine::verilog::digital
                 if(p.accept_sym(u8')')) { step_stmt = SIZE_MAX; }
                 else
                 {
-                    step_stmt = parse_for_assign(u8')');
+                    step_stmt = parse_for_stmt(u8')');
                 }
 
                 stmt_node st{};
@@ -5920,7 +7079,8 @@ namespace phy_engine::verilog::digital
                 st.init_stmt = init_stmt;
                 st.expr_root = cond_root;
                 st.step_stmt = step_stmt;
-                st.body_stmt = parse_proc_stmt(p, m, arena, allow_nonblocking);
+                st.body_stmt = parse_proc_stmt(p, m, arena, allow_nonblocking, scope);
+                if(scope) { scope->pop_frame(); }
                 return add_stmt(arena, ::std::move(st));
             }
 
@@ -5948,6 +7108,7 @@ namespace phy_engine::verilog::digital
 
                 if(!p.accept_sym(u8'(')) { p.err(p.peek(), u8"expected '(' after case"); }
                 expr_parser ep{&p, &m};
+                ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
                 auto const key_v{ep.parse_expr()};
                 if(!p.accept_sym(u8')')) { p.err(p.peek(), u8"expected ')' after case expression"); }
 
@@ -5972,7 +7133,7 @@ namespace phy_engine::verilog::digital
                         if(!p.accept_sym(u8':')) { p.err(p.peek(), u8"expected ':' after default"); }
                         case_item ci{};
                         ci.is_default = true;
-                        ci.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking));
+                        ci.stmts.push_back(parse_proc_stmt(p, m, arena, allow_nonblocking, scope));
                         st.case_items.push_back(::std::move(ci));
                         continue;
                     }
@@ -5985,7 +7146,7 @@ namespace phy_engine::verilog::digital
                     }
 
                     if(!p.accept_sym(u8':')) { p.err(p.peek(), u8"expected ':' after case item"); }
-                    ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking)};
+                    ::std::size_t const body{parse_proc_stmt(p, m, arena, allow_nonblocking, scope)};
 
                     for(auto const& mv: matches)
                     {
@@ -6000,7 +7161,7 @@ namespace phy_engine::verilog::digital
                 return add_stmt(arena, ::std::move(st));
             }
 
-            // Task call (subset): taskname(arg0, ..., outArg, ...);
+            // Task call (subset): inline task body at call site.
             {
                 auto const& t0{p.peek()};
                 if(t0.kind == token_kind::identifier && p.pos + 1 < p.toks->size())
@@ -6010,13 +7171,21 @@ namespace phy_engine::verilog::digital
                     if(it_task != m.tasks.end() && t1.kind == token_kind::symbol && is_sym(t1.text, u8'('))
                     {
                         auto const& td{it_task->second};
-                        ::fast_io::u8string const tname{t0.text};
+
+                        ::fast_io::u8string const task_name{t0.text};
+
+                        struct task_actual
+                        {
+                            bool is_lvalue{};
+                            lvalue_ref lv{};
+                            expr_value ev{};
+                        };
+
+                        ::fast_io::vector<task_actual> actuals{};
+                        actuals.resize(td.params.size());
+
                         p.consume();  // name
                         (void)p.accept_sym(u8'(');
-
-                        ::absl::btree_map<::fast_io::u8string, expr_value> subst{};
-                        ::fast_io::vector<lvalue_ref> out_args{};
-                        out_args.assign(td.params.size(), {});
 
                         for(::std::size_t pi{}; pi < td.params.size(); ++pi)
                         {
@@ -6029,18 +7198,35 @@ namespace phy_engine::verilog::digital
                                 }
                             }
 
-                            bool const is_out{pi < td.param_is_output.size() && td.param_is_output.index_unchecked(pi)};
+                            auto const& pd{td.params.index_unchecked(pi)};
+                            bool const is_out{pd.dir == task_def::param_dir::output || pd.dir == task_def::param_dir::inout};
+
                             if(is_out)
                             {
                                 lvalue_ref lv{};
-                                if(!parse_lvalue_ref(p, m, lv, true, true)) { p.err(p.peek(), u8"expected lvalue for task output argument"); }
-                                out_args.index_unchecked(pi) = ::std::move(lv);
+                                if(!parse_lvalue_ref(p,
+                                                     m,
+                                                     lv,
+                                                     true,
+                                                     true,
+                                                     scope ? __builtin_addressof(scope->aliases) : nullptr,
+                                                     scope ? __builtin_addressof(scope->subst) : nullptr))
+                                {
+                                    p.err(p.peek(), u8"expected lvalue for task output/inout argument");
+                                }
+                                if(lv.k != lvalue_ref::kind::scalar && lv.k != lvalue_ref::kind::vector)
+                                {
+                                    p.err(p.peek(), u8"task output/inout argument must be a scalar or whole vector in this subset");
+                                }
+                                actuals.index_unchecked(pi).is_lvalue = true;
+                                actuals.index_unchecked(pi).lv = ::std::move(lv);
                             }
                             else
                             {
                                 expr_parser ep_in{__builtin_addressof(p), __builtin_addressof(m)};
-                                auto const ev{ep_in.parse_expr()};
-                                subst.insert_or_assign(td.params.index_unchecked(pi), ev);
+                                ep_in.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
+                                actuals.index_unchecked(pi).is_lvalue = false;
+                                actuals.index_unchecked(pi).ev = ep_in.parse_expr();
                             }
                         }
 
@@ -6055,85 +7241,397 @@ namespace phy_engine::verilog::digital
                             p.skip_until_semicolon();
                         }
 
-                        ::std::size_t out_idx{SIZE_MAX};
-                        for(::std::size_t i{}; i < td.params.size(); ++i)
+                        stmt_node blk{};
+                        blk.k = stmt_node::kind::block;
+                        blk.stmts.reserve(32);
+
+                        expr_parser epb{__builtin_addressof(p), __builtin_addressof(m)};
+
+                        auto make_taskcall_name = [&](::fast_io::u8string_view visible) noexcept -> ::fast_io::u8string
                         {
-                            if(td.params.index_unchecked(i) == td.lhs_param)
+                            ::fast_io::u8string out{};
+                            out.append(u8"$taskcall");
+                            append_u64_decimal(out, m.inline_counter++);
+                            out.append(u8"__");
+                            out.append(task_name);
+                            out.append(u8"__");
+                            for(char8_t c: visible) { out.push_back(c); }
+                            return out;
+                        };
+
+                        proc_scope call_scope{};
+                        if(scope)
+                        {
+                            call_scope.aliases = scope->aliases;
+                            call_scope.subst = scope->subst;
+                        }
+                        call_scope.push_frame();
+
+                        struct param_bind
+                        {
+                            bool is_vector{};
+                            ::std::size_t scalar_sig{SIZE_MAX};
+                            ::fast_io::vector<::std::size_t> sigs{};
+                            ::std::size_t width{1};
+                            bool is_signed{};
+                            int msb{};
+                            int lsb{};
+                        };
+
+                        ::fast_io::vector<param_bind> binds{};
+                        binds.resize(td.params.size());
+
+                        // Initialize input/inout params from caller arguments (delay applies here as an approximation for `#<delay> task(...);`).
+                        for(::std::size_t pi{}; pi < td.params.size(); ++pi)
+                        {
+                            auto const& pd{td.params.index_unchecked(pi)};
+                            auto const internal{make_taskcall_name(::fast_io::u8string_view{pd.name.data(), pd.name.size()})};
+
+                            param_bind b{};
+                            b.width = pd.width == 0 ? 1 : pd.width;
+                            b.is_signed = pd.is_signed;
+                            b.msb = pd.has_range ? pd.msb : static_cast<int>(b.width - 1);
+                            b.lsb = pd.has_range ? pd.lsb : 0;
+
+                            expr_value pev{};
+                            if(b.width <= 1)
                             {
-                                out_idx = i;
-                                break;
-                            }
-                        }
-                        if(out_idx == SIZE_MAX)
-                        {
-                            p.err(t0, u8"task definition has no valid output assignment target");
-                            return add_stmt(arena, {});
-                        }
-
-                        auto const& out_lv{out_args.index_unchecked(out_idx)};
-                        if(out_lv.k != lvalue_ref::kind::scalar && out_lv.k != lvalue_ref::kind::vector)
-                        {
-                            p.err(t0, u8"task output argument must be a scalar or whole vector in this subset");
-                            return add_stmt(arena, {});
-                        }
-
-                        auto const lr2{lex(::fast_io::u8string_view{td.rhs_expr_text.data(), td.rhs_expr_text.size()})};
-                        details::parser fp{__builtin_addressof(lr2.tokens), 0, p.errors};
-                        expr_parser ep_rhs{__builtin_addressof(fp), __builtin_addressof(m), nullptr, __builtin_addressof(subst)};
-                        auto rhs_v{ep_rhs.parse_expr()};
-
-                        expr_parser ep_tmp{__builtin_addressof(p), __builtin_addressof(m)};
-
-                        if(out_lv.k == lvalue_ref::kind::vector)
-                        {
-                            auto rhs_bits{ep_tmp.resize_to_vector(rhs_v, out_lv.vector_signals.size(), rhs_v.is_signed)};
-                            stmt_node st{};
-                            st.k = stmt_node::kind::blocking_assign_vec;
-                            st.delay_ticks = delay;
-                            st.lhs_signals = out_lv.vector_signals;
-                            st.rhs_roots = ::std::move(rhs_bits);
-                            for(auto const sig: st.lhs_signals)
-                            {
+                                auto const sig{get_or_create_signal(m, internal)};
+                                b.is_vector = false;
+                                b.scalar_sig = sig;
                                 if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                                if(b.is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
+                                pev = epb.make_scalar(epb.make_signal_root(sig), 0, 0, b.is_signed);
                             }
-                            return add_stmt(arena, ::std::move(st));
+                            else
+                            {
+                                auto& vd{
+                                    declare_vector_range(&p, m, ::fast_io::u8string_view{internal.data(), internal.size()}, b.msb, b.lsb, true, b.is_signed)};
+                                b.is_vector = true;
+                                b.sigs = vd.bits;
+                                ::fast_io::vector<::std::size_t> roots{};
+                                roots.resize(vd.bits.size());
+                                for(::std::size_t i{}; i < vd.bits.size(); ++i) { roots.index_unchecked(i) = epb.make_signal_root(vd.bits.index_unchecked(i)); }
+                                pev = epb.make_vector_with_range(::std::move(roots), b.msb, b.lsb, b.is_signed);
+                            }
+
+                            binds.index_unchecked(pi) = ::std::move(b);
+                            call_scope.bind(pd.name, internal, pev);
+
+                            if(pd.dir == task_def::param_dir::input || pd.dir == task_def::param_dir::inout)
+                            {
+                                expr_value rhs{};
+                                if(pd.dir == task_def::param_dir::input) { rhs = actuals.index_unchecked(pi).ev; }
+                                else
+                                {
+                                    // inout: load initial value from the caller lvalue (scalar/whole-vector only in this subset).
+                                    auto const& lv{actuals.index_unchecked(pi).lv};
+                                    if(lv.k == lvalue_ref::kind::vector)
+                                    {
+                                        ::fast_io::vector<::std::size_t> roots{};
+                                        roots.resize(lv.vector_signals.size());
+                                        for(::std::size_t i{}; i < lv.vector_signals.size(); ++i)
+                                        {
+                                            roots.index_unchecked(i) = epb.make_signal_root(lv.vector_signals.index_unchecked(i));
+                                        }
+                                        rhs = epb.make_vector_with_range(::std::move(roots), static_cast<int>(lv.vector_signals.size() - 1), 0, false);
+                                    }
+                                    else
+                                    {
+                                        bool const sgn{lv.scalar_signal < m.signal_is_signed.size() && m.signal_is_signed.index_unchecked(lv.scalar_signal)};
+                                        rhs = epb.make_scalar(epb.make_signal_root(lv.scalar_signal), 0, 0, sgn);
+                                    }
+                                }
+
+                                auto const& bb{binds.index_unchecked(pi)};
+                                if(bb.is_vector)
+                                {
+                                    auto rhs_bits{epb.resize_to_vector(rhs, bb.sigs.size(), rhs.is_signed)};
+                                    stmt_node st{};
+                                    st.k = stmt_node::kind::blocking_assign_vec;
+                                    st.delay_ticks = delay;
+                                    st.lhs_signals = bb.sigs;
+                                    st.rhs_roots = ::std::move(rhs_bits);
+                                    blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
+                                }
+                                else
+                                {
+                                    auto const rhs1{epb.resize(rhs, 1)};
+                                    stmt_node st{};
+                                    st.k = stmt_node::kind::blocking_assign;
+                                    st.delay_ticks = delay;
+                                    st.lhs_signal = bb.scalar_sig;
+                                    st.expr_root = rhs1.scalar_root;
+                                    blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
+                                }
+                            }
                         }
 
-                        // scalar output
-                        auto rhs1{ep_tmp.resize(rhs_v, 1)};
-                        stmt_node st{};
-                        st.k = stmt_node::kind::blocking_assign;
-                        st.delay_ticks = delay;
-                        st.lhs_signal = out_lv.scalar_signal;
-                        st.expr_root = rhs1.scalar_root;
-                        if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
-                        return add_stmt(arena, ::std::move(st));
+                        // Parse task body statements in the task's scope.
+                        {
+                            auto const lr_body{lex(::fast_io::u8string_view{td.body_text.data(), td.body_text.size()})};
+                            details::parser tp{__builtin_addressof(lr_body.tokens), 0, p.errors};
+                            ::fast_io::vector<::std::size_t> body_stmts{};
+                            body_stmts.reserve(32);
+                            while(!tp.eof())
+                            {
+                                ::std::size_t const before{tp.pos};
+                                body_stmts.push_back(parse_proc_stmt(tp, m, arena, allow_nonblocking, __builtin_addressof(call_scope)));
+                                if(tp.pos == before) { tp.consume(); }
+                            }
+
+                            stmt_node body_blk{};
+                            body_blk.k = stmt_node::kind::subprogram_block;
+                            body_blk.stmts = ::std::move(body_stmts);
+                            blk.stmts.push_back(add_stmt(arena, ::std::move(body_blk)));
+                        }
+
+                        // Copy out output/inout params back to caller lvalues (scalar/whole-vector only in this subset).
+                        for(::std::size_t pi{}; pi < td.params.size(); ++pi)
+                        {
+                            auto const& pd{td.params.index_unchecked(pi)};
+                            if(pd.dir != task_def::param_dir::output && pd.dir != task_def::param_dir::inout) { continue; }
+
+                            auto const& lv{actuals.index_unchecked(pi).lv};
+                            if(lv.k != lvalue_ref::kind::scalar && lv.k != lvalue_ref::kind::vector) { continue; }
+
+                            auto itv{call_scope.subst.find(pd.name)};
+                            if(itv == call_scope.subst.end()) { continue; }
+                            auto const& rhs_v{itv->second};
+
+                            if(lv.k == lvalue_ref::kind::vector)
+                            {
+                                auto rhs_bits{epb.resize_to_vector(rhs_v, lv.vector_signals.size(), rhs_v.is_signed)};
+                                stmt_node st{};
+                                st.k = stmt_node::kind::blocking_assign_vec;
+                                st.delay_ticks = 0;
+                                st.lhs_signals = lv.vector_signals;
+                                st.rhs_roots = ::std::move(rhs_bits);
+                                for(auto const sig: st.lhs_signals)
+                                {
+                                    if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                                }
+                                blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
+                            }
+                            else
+                            {
+                                auto const rhs1{epb.resize(rhs_v, 1)};
+                                stmt_node st{};
+                                st.k = stmt_node::kind::blocking_assign;
+                                st.delay_ticks = 0;
+                                st.lhs_signal = lv.scalar_signal;
+                                st.expr_root = rhs1.scalar_root;
+                                if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                                blk.stmts.push_back(add_stmt(arena, ::std::move(st)));
+                            }
+                        }
+
+                        call_scope.pop_frame();
+                        return add_stmt(arena, ::std::move(blk));
+                    }
+                }
+            }
+
+            bool prefix_inc{};
+            bool prefix_dec{};
+            {
+                auto const& t0{p.peek()};
+                if(t0.kind == token_kind::symbol && (is_sym(t0.text, u8'+') || is_sym(t0.text, u8'-')) && (p.pos + 1 < p.toks->size()))
+                {
+                    auto const& t1{p.toks->index_unchecked(p.pos + 1)};
+                    if(t1.kind == token_kind::symbol)
+                    {
+                        if(is_sym(t0.text, u8'+') && is_sym(t1.text, u8'+'))
+                        {
+                            prefix_inc = true;
+                            p.consume();
+                            p.consume();
+                        }
+                        else if(is_sym(t0.text, u8'-') && is_sym(t1.text, u8'-'))
+                        {
+                            prefix_dec = true;
+                            p.consume();
+                            p.consume();
+                        }
                     }
                 }
             }
 
             lvalue_ref lhs{};
-            if(!parse_lvalue_ref(p, m, lhs, true, true))
+            if(!parse_lvalue_ref(p,
+                                 m,
+                                 lhs,
+                                 true,
+                                 true,
+                                 scope ? __builtin_addressof(scope->aliases) : nullptr,
+                                 scope ? __builtin_addressof(scope->subst) : nullptr))
             {
                 p.skip_until_semicolon();
                 return add_stmt(arena, {});
             }
 
-            bool nonblocking{};
-            if(p.accept_sym2(u8'<', u8'='))
+            enum class timing_kind : ::std::uint_fast8_t
             {
-                if(!allow_nonblocking) { p.err(p.peek(), u8"nonblocking assignments are not supported here"); }
-                nonblocking = true;
-            }
-            else if(!p.accept_sym(u8'='))
+                blocking,
+                nonblocking
+            };
+
+            enum class compound_kind : ::std::uint_fast8_t
             {
-                p.err(p.peek(), u8"expected '=' or '<=' in assignment");
-                p.skip_until_semicolon();
-                return add_stmt(arena, {});
+                assign,
+                or_assign,
+                and_assign,
+                xor_assign,
+                add_assign,
+                sub_assign,
+                mul_assign,
+                div_assign,
+                mod_assign,
+                shl_assign,
+                shr_assign
+            };
+
+            timing_kind timing{timing_kind::blocking};
+            compound_kind op{compound_kind::assign};
+            bool postfix_inc{};
+            bool postfix_dec{};
+
+            // Postfix ++/--
+            {
+                auto const& t0{p.peek()};
+                if(t0.kind == token_kind::symbol && (is_sym(t0.text, u8'+') || is_sym(t0.text, u8'-')) && (p.pos + 1 < p.toks->size()))
+                {
+                    auto const& t1{p.toks->index_unchecked(p.pos + 1)};
+                    if(t1.kind == token_kind::symbol)
+                    {
+                        if(is_sym(t0.text, u8'+') && is_sym(t1.text, u8'+')) { postfix_inc = true; }
+                        else if(is_sym(t0.text, u8'-') && is_sym(t1.text, u8'-')) { postfix_dec = true; }
+                    }
+                }
             }
 
             expr_parser ep{&p, &m};
-            auto const rhs{ep.parse_expr()};
+            ep.subst_idents = scope ? __builtin_addressof(scope->subst) : nullptr;
+
+            expr_value rhs{};
+            bool rhs_is_present{true};
+
+            if(prefix_inc || postfix_inc)
+            {
+                op = compound_kind::add_assign;
+                rhs_is_present = false;
+            }
+            else if(prefix_dec || postfix_dec)
+            {
+                op = compound_kind::sub_assign;
+                rhs_is_present = false;
+            }
+            else
+            {
+                if(p.accept_sym2(u8'<', u8'='))
+                {
+                    if(!allow_nonblocking) { p.err(p.peek(), u8"nonblocking assignments are not supported here"); }
+                    timing = timing_kind::nonblocking;
+                    op = compound_kind::assign;
+                }
+                else if(p.accept_sym3(u8'<', u8'<', u8'=') || (p.accept_sym2(u8'<', u8'<') && p.accept_sym(u8'='))) { op = compound_kind::shl_assign; }
+                else if(p.accept_sym3(u8'>', u8'>', u8'=') || (p.accept_sym2(u8'>', u8'>') && p.accept_sym(u8'='))) { op = compound_kind::shr_assign; }
+                else if(p.accept_sym(u8'|'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '|'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::or_assign;
+                }
+                else if(p.accept_sym(u8'&'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '&'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::and_assign;
+                }
+                else if(p.accept_sym(u8'^'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '^'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::xor_assign;
+                }
+                else if(p.accept_sym(u8'+'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '+'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::add_assign;
+                }
+                else if(p.accept_sym(u8'-'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '-'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::sub_assign;
+                }
+                else if(p.accept_sym(u8'*'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '*'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::mul_assign;
+                }
+                else if(p.accept_sym(u8'/'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '/'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::div_assign;
+                }
+                else if(p.accept_sym(u8'%'))
+                {
+                    if(!p.accept_sym(u8'='))
+                    {
+                        p.err(p.peek(), u8"expected '=' after '%'");
+                        p.skip_until_semicolon();
+                        return add_stmt(arena, {});
+                    }
+                    op = compound_kind::mod_assign;
+                }
+                else if(!p.accept_sym(u8'='))
+                {
+                    p.err(p.peek(), u8"expected assignment operator");
+                    p.skip_until_semicolon();
+                    return add_stmt(arena, {});
+                }
+
+                rhs = ep.parse_expr();
+            }
+
+            // Consume postfix ++/-- tokens if present.
+            if(postfix_inc || postfix_dec)
+            {
+                p.consume();
+                p.consume();
+            }
 
             if(!p.accept_sym(u8';'))
             {
@@ -6141,11 +7639,68 @@ namespace phy_engine::verilog::digital
                 p.skip_until_semicolon();
             }
 
+            if(timing == timing_kind::nonblocking && op != compound_kind::assign)
+            {
+                p.err(p.peek(), u8"compound assignments with '<=' are not supported");
+                return add_stmt(arena, {});
+            }
+
+            auto make_lhs_value = [&]() noexcept -> expr_value
+            {
+                if(lhs.k == lvalue_ref::kind::vector)
+                {
+                    ::fast_io::vector<::std::size_t> roots{};
+                    roots.resize(lhs.vector_signals.size());
+                    for(::std::size_t i{}; i < lhs.vector_signals.size(); ++i)
+                    {
+                        roots.index_unchecked(i) = ep.make_signal_root(lhs.vector_signals.index_unchecked(i));
+                    }
+                    bool const sgn{!lhs.vector_signals.empty() && lhs.vector_signals.front_unchecked() < m.signal_is_signed.size() &&
+                                   m.signal_is_signed.index_unchecked(lhs.vector_signals.front_unchecked())};
+                    return ep.make_vector_with_range(::std::move(roots), static_cast<int>(lhs.vector_signals.size() - 1), 0, sgn);
+                }
+
+                bool const sgn{lhs.scalar_signal < m.signal_is_signed.size() && m.signal_is_signed.index_unchecked(lhs.scalar_signal)};
+                return ep.make_scalar(ep.make_signal_root(lhs.scalar_signal), 0, 0, sgn);
+            };
+
+            auto apply_compound = [&](expr_value const& cur, expr_value const& arg) noexcept -> expr_value
+            {
+                switch(op)
+                {
+                    case compound_kind::assign: return arg;
+                    case compound_kind::or_assign: return ep.bitwise_binary(cur, arg, expr_kind::binary_or);
+                    case compound_kind::and_assign: return ep.bitwise_binary(cur, arg, expr_kind::binary_and);
+                    case compound_kind::xor_assign: return ep.bitwise_binary(cur, arg, expr_kind::binary_xor);
+                    case compound_kind::add_assign: return ep.arith_add(cur, arg);
+                    case compound_kind::sub_assign: return ep.arith_sub(cur, arg);
+                    case compound_kind::mul_assign: return ep.arith_mul(cur, arg);
+                    case compound_kind::div_assign: return ep.arith_div(cur, arg);
+                    case compound_kind::mod_assign: return ep.arith_mod(cur, arg);
+                    case compound_kind::shl_assign: return ep.shift_left(cur, arg);
+                    case compound_kind::shr_assign: return ep.shift_right(cur, arg);
+                    default: return arg;
+                }
+            };
+
+            if(lhs.k == lvalue_ref::kind::dynamic_indexed_part_select || lhs.k == lvalue_ref::kind::dynamic_part_select)
+            {
+                if(op != compound_kind::assign)
+                {
+                    p.err(p.peek(), u8"compound assignment on dynamic part-select is not supported");
+                    return add_stmt(arena, {});
+                }
+            }
+
             if(lhs.k == lvalue_ref::kind::vector)
             {
-                auto rhs_bits{ep.resize_to_vector(rhs, lhs.vector_signals.size(), rhs.is_signed)};
+                auto cur = make_lhs_value();
+                if(!rhs_is_present) { rhs = ep.make_uint_literal(1u, ep.width(cur)); }
+                auto res = apply_compound(cur, rhs);
+
+                auto rhs_bits{ep.resize_to_vector(res, lhs.vector_signals.size(), res.is_signed)};
                 stmt_node st{};
-                st.k = nonblocking ? stmt_node::kind::nonblocking_assign_vec : stmt_node::kind::blocking_assign_vec;
+                st.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign_vec : stmt_node::kind::blocking_assign_vec;
                 st.delay_ticks = delay;
                 st.lhs_signals = lhs.vector_signals;
                 st.rhs_roots = ::std::move(rhs_bits);
@@ -6158,7 +7713,11 @@ namespace phy_engine::verilog::digital
 
             if(lhs.k == lvalue_ref::kind::dynamic_bit_select)
             {
-                auto const rhs1{ep.resize(rhs, 1)};
+                // For a[idx] and other dynamic selects we lower to a block of if-statements.
+                expr_value arg = rhs;
+                if(!rhs_is_present) { arg = ep.make_uint_literal(1u, 1); }
+                auto const arg1{ep.resize(arg, 1)};
+
                 vector_desc vd{};
                 vd.msb = lhs.base_desc.msb;
                 vd.lsb = lhs.base_desc.lsb;
@@ -6184,10 +7743,16 @@ namespace phy_engine::verilog::digital
                     auto const cond{ep.compare_eq(idx_norm, idx_lit)};
 
                     stmt_node asn{};
-                    asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                    asn.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
                     asn.delay_ticks = delay;
                     asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
-                    asn.expr_root = rhs1.scalar_root;
+
+                    bool const sgn{asn.lhs_signal < m.signal_is_signed.size() && m.signal_is_signed.index_unchecked(asn.lhs_signal)};
+                    auto cur = ep.make_scalar(ep.make_signal_root(asn.lhs_signal), 0, 0, sgn);
+                    auto res = apply_compound(cur, arg1);
+                    auto res1 = ep.resize(res, 1);
+                    asn.expr_root = res1.scalar_root;
+
                     auto const asn_idx{add_stmt(arena, ::std::move(asn))};
 
                     stmt_node ifs{};
@@ -6205,126 +7770,128 @@ namespace phy_engine::verilog::digital
                 return add_stmt(arena, ::std::move(blk));
             }
 
-            if(lhs.k == lvalue_ref::kind::dynamic_indexed_part_select)
+            if(lhs.k == lvalue_ref::kind::dynamic_indexed_part_select || lhs.k == lvalue_ref::kind::dynamic_part_select)
             {
-                if(lhs.indexed_width == 0)
+                // Existing expansion logic, only for plain assignment.
+                if(lhs.k == lvalue_ref::kind::dynamic_indexed_part_select)
                 {
-                    p.err(p.peek(), u8"indexed part-select lvalue width must be positive");
-                    return add_stmt(arena, {});
-                }
+                    if(lhs.indexed_width == 0)
+                    {
+                        p.err(p.peek(), u8"indexed part-select lvalue width must be positive");
+                        return add_stmt(arena, {});
+                    }
 
-                auto rhs_bits{ep.resize_to_vector(rhs, lhs.indexed_width, rhs.is_signed)};
-                vector_desc vd{};
-                vd.msb = lhs.base_desc.msb;
-                vd.lsb = lhs.base_desc.lsb;
+                    auto rhs_bits{ep.resize_to_vector(rhs, lhs.indexed_width, rhs.is_signed)};
+                    vector_desc vd{};
+                    vd.msb = lhs.base_desc.msb;
+                    vd.lsb = lhs.base_desc.lsb;
 
-                int const min_idx{vd.msb < vd.lsb ? vd.msb : vd.lsb};
-                int const max_idx{vd.msb < vd.lsb ? vd.lsb : vd.msb};
+                    int const min_idx{vd.msb < vd.lsb ? vd.msb : vd.lsb};
+                    int const max_idx{vd.msb < vd.lsb ? vd.lsb : vd.msb};
 
-                int const w_int{static_cast<int>(lhs.indexed_width)};
-                int start_min{};
-                int start_max{};
-                if(lhs.indexed_plus)
-                {
-                    start_min = min_idx;
-                    start_max = max_idx - (w_int - 1);
-                }
-                else
-                {
-                    start_min = min_idx + (w_int - 1);
-                    start_max = max_idx;
-                }
-
-                if(start_min > start_max)
-                {
-                    p.err(p.peek(), u8"indexed part-select out of range");
-                    return add_stmt(arena, {});
-                }
-
-                ::std::size_t base_max{max_idx >= 0 ? static_cast<::std::size_t>(max_idx) : 0u};
-                ::std::size_t need_bits{1};
-                while((1ull << need_bits) <= base_max && need_bits < 64) { ++need_bits; }
-                ::std::size_t const cmp_w{::std::max(ep.width(lhs.index_expr), need_bits)};
-
-                auto const idx_norm{ep.resize(lhs.index_expr, cmp_w)};
-                bool const desc{vd.msb >= vd.lsb};
-
-                auto compute_bounds = [&](int start) noexcept -> ::std::pair<int, int>
-                {
+                    int const w_int{static_cast<int>(lhs.indexed_width)};
+                    int start_min{};
+                    int start_max{};
                     if(lhs.indexed_plus)
                     {
-                        if(desc) { return {start + (w_int - 1), start}; }
-                        return {start, start + (w_int - 1)};
-                    }
-                    if(desc) { return {start, start - (w_int - 1)}; }
-                    return {start - (w_int - 1), start};
-                };
-
-                stmt_node blk{};
-                blk.k = stmt_node::kind::block;
-                blk.stmts.reserve(static_cast<::std::size_t>(start_max - start_min + 1));
-
-                for(int s{start_min}; s <= start_max; ++s)
-                {
-                    if(s < 0) { continue; }
-                    auto const idx_lit{ep.make_uint_literal(static_cast<::std::uint64_t>(s), cmp_w)};
-                    auto const cond{ep.compare_eq(idx_norm, idx_lit)};
-
-                    stmt_node ifs{};
-                    ifs.k = stmt_node::kind::if_stmt;
-                    ifs.expr_root = cond;
-
-                    auto const [sel_msb, sel_lsb]{compute_bounds(s)};
-                    ::std::size_t j{};
-                    if(sel_msb >= sel_lsb)
-                    {
-                        for(int idx{sel_msb}; idx >= sel_lsb && j < rhs_bits.size(); --idx, ++j)
-                        {
-                            auto const pos{vector_pos(vd, idx)};
-                            if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
-
-                            stmt_node asn{};
-                            asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
-                            asn.delay_ticks = delay;
-                            asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
-                            asn.expr_root = rhs_bits.index_unchecked(j);
-                            ifs.stmts.push_back(add_stmt(arena, ::std::move(asn)));
-
-                            if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
-                            {
-                                m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
-                            }
-                        }
+                        start_min = min_idx;
+                        start_max = max_idx - (w_int - 1);
                     }
                     else
                     {
-                        for(int idx{sel_msb}; idx <= sel_lsb && j < rhs_bits.size(); ++idx, ++j)
-                        {
-                            auto const pos{vector_pos(vd, idx)};
-                            if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
-
-                            stmt_node asn{};
-                            asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
-                            asn.delay_ticks = delay;
-                            asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
-                            asn.expr_root = rhs_bits.index_unchecked(j);
-                            ifs.stmts.push_back(add_stmt(arena, ::std::move(asn)));
-
-                            if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
-                            {
-                                m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
-                            }
-                        }
+                        start_min = min_idx + (w_int - 1);
+                        start_max = max_idx;
                     }
 
-                    blk.stmts.push_back(add_stmt(arena, ::std::move(ifs)));
+                    if(start_min > start_max)
+                    {
+                        p.err(p.peek(), u8"indexed part-select out of range");
+                        return add_stmt(arena, {});
+                    }
+
+                    ::std::size_t base_max{max_idx >= 0 ? static_cast<::std::size_t>(max_idx) : 0u};
+                    ::std::size_t need_bits{1};
+                    while((1ull << need_bits) <= base_max && need_bits < 64) { ++need_bits; }
+                    ::std::size_t const cmp_w{::std::max(ep.width(lhs.index_expr), need_bits)};
+
+                    auto const idx_norm{ep.resize(lhs.index_expr, cmp_w)};
+                    bool const desc{vd.msb >= vd.lsb};
+
+                    auto compute_bounds = [&](int start) noexcept -> ::std::pair<int, int>
+                    {
+                        if(lhs.indexed_plus)
+                        {
+                            if(desc) { return {start + (w_int - 1), start}; }
+                            return {start, start + (w_int - 1)};
+                        }
+                        if(desc) { return {start, start - (w_int - 1)}; }
+                        return {start - (w_int - 1), start};
+                    };
+
+                    stmt_node blk{};
+                    blk.k = stmt_node::kind::block;
+                    blk.stmts.reserve(static_cast<::std::size_t>(start_max - start_min + 1));
+
+                    for(int s{start_min}; s <= start_max; ++s)
+                    {
+                        if(s < 0) { continue; }
+                        auto const idx_lit{ep.make_uint_literal(static_cast<::std::uint64_t>(s), cmp_w)};
+                        auto const cond{ep.compare_eq(idx_norm, idx_lit)};
+
+                        stmt_node ifs{};
+                        ifs.k = stmt_node::kind::if_stmt;
+                        ifs.expr_root = cond;
+
+                        auto const [sel_msb, sel_lsb]{compute_bounds(s)};
+                        ::std::size_t j{};
+                        if(sel_msb >= sel_lsb)
+                        {
+                            for(int idx{sel_msb}; idx >= sel_lsb && j < rhs_bits.size(); --idx, ++j)
+                            {
+                                auto const pos{vector_pos(vd, idx)};
+                                if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
+
+                                stmt_node asn{};
+                                asn.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                                asn.delay_ticks = delay;
+                                asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
+                                asn.expr_root = rhs_bits.index_unchecked(j);
+                                ifs.stmts.push_back(add_stmt(arena, ::std::move(asn)));
+
+                                if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
+                                {
+                                    m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            for(int idx{sel_msb}; idx <= sel_lsb && j < rhs_bits.size(); ++idx, ++j)
+                            {
+                                auto const pos{vector_pos(vd, idx)};
+                                if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
+
+                                stmt_node asn{};
+                                asn.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                                asn.delay_ticks = delay;
+                                asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
+                                asn.expr_root = rhs_bits.index_unchecked(j);
+                                ifs.stmts.push_back(add_stmt(arena, ::std::move(asn)));
+
+                                if(lhs.vector_signals.index_unchecked(pos) < m.signal_is_reg.size())
+                                {
+                                    m.signal_is_reg.index_unchecked(lhs.vector_signals.index_unchecked(pos)) = true;
+                                }
+                            }
+                        }
+
+                        blk.stmts.push_back(add_stmt(arena, ::std::move(ifs)));
+                    }
+
+                    return add_stmt(arena, ::std::move(blk));
                 }
 
-                return add_stmt(arena, ::std::move(blk));
-            }
-
-            if(lhs.k == lvalue_ref::kind::dynamic_part_select)
-            {
+                // dynamic part-select
                 vector_desc vd{};
                 vd.msb = lhs.base_desc.msb;
                 vd.lsb = lhs.base_desc.lsb;
@@ -6338,7 +7905,6 @@ namespace phy_engine::verilog::digital
                     return add_stmt(arena, {});
                 }
 
-                // Avoid pathological N^2 expansion for huge vectors.
                 ::std::uint64_t const combos{static_cast<::std::uint64_t>(span) * static_cast<::std::uint64_t>(span)};
                 if(combos > 4096ull)
                 {
@@ -6391,7 +7957,7 @@ namespace phy_engine::verilog::digital
                                 if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
 
                                 stmt_node asn{};
-                                asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                                asn.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
                                 asn.delay_ticks = delay;
                                 asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
                                 asn.expr_root = rhs_bits.index_unchecked(j);
@@ -6411,7 +7977,7 @@ namespace phy_engine::verilog::digital
                                 if(pos == SIZE_MAX || pos >= lhs.vector_signals.size()) { continue; }
 
                                 stmt_node asn{};
-                                asn.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+                                asn.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
                                 asn.delay_ticks = delay;
                                 asn.lhs_signal = lhs.vector_signals.index_unchecked(pos);
                                 asn.expr_root = rhs_bits.index_unchecked(j);
@@ -6431,9 +7997,14 @@ namespace phy_engine::verilog::digital
                 return add_stmt(arena, ::std::move(blk));
             }
 
-            auto const rhs1{ep.resize(rhs, 1)};
+            // Scalar lvalue
+            auto cur = make_lhs_value();
+            if(!rhs_is_present) { rhs = ep.make_uint_literal(1u, ep.width(cur)); }
+            auto res = apply_compound(cur, rhs);
+
+            auto const rhs1{ep.resize(res, 1)};
             stmt_node st{};
-            st.k = nonblocking ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
+            st.k = (timing == timing_kind::nonblocking) ? stmt_node::kind::nonblocking_assign : stmt_node::kind::blocking_assign;
             st.delay_ticks = delay;
             st.lhs_signal = lhs.scalar_signal;
             st.expr_root = rhs1.scalar_root;
@@ -6444,7 +8015,30 @@ namespace phy_engine::verilog::digital
         inline void parse_decl_list(parser& p, compiled_module& m, port_dir d) noexcept
         {
             bool is_reg{};
-            bool is_signed{};
+            range_desc r{};
+
+            ::std::optional<bool> signed_spec{};
+            auto consume_signedness = [&]() noexcept
+            {
+                for(;;)
+                {
+                    if(p.accept_kw(u8"signed"))
+                    {
+                        signed_spec = true;
+                        continue;
+                    }
+                    if(p.accept_kw(u8"unsigned"))
+                    {
+                        signed_spec = false;
+                        continue;
+                    }
+                    break;
+                }
+            };
+
+            // Allow signed/unsigned both before and after the base type keyword.
+            consume_signedness();
+
             if(d == port_dir::output)
             {
                 if(p.accept_kw(u8"reg")) { is_reg = true; }
@@ -6452,13 +8046,52 @@ namespace phy_engine::verilog::digital
                 {
                     // ignored
                 }
+                else if(p.accept_kw(u8"logic")) { is_reg = true; }
+                else if(p.accept_kw(u8"bit")) { is_reg = true; }
+            }
+            else
+            {
+                if(p.accept_kw(u8"logic")) {}
+                else if(p.accept_kw(u8"wire")) {}
+                else if(p.accept_kw(u8"reg")) {}
+                else if(p.accept_kw(u8"bit")) {}
             }
 
-            if(p.accept_kw(u8"signed")) { is_signed = true; }
-            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+            consume_signedness();
 
-            range_desc r{};
-            accept_range(p, r);
+            bool is_integral{};
+            if(p.accept_kw(u8"byte"))
+            {
+                r = {.has_range = true, .msb = 7, .lsb = 0};
+                is_integral = true;
+                if(d == port_dir::output) { is_reg = true; }
+            }
+            else if(p.accept_kw(u8"shortint"))
+            {
+                r = {.has_range = true, .msb = 15, .lsb = 0};
+                is_integral = true;
+                if(d == port_dir::output) { is_reg = true; }
+            }
+            else if(p.accept_kw(u8"longint"))
+            {
+                r = {.has_range = true, .msb = 63, .lsb = 0};
+                is_integral = true;
+                if(d == port_dir::output) { is_reg = true; }
+            }
+            else if(p.accept_kw(u8"int") || p.accept_kw(u8"integer"))
+            {
+                r = {.has_range = true, .msb = 31, .lsb = 0};
+                is_integral = true;
+                if(d == port_dir::output) { is_reg = true; }
+            }
+            else
+            {
+                accept_range(p, m, r);
+            }
+
+            consume_signedness();
+
+            bool const is_signed = is_integral ? signed_spec.value_or(true) : signed_spec.value_or(false);
 
             for(;;)
             {
@@ -6500,7 +8133,7 @@ namespace phy_engine::verilog::digital
             else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
 
             range_desc r{};
-            accept_range(p, r);
+            accept_range(p, m, r);
 
             for(;;)
             {
@@ -6525,15 +8158,195 @@ namespace phy_engine::verilog::digital
             }
         }
 
+        inline static ::std::size_t parse_wire_list_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool is_reg) noexcept
+        {
+            bool is_signed{};
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
+            range_desc r{};
+            accept_range(p, m, r);
+
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            ::fast_io::vector<::std::size_t> init_stmts{};
+
+            for(;;)
+            {
+                auto const name{p.expect_ident(u8"expected identifier in declaration")};
+                if(name.empty()) { return add_stmt(arena, {}); }
+
+                ::fast_io::vector<::std::size_t> declared_bits{};
+                declared_bits.clear();
+                if(r.has_range)
+                {
+                    auto& vd{declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, r.msb, r.lsb, is_reg, is_signed)};
+                    declared_bits = vd.bits;
+                }
+                else
+                {
+                    auto const sig{get_or_create_signal(m, name)};
+                    if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    if(is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
+                    declared_bits.push_back(sig);
+                }
+
+                if(p.accept_sym(u8'='))
+                {
+                    if(!is_reg)
+                    {
+                        p.err(p.peek(), u8"wire declaration initializer is not supported in this subset");
+                        // best-effort: parse expression for recovery.
+                        (void)ep.parse_expr();
+                    }
+                    else
+                    {
+                        auto const rhs{ep.parse_expr()};
+                        if(r.has_range)
+                        {
+                            auto rhs_bits{ep.resize_to_vector(rhs, declared_bits.size(), rhs.is_signed)};
+                            stmt_node st{};
+                            st.k = stmt_node::kind::blocking_assign_vec;
+                            st.delay_ticks = 0;
+                            st.lhs_signals = declared_bits;
+                            st.rhs_roots = ::std::move(rhs_bits);
+                            for(auto const sig: st.lhs_signals)
+                            {
+                                if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                            }
+                            init_stmts.push_back(add_stmt(arena, ::std::move(st)));
+                        }
+                        else
+                        {
+                            auto const rhs1{ep.resize(rhs, 1)};
+                            stmt_node st{};
+                            st.k = stmt_node::kind::blocking_assign;
+                            st.delay_ticks = 0;
+                            st.lhs_signal = declared_bits.front_unchecked();
+                            st.expr_root = rhs1.scalar_root;
+                            if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                            init_stmts.push_back(add_stmt(arena, ::std::move(st)));
+                        }
+                    }
+                }
+
+                if(!p.accept_sym(u8',')) { break; }
+            }
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
+
+            if(init_stmts.empty()) { return add_stmt(arena, {}); }
+            stmt_node blk{};
+            blk.k = stmt_node::kind::block;
+            blk.stmts = ::std::move(init_stmts);
+            return add_stmt(arena, ::std::move(blk));
+        }
+
+        inline static ::std::size_t
+            parse_wire_list_scoped(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool is_reg, proc_scope& scope) noexcept
+        {
+            bool is_signed{};
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
+            range_desc r{};
+            accept_range(p, m, r);
+
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            ep.subst_idents = __builtin_addressof(scope.subst);
+
+            ::fast_io::vector<::std::size_t> init_stmts{};
+
+            for(;;)
+            {
+                auto const visible{p.expect_ident(u8"expected identifier in declaration")};
+                if(visible.empty()) { return add_stmt(arena, {}); }
+
+                auto internal{make_scoped_local_name(m, ::fast_io::u8string_view{visible.data(), visible.size()})};
+
+                expr_value ev{};
+                ::fast_io::vector<::std::size_t> declared_bits{};
+                declared_bits.clear();
+                if(r.has_range)
+                {
+                    auto& vd{declare_vector_range(&p, m, ::fast_io::u8string_view{internal.data(), internal.size()}, r.msb, r.lsb, is_reg, is_signed)};
+                    ::fast_io::vector<::std::size_t> roots{};
+                    roots.resize(vd.bits.size());
+                    for(::std::size_t i{}; i < vd.bits.size(); ++i) { roots.index_unchecked(i) = ep.make_signal_root(vd.bits.index_unchecked(i)); }
+                    ev = ep.make_vector_with_range(::std::move(roots), r.msb, r.lsb, is_signed);
+                    declared_bits = vd.bits;
+                }
+                else
+                {
+                    auto const sig{get_or_create_signal(m, internal)};
+                    if(is_reg && sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    if(is_signed && sig < m.signal_is_signed.size()) { m.signal_is_signed.index_unchecked(sig) = true; }
+                    ev = ep.make_scalar(ep.make_signal_root(sig), 0, 0, is_signed);
+                    declared_bits.push_back(sig);
+                }
+
+                scope.bind(visible, ::std::move(internal), ::std::move(ev));
+
+                if(p.accept_sym(u8'='))
+                {
+                    // SystemVerilog allows declaration initializers in procedural blocks.
+                    // In this subset we lower `type name = expr;` to a blocking assignment statement.
+                    auto const rhs{ep.parse_expr()};
+
+                    if(r.has_range)
+                    {
+                        auto rhs_bits{ep.resize_to_vector(rhs, declared_bits.size(), rhs.is_signed)};
+                        stmt_node st{};
+                        st.k = stmt_node::kind::blocking_assign_vec;
+                        st.delay_ticks = 0;
+                        st.lhs_signals = declared_bits;
+                        st.rhs_roots = ::std::move(rhs_bits);
+                        for(auto const sig: st.lhs_signals)
+                        {
+                            if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                        }
+                        init_stmts.push_back(add_stmt(arena, ::std::move(st)));
+                    }
+                    else
+                    {
+                        auto const rhs1{ep.resize(rhs, 1)};
+                        stmt_node st{};
+                        st.k = stmt_node::kind::blocking_assign;
+                        st.delay_ticks = 0;
+                        st.lhs_signal = declared_bits.front_unchecked();
+                        st.expr_root = rhs1.scalar_root;
+                        if(st.lhs_signal < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(st.lhs_signal) = true; }
+                        init_stmts.push_back(add_stmt(arena, ::std::move(st)));
+                    }
+                }
+
+                if(!p.accept_sym(u8',')) { break; }
+            }
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
+
+            if(init_stmts.empty()) { return add_stmt(arena, {}); }
+            stmt_node blk{};
+            blk.k = stmt_node::kind::block;
+            blk.stmts = ::std::move(init_stmts);
+            return add_stmt(arena, ::std::move(blk));
+        }
+
         inline void parse_integer_list(parser& p, compiled_module& m, bool is_signed_default) noexcept
+        { parse_packed_int_list(p, m, 31, 0, is_signed_default); }
+
+        inline void parse_packed_int_list(parser& p, compiled_module& m, int msb, int lsb, bool is_signed_default) noexcept
         {
             bool is_signed{is_signed_default};
             if(p.accept_kw(u8"signed")) { is_signed = true; }
             else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
-
-            // `integer`/`int` are fixed-width in Verilog/SystemVerilog (32-bit). Treat as a signed reg vector by default.
-            constexpr int msb{31};
-            constexpr int lsb{0};
 
             for(;;)
             {
@@ -6548,6 +8361,123 @@ namespace phy_engine::verilog::digital
                 p.err(p.peek(), u8"expected ';'");
                 p.skip_until_semicolon();
             }
+        }
+
+        inline static ::std::size_t
+            parse_packed_int_list_stmt(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, int msb, int lsb, bool is_signed_default) noexcept
+        {
+            bool is_signed{is_signed_default};
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            ::fast_io::vector<::std::size_t> init_stmts{};
+
+            for(;;)
+            {
+                auto const name{p.expect_ident(u8"expected identifier in integer declaration")};
+                if(name.empty()) { return add_stmt(arena, {}); }
+
+                auto& vd{declare_vector_range(&p, m, ::fast_io::u8string_view{name.data(), name.size()}, msb, lsb, true, is_signed)};
+
+                if(p.accept_sym(u8'='))
+                {
+                    auto const rhs{ep.parse_expr()};
+                    auto rhs_bits{ep.resize_to_vector(rhs, vd.bits.size(), rhs.is_signed)};
+                    stmt_node st{};
+                    st.k = stmt_node::kind::blocking_assign_vec;
+                    st.delay_ticks = 0;
+                    st.lhs_signals = vd.bits;
+                    st.rhs_roots = ::std::move(rhs_bits);
+                    for(auto const sig: st.lhs_signals)
+                    {
+                        if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    }
+                    init_stmts.push_back(add_stmt(arena, ::std::move(st)));
+                }
+
+                if(!p.accept_sym(u8',')) { break; }
+            }
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
+
+            if(init_stmts.empty()) { return add_stmt(arena, {}); }
+            stmt_node blk{};
+            blk.k = stmt_node::kind::block;
+            blk.stmts = ::std::move(init_stmts);
+            return add_stmt(arena, ::std::move(blk));
+        }
+
+        inline static ::std::size_t
+            parse_integer_list_scoped(parser& p, compiled_module& m, ::fast_io::vector<stmt_node>& arena, bool is_signed_default, proc_scope& scope) noexcept
+        { return parse_packed_int_list_scoped(p, m, arena, 31, 0, is_signed_default, scope); }
+
+        inline static ::std::size_t parse_packed_int_list_scoped(parser& p,
+                                                                 compiled_module& m,
+                                                                 ::fast_io::vector<stmt_node>& arena,
+                                                                 int msb,
+                                                                 int lsb,
+                                                                 bool is_signed_default,
+                                                                 proc_scope& scope) noexcept
+        {
+            bool is_signed{is_signed_default};
+            if(p.accept_kw(u8"signed")) { is_signed = true; }
+            else if(p.accept_kw(u8"unsigned")) { is_signed = false; }
+
+            expr_parser ep{__builtin_addressof(p), __builtin_addressof(m)};
+            ep.subst_idents = __builtin_addressof(scope.subst);
+
+            ::fast_io::vector<::std::size_t> init_stmts{};
+
+            for(;;)
+            {
+                auto const visible{p.expect_ident(u8"expected identifier in integer declaration")};
+                if(visible.empty()) { return add_stmt(arena, {}); }
+
+                auto internal{make_scoped_local_name(m, ::fast_io::u8string_view{visible.data(), visible.size()})};
+                auto& vd{declare_vector_range(&p, m, ::fast_io::u8string_view{internal.data(), internal.size()}, msb, lsb, true, is_signed)};
+
+                ::fast_io::vector<::std::size_t> roots{};
+                roots.resize(vd.bits.size());
+                for(::std::size_t i{}; i < vd.bits.size(); ++i) { roots.index_unchecked(i) = ep.make_signal_root(vd.bits.index_unchecked(i)); }
+                auto ev{ep.make_vector_with_range(::std::move(roots), msb, lsb, is_signed)};
+
+                scope.bind(visible, ::std::move(internal), ::std::move(ev));
+
+                if(p.accept_sym(u8'='))
+                {
+                    auto const rhs{ep.parse_expr()};
+                    auto rhs_bits{ep.resize_to_vector(rhs, vd.bits.size(), rhs.is_signed)};
+                    stmt_node st{};
+                    st.k = stmt_node::kind::blocking_assign_vec;
+                    st.delay_ticks = 0;
+                    st.lhs_signals = vd.bits;
+                    st.rhs_roots = ::std::move(rhs_bits);
+                    for(auto const sig: st.lhs_signals)
+                    {
+                        if(sig < m.signal_is_reg.size()) { m.signal_is_reg.index_unchecked(sig) = true; }
+                    }
+                    init_stmts.push_back(add_stmt(arena, ::std::move(st)));
+                }
+
+                if(!p.accept_sym(u8',')) { break; }
+            }
+
+            if(!p.accept_sym(u8';'))
+            {
+                p.err(p.peek(), u8"expected ';'");
+                p.skip_until_semicolon();
+            }
+
+            if(init_stmts.empty()) { return add_stmt(arena, {}); }
+            stmt_node blk{};
+            blk.k = stmt_node::kind::block;
+            blk.stmts = ::std::move(init_stmts);
+            return add_stmt(arena, ::std::move(blk));
         }
 
         inline void parse_assign_stmt(parser& p, compiled_module& m) noexcept
@@ -6895,7 +8825,10 @@ namespace phy_engine::verilog::digital
                 always_comb ac{};
                 ac.is_star = true;
                 ac.stmt_nodes.reserve(64);
-                ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true));
+                proc_scope scope{};
+                scope.push_frame();
+                ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true, __builtin_addressof(scope)));
+                scope.pop_frame();
                 m.always_combs.push_back(::std::move(ac));
                 return;
             }
@@ -6906,7 +8839,10 @@ namespace phy_engine::verilog::digital
                 always_ff ff{};
                 ff.events = ::std::move(events);
                 ff.stmt_nodes.reserve(64);
-                ff.roots.push_back(parse_proc_stmt(p, m, ff.stmt_nodes, true));
+                proc_scope scope{};
+                scope.push_frame();
+                ff.roots.push_back(parse_proc_stmt(p, m, ff.stmt_nodes, true, __builtin_addressof(scope)));
+                scope.pop_frame();
                 m.always_ffs.push_back(::std::move(ff));
                 return;
             }
@@ -6915,7 +8851,10 @@ namespace phy_engine::verilog::digital
             ac.is_star = false;
             ac.sens_signals = ::std::move(comb_sens);
             ac.stmt_nodes.reserve(64);
-            ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true));
+            proc_scope scope{};
+            scope.push_frame();
+            ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true, __builtin_addressof(scope)));
+            scope.pop_frame();
             m.always_combs.push_back(::std::move(ac));
         }
 
@@ -6928,8 +8867,28 @@ namespace phy_engine::verilog::digital
             always_comb ac{};
             ac.is_star = true;
             ac.stmt_nodes.reserve(64);
-            ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true));
+            proc_scope scope{};
+            scope.push_frame();
+            ac.roots.push_back(parse_proc_stmt(p, m, ac.stmt_nodes, true, __builtin_addressof(scope)));
+            scope.pop_frame();
             m.always_combs.push_back(::std::move(ac));
+        }
+
+        inline void parse_always_latch(parser& p, compiled_module& m) noexcept
+        {
+            // SV `always_latch` behaves like `always @*` with a latch intent; we accept it as a combinational always.
+            parse_always_comb(p, m);
+        }
+
+        inline void parse_initial(parser& p, compiled_module& m) noexcept
+        {
+            initial_block ib{};
+            ib.stmt_nodes.reserve(64);
+            proc_scope scope{};
+            scope.push_frame();
+            ib.roots.push_back(parse_proc_stmt(p, m, ib.stmt_nodes, true, __builtin_addressof(scope)));
+            scope.pop_frame();
+            m.initials.push_back(::std::move(ib));
         }
 
         inline compiled_module parse_module(parser& p) noexcept
@@ -6939,6 +8898,7 @@ namespace phy_engine::verilog::digital
             m.assigns.reserve(128);
             m.always_ffs.reserve(32);
             m.always_combs.reserve(32);
+            m.initials.reserve(16);
             m.instances.reserve(64);
 
             m.name = p.expect_ident(u8"expected module name");
@@ -7000,6 +8960,30 @@ namespace phy_engine::verilog::digital
                         current_is_reg = false;
                         current_is_signed = false;
                         current_range = {};
+
+                        bool signed_seen{};
+                        bool signed_val{};
+                        auto consume_signedness = [&]() noexcept
+                        {
+                            for(;;)
+                            {
+                                if(p.accept_kw(u8"signed"))
+                                {
+                                    signed_seen = true;
+                                    signed_val = true;
+                                    continue;
+                                }
+                                if(p.accept_kw(u8"unsigned"))
+                                {
+                                    signed_seen = true;
+                                    signed_val = false;
+                                    continue;
+                                }
+                                break;
+                            }
+                        };
+
+                        consume_signedness();
                         if(p.accept_kw(u8"wire"))
                         {
                             // ignored
@@ -7014,9 +8998,40 @@ namespace phy_engine::verilog::digital
                             // SystemVerilog-style `input logic` is accepted as a compatibility extension.
                             // Treat as a normal input port (driven externally).
                         }
-                        if(p.accept_kw(u8"signed")) { current_is_signed = true; }
-                        else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
-                        accept_range(p, current_range);
+                        else if(p.accept_kw(u8"bit"))
+                        {
+                            // SystemVerilog-style `input bit` is accepted as a compatibility extension.
+                            // Treat as 1-bit 4-state in this subset.
+                        }
+
+                        consume_signedness();
+                        bool integral{};
+                        if(p.accept_kw(u8"byte"))
+                        {
+                            current_range = {.has_range = true, .msb = 7, .lsb = 0};
+                            integral = true;
+                        }
+                        else if(p.accept_kw(u8"shortint"))
+                        {
+                            current_range = {.has_range = true, .msb = 15, .lsb = 0};
+                            integral = true;
+                        }
+                        else if(p.accept_kw(u8"longint"))
+                        {
+                            current_range = {.has_range = true, .msb = 63, .lsb = 0};
+                            integral = true;
+                        }
+                        else if(p.accept_kw(u8"int") || p.accept_kw(u8"integer"))
+                        {
+                            current_range = {.has_range = true, .msb = 31, .lsb = 0};
+                            integral = true;
+                        }
+                        else
+                        {
+                            accept_range(p, m, current_range);
+                        }
+                        consume_signedness();
+                        current_is_signed = signed_seen ? signed_val : (integral ? true : false);
                     }
                     else if(p.accept_kw(u8"output"))
                     {
@@ -7024,6 +9039,30 @@ namespace phy_engine::verilog::digital
                         current_is_reg = false;
                         current_is_signed = false;
                         current_range = {};
+
+                        bool signed_seen{};
+                        bool signed_val{};
+                        auto consume_signedness = [&]() noexcept
+                        {
+                            for(;;)
+                            {
+                                if(p.accept_kw(u8"signed"))
+                                {
+                                    signed_seen = true;
+                                    signed_val = true;
+                                    continue;
+                                }
+                                if(p.accept_kw(u8"unsigned"))
+                                {
+                                    signed_seen = true;
+                                    signed_val = false;
+                                    continue;
+                                }
+                                break;
+                            }
+                        };
+
+                        consume_signedness();
                         if(p.accept_kw(u8"reg")) { current_is_reg = true; }
                         else if(p.accept_kw(u8"wire"))
                         {
@@ -7035,9 +9074,45 @@ namespace phy_engine::verilog::digital
                             // Treat as an output variable (i.e. reg-like), matching common SystemVerilog usage.
                             current_is_reg = true;
                         }
-                        if(p.accept_kw(u8"signed")) { current_is_signed = true; }
-                        else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
-                        accept_range(p, current_range);
+                        else if(p.accept_kw(u8"bit"))
+                        {
+                            // SystemVerilog-style `output bit` is accepted as a compatibility extension.
+                            // Treat as an output variable in this subset.
+                            current_is_reg = true;
+                        }
+
+                        consume_signedness();
+                        bool integral{};
+                        if(p.accept_kw(u8"byte"))
+                        {
+                            current_range = {.has_range = true, .msb = 7, .lsb = 0};
+                            integral = true;
+                            current_is_reg = true;
+                        }
+                        else if(p.accept_kw(u8"shortint"))
+                        {
+                            current_range = {.has_range = true, .msb = 15, .lsb = 0};
+                            integral = true;
+                            current_is_reg = true;
+                        }
+                        else if(p.accept_kw(u8"longint"))
+                        {
+                            current_range = {.has_range = true, .msb = 63, .lsb = 0};
+                            integral = true;
+                            current_is_reg = true;
+                        }
+                        else if(p.accept_kw(u8"int") || p.accept_kw(u8"integer"))
+                        {
+                            current_range = {.has_range = true, .msb = 31, .lsb = 0};
+                            integral = true;
+                            current_is_reg = true;
+                        }
+                        else
+                        {
+                            accept_range(p, m, current_range);
+                        }
+                        consume_signedness();
+                        current_is_signed = signed_seen ? signed_val : (integral ? true : false);
                     }
                     else if(p.accept_kw(u8"inout"))
                     {
@@ -7045,6 +9120,30 @@ namespace phy_engine::verilog::digital
                         current_is_reg = false;
                         current_is_signed = false;
                         current_range = {};
+
+                        bool signed_seen{};
+                        bool signed_val{};
+                        auto consume_signedness = [&]() noexcept
+                        {
+                            for(;;)
+                            {
+                                if(p.accept_kw(u8"signed"))
+                                {
+                                    signed_seen = true;
+                                    signed_val = true;
+                                    continue;
+                                }
+                                if(p.accept_kw(u8"unsigned"))
+                                {
+                                    signed_seen = true;
+                                    signed_val = false;
+                                    continue;
+                                }
+                                break;
+                            }
+                        };
+
+                        consume_signedness();
                         if(p.accept_kw(u8"wire"))
                         {
                             // ignored
@@ -7054,9 +9153,40 @@ namespace phy_engine::verilog::digital
                             // SystemVerilog-style `inout logic` is accepted as a compatibility extension.
                             // Treat as a normal inout net.
                         }
-                        if(p.accept_kw(u8"signed")) { current_is_signed = true; }
-                        else if(p.accept_kw(u8"unsigned")) { current_is_signed = false; }
-                        accept_range(p, current_range);
+                        else if(p.accept_kw(u8"bit"))
+                        {
+                            // SystemVerilog-style `inout bit` is accepted as a compatibility extension.
+                            // Treat as a normal inout net in this subset.
+                        }
+
+                        consume_signedness();
+                        bool integral{};
+                        if(p.accept_kw(u8"byte"))
+                        {
+                            current_range = {.has_range = true, .msb = 7, .lsb = 0};
+                            integral = true;
+                        }
+                        else if(p.accept_kw(u8"shortint"))
+                        {
+                            current_range = {.has_range = true, .msb = 15, .lsb = 0};
+                            integral = true;
+                        }
+                        else if(p.accept_kw(u8"longint"))
+                        {
+                            current_range = {.has_range = true, .msb = 63, .lsb = 0};
+                            integral = true;
+                        }
+                        else if(p.accept_kw(u8"int") || p.accept_kw(u8"integer"))
+                        {
+                            current_range = {.has_range = true, .msb = 31, .lsb = 0};
+                            integral = true;
+                        }
+                        else
+                        {
+                            accept_range(p, m, current_range);
+                        }
+                        consume_signedness();
+                        current_is_signed = signed_seen ? signed_val : (integral ? true : false);
                     }
 
                     auto const port_name{p.expect_ident(u8"expected port identifier")};
@@ -7186,6 +9316,16 @@ namespace phy_engine::verilog::digital
                     parse_wire_list(p, m, true);
                     continue;
                 }
+                if(p.accept_kw(u8"logic"))
+                {
+                    parse_wire_list(p, m, true);
+                    continue;
+                }
+                if(p.accept_kw(u8"bit"))
+                {
+                    parse_wire_list(p, m, true);
+                    continue;
+                }
                 if(p.accept_kw(u8"integer"))
                 {
                     parse_integer_list(p, m, true);
@@ -7194,6 +9334,21 @@ namespace phy_engine::verilog::digital
                 if(p.accept_kw(u8"int"))
                 {
                     parse_integer_list(p, m, true);
+                    continue;
+                }
+                if(p.accept_kw(u8"byte"))
+                {
+                    parse_packed_int_list(p, m, 7, 0, true);
+                    continue;
+                }
+                if(p.accept_kw(u8"shortint"))
+                {
+                    parse_packed_int_list(p, m, 15, 0, true);
+                    continue;
+                }
+                if(p.accept_kw(u8"longint"))
+                {
+                    parse_packed_int_list(p, m, 63, 0, true);
                     continue;
                 }
 
@@ -7215,6 +9370,16 @@ namespace phy_engine::verilog::digital
                 if(p.accept_kw(u8"always_ff"))
                 {
                     parse_always_ff(p, m);
+                    continue;
+                }
+                if(p.accept_kw(u8"always_latch"))
+                {
+                    parse_always_latch(p, m);
+                    continue;
+                }
+                if(p.accept_kw(u8"initial"))
+                {
+                    parse_initial(p, m);
                     continue;
                 }
 
@@ -7354,6 +9519,9 @@ namespace phy_engine::verilog::digital
         ::fast_io::vector<logic_t> prev_values{};
         // Last values seen by the combinational/event scheduler (used for `always @(...)` triggering).
         ::fast_io::vector<logic_t> comb_prev_values{};
+        bool comb_initialized{};              // run implicit-sensitivity combinational blocks once at t=0 (SV `always_comb` / `always @*`)
+        bool initial_ran{};                   // run `initial` blocks once per instance
+        ::std::uint64_t initial_base_tick{};  // tick used as time origin for first-run initial blocks
         ::fast_io::vector<scheduled_event> events{};
         ::fast_io::vector<::std::pair<::std::size_t, logic_t>> nba_queue{};
         // Next-delta resolved net values for signals marked as "internally driven" (multi-driver net resolution).
@@ -7375,6 +9543,9 @@ namespace phy_engine::verilog::digital
         st.values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         st.prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
         st.comb_prev_values.assign(m.signal_names.size(), logic_t::indeterminate_state);
+        st.comb_initialized = false;
+        st.initial_ran = false;
+        st.initial_base_tick = 0;
         for(::std::size_t i{}; i < st.values.size() && i < m.signal_is_const.size() && i < m.signal_const_value.size(); ++i)
         {
             if(m.signal_is_const.index_unchecked(i))
@@ -7553,6 +9724,19 @@ namespace phy_engine::verilog::digital
 
     namespace runtime_details
     {
+        enum class flow_kind : ::std::uint_fast8_t
+        {
+            none,
+            ret,
+            brk,
+            cont
+        };
+
+        struct flow_state
+        {
+            flow_kind k{flow_kind::none};
+        };
+
         inline ::std::uint32_t begin_change_epoch(module_state& st) noexcept
         {
             st.changed_signals.clear();
@@ -7670,7 +9854,8 @@ namespace phy_engine::verilog::digital
                               ::std::size_t stmt_idx,
                               module_state& st,
                               ::std::uint64_t tick,
-                              bool treat_nonblocking_as_blocking) noexcept
+                              bool treat_nonblocking_as_blocking,
+                              flow_state* fs = nullptr) noexcept
         {
             if(stmt_idx >= arena.size()) { return false; }
             auto const& n{arena.index_unchecked(stmt_idx)};
@@ -7681,7 +9866,26 @@ namespace phy_engine::verilog::digital
                 case stmt_node::kind::block:
                 {
                     bool changed{};
-                    for(auto const sub: n.stmts) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    for(auto const sub: n.stmts)
+                    {
+                        if(fs && fs->k != flow_kind::none) { break; }
+                        changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking, fs) || changed;
+                    }
+                    return changed;
+                }
+                case stmt_node::kind::subprogram_block:
+                {
+                    bool changed{};
+                    flow_state local{};
+                    for(auto const sub: n.stmts)
+                    {
+                        if(local.k != flow_kind::none) { break; }
+                        changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking, __builtin_addressof(local)) || changed;
+                    }
+                    if(local.k == flow_kind::brk || local.k == flow_kind::cont)
+                    {
+                        if(fs) { fs->k = local.k; }
+                    }
                     return changed;
                 }
                 case stmt_node::kind::blocking_assign:
@@ -7758,7 +9962,6 @@ namespace phy_engine::verilog::digital
 
                     if(treat_nonblocking_as_blocking)
                     {
-                        // Evaluate all RHS bits before updating any LHS bits (vector is atomic).
                         if(n.delay_ticks != 0)
                         {
                             scheduled_event ev{};
@@ -7800,7 +10003,6 @@ namespace phy_engine::verilog::digital
                         return false;
                     }
 
-                    // NBA: RHS is sampled now, no LHS hazard.
                     for(::std::size_t i{}; i < n.lhs_signals.size(); ++i)
                     {
                         auto const sig{n.lhs_signals.index_unchecked(i)};
@@ -7817,7 +10019,11 @@ namespace phy_engine::verilog::digital
 
                     bool changed{};
                     auto const& list{take ? n.stmts : n.else_stmts};
-                    for(auto const sub: list) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    for(auto const sub: list)
+                    {
+                        if(fs && fs->k != flow_kind::none) { break; }
+                        changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking, fs) || changed;
+                    }
                     return changed;
                 }
                 case stmt_node::kind::case_stmt:
@@ -7876,7 +10082,11 @@ namespace phy_engine::verilog::digital
                     if(chosen == nullptr) { return false; }
 
                     bool changed{};
-                    for(auto const sub: chosen->stmts) { changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    for(auto const sub: chosen->stmts)
+                    {
+                        if(fs && fs->k != flow_kind::none) { break; }
+                        changed = exec_stmt(m, arena, sub, st, tick, treat_nonblocking_as_blocking, fs) || changed;
+                    }
                     return changed;
                 }
                 case stmt_node::kind::for_stmt:
@@ -7884,15 +10094,36 @@ namespace phy_engine::verilog::digital
                     constexpr ::std::size_t max_iter{4096};
                     bool changed{};
 
-                    if(n.init_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.init_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+                    if(n.init_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.init_stmt, st, tick, treat_nonblocking_as_blocking, fs) || changed; }
 
                     for(::std::size_t iter{}; iter < max_iter; ++iter)
                     {
+                        if(fs && fs->k == flow_kind::ret) { break; }
+                        if(fs && fs->k == flow_kind::brk)
+                        {
+                            fs->k = flow_kind::none;
+                            break;
+                        }
+                        if(fs && fs->k == flow_kind::cont)
+                        {
+                            fs->k = flow_kind::none;
+                            if(n.step_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.step_stmt, st, tick, treat_nonblocking_as_blocking, fs) || changed; }
+                            continue;
+                        }
+
                         auto const c{normalize_z_to_x(eval_expr_cached(m, n.expr_root, st))};
                         if(c != logic_t::true_state) { break; }
 
-                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
-                        if(n.step_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.step_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking, fs) || changed; }
+                        if(fs && fs->k == flow_kind::ret) { break; }
+                        if(fs && fs->k == flow_kind::brk)
+                        {
+                            fs->k = flow_kind::none;
+                            break;
+                        }
+                        if(fs && fs->k == flow_kind::cont) { fs->k = flow_kind::none; }
+
+                        if(n.step_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.step_stmt, st, tick, treat_nonblocking_as_blocking, fs) || changed; }
                     }
 
                     return changed;
@@ -7903,11 +10134,71 @@ namespace phy_engine::verilog::digital
                     bool changed{};
                     for(::std::size_t iter{}; iter < max_iter; ++iter)
                     {
+                        if(fs && fs->k == flow_kind::ret) { break; }
+                        if(fs && fs->k == flow_kind::brk)
+                        {
+                            fs->k = flow_kind::none;
+                            break;
+                        }
+                        if(fs && fs->k == flow_kind::cont) { fs->k = flow_kind::none; }
+
                         auto const c{normalize_z_to_x(eval_expr_cached(m, n.expr_root, st))};
                         if(c != logic_t::true_state) { break; }
-                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking) || changed; }
+                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking, fs) || changed; }
+                        if(fs && fs->k == flow_kind::ret) { break; }
+                        if(fs && fs->k == flow_kind::brk)
+                        {
+                            fs->k = flow_kind::none;
+                            break;
+                        }
+                        if(fs && fs->k == flow_kind::cont) { fs->k = flow_kind::none; }
                     }
                     return changed;
+                }
+                case stmt_node::kind::do_while_stmt:
+                {
+                    constexpr ::std::size_t max_iter{4096};
+                    bool changed{};
+
+                    for(::std::size_t iter{}; iter < max_iter; ++iter)
+                    {
+                        if(fs && fs->k == flow_kind::ret) { break; }
+                        if(fs && fs->k == flow_kind::brk)
+                        {
+                            fs->k = flow_kind::none;
+                            break;
+                        }
+                        if(fs && fs->k == flow_kind::cont) { fs->k = flow_kind::none; }
+
+                        if(n.body_stmt != SIZE_MAX) { changed = exec_stmt(m, arena, n.body_stmt, st, tick, treat_nonblocking_as_blocking, fs) || changed; }
+                        if(fs && fs->k == flow_kind::ret) { break; }
+                        if(fs && fs->k == flow_kind::brk)
+                        {
+                            fs->k = flow_kind::none;
+                            break;
+                        }
+                        if(fs && fs->k == flow_kind::cont) { fs->k = flow_kind::none; }
+
+                        auto const c{normalize_z_to_x(eval_expr_cached(m, n.expr_root, st))};
+                        if(c != logic_t::true_state) { break; }
+                    }
+
+                    return changed;
+                }
+                case stmt_node::kind::return_stmt:
+                {
+                    if(fs) { fs->k = flow_kind::ret; }
+                    return false;
+                }
+                case stmt_node::kind::break_stmt:
+                {
+                    if(fs) { fs->k = flow_kind::brk; }
+                    return false;
+                }
+                case stmt_node::kind::continue_stmt:
+                {
+                    if(fs) { fs->k = flow_kind::cont; }
+                    return false;
                 }
                 default: return false;
             }
@@ -8104,7 +10395,11 @@ namespace phy_engine::verilog::digital
 
                 if(!fire) { continue; }
 
-                for(auto const root: ff.roots) { (void)exec_stmt(m, ff.stmt_nodes, root, st, tick, false); }
+                for(auto const root: ff.roots)
+                {
+                    flow_state fs{};
+                    (void)exec_stmt(m, ff.stmt_nodes, root, st, tick, false, __builtin_addressof(fs));
+                }
             }
         }
 
@@ -8132,7 +10427,11 @@ namespace phy_engine::verilog::digital
                 }
 
                 if(!run) { continue; }
-                for(auto const root: ac.roots) { changed = exec_stmt(m, ac.stmt_nodes, root, st, tick, false) || changed; }
+                for(auto const root: ac.roots)
+                {
+                    flow_state fs{};
+                    changed = exec_stmt(m, ac.stmt_nodes, root, st, tick, false, __builtin_addressof(fs)) || changed;
+                }
             }
 
             for(auto const& a: m.assigns)
@@ -8206,7 +10505,106 @@ namespace phy_engine::verilog::digital
 
         inline void sequential_pass(instance_state& inst, ::std::uint64_t tick, bool process_sequential) noexcept
         {
+            // One-shot initial blocks (time origin = first tick observed for this instance).
             inst.state.nba_queue.clear();
+            if(inst.mod != nullptr && !inst.state.initial_ran && inst.state.mod != nullptr)
+            {
+                inst.state.initial_ran = true;
+                inst.state.initial_base_tick = tick;
+                auto const& m{*inst.mod};
+                auto& st{inst.state};
+                for(auto const& ib: m.initials)
+                {
+                    auto try_schedule_linear = [&](auto&& self, ::std::size_t root, ::std::uint64_t& cursor) noexcept -> bool
+                    {
+                        if(root >= ib.stmt_nodes.size()) { return false; }
+
+                        auto const& n{ib.stmt_nodes.index_unchecked(root)};
+                        switch(n.k)
+                        {
+                            case stmt_node::kind::empty: return true;
+                            case stmt_node::kind::block:
+                            case stmt_node::kind::subprogram_block:
+                                for(auto const sub: n.stmts)
+                                {
+                                    if(!self(self, sub, cursor)) { return false; }
+                                }
+                                return true;
+                            case stmt_node::kind::blocking_assign:
+                            {
+                                cursor += n.delay_ticks;
+                                scheduled_event ev{};
+                                ev.due_tick = st.initial_base_tick + cursor;
+                                ev.nonblocking = false;
+                                ev.is_vector = false;
+                                ev.lhs_signal = n.lhs_signal;
+                                ev.expr_root = n.expr_root;
+                                st.events.push_back(::std::move(ev));
+                                return true;
+                            }
+                            case stmt_node::kind::blocking_assign_vec:
+                            {
+                                cursor += n.delay_ticks;
+                                scheduled_event ev{};
+                                ev.due_tick = st.initial_base_tick + cursor;
+                                ev.nonblocking = false;
+                                ev.is_vector = true;
+                                ev.lhs_signals = n.lhs_signals;
+                                ev.expr_roots = n.rhs_roots;
+                                st.events.push_back(::std::move(ev));
+                                return true;
+                            }
+                            case stmt_node::kind::nonblocking_assign:
+                            {
+                                cursor += n.delay_ticks;
+                                scheduled_event ev{};
+                                ev.due_tick = st.initial_base_tick + cursor;
+                                ev.nonblocking = true;
+                                ev.is_vector = false;
+                                ev.lhs_signal = n.lhs_signal;
+                                ev.expr_root = n.expr_root;
+                                st.events.push_back(::std::move(ev));
+                                return true;
+                            }
+                            case stmt_node::kind::nonblocking_assign_vec:
+                            {
+                                cursor += n.delay_ticks;
+                                scheduled_event ev{};
+                                ev.due_tick = st.initial_base_tick + cursor;
+                                ev.nonblocking = true;
+                                ev.is_vector = true;
+                                ev.lhs_signals = n.lhs_signals;
+                                ev.expr_roots = n.rhs_roots;
+                                st.events.push_back(::std::move(ev));
+                                return true;
+                            }
+                            default: return false;
+                        }
+                    };
+
+                    bool linear{};
+                    ::std::uint64_t cursor{};
+                    for(auto const root: ib.roots)
+                    {
+                        if(!try_schedule_linear(try_schedule_linear, root, cursor))
+                        {
+                            linear = false;
+                            break;
+                        }
+                        linear = true;
+                    }
+
+                    if(!linear)
+                    {
+                        for(auto const root: ib.roots)
+                        {
+                            flow_state fs{};
+                            (void)exec_stmt(m, ib.stmt_nodes, root, st, st.initial_base_tick, false, __builtin_addressof(fs));
+                        }
+                    }
+                }
+            }
+
             process_due_events(inst.state, tick);
             if(process_sequential) { run_sequential(inst, tick); }
 
@@ -8235,6 +10633,12 @@ namespace phy_engine::verilog::digital
             {
                 if(st.values.index_unchecked(i) == st.comb_prev_values.index_unchecked(i)) { continue; }
                 st.change_mark.index_unchecked(i) = trigger_token;
+                any_triggered = true;
+            }
+            if(!st.comb_initialized)
+            {
+                // SV `always_comb` (and in practice `always @*`) runs once at time 0, even if the implicit sensitivity set is empty.
+                st.comb_initialized = true;
                 any_triggered = true;
             }
 

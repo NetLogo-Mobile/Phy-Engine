@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -33,6 +34,17 @@ constexpr std::size_t kThresholds = kLevels - 1;   // 15 thresholds
 constexpr double kVref = 5.0;
 constexpr double kRladder = 1000.0;
 constexpr double kRin = 10000.0;
+
+[[noreturn]] void die(char const* msg)
+{
+    std::fprintf(stderr, "adc16_onehot test fatal: %s\n", msg);
+    std::abort();
+}
+
+inline void require(bool ok, char const* msg)
+{
+    if(!ok) { die(msg); }
+}
 
 std::optional<std::size_t> parse_bit_index(std::string_view s, std::string_view base)
 {
@@ -99,7 +111,7 @@ adc_net build_adc(::phy_engine::netlist::netlist& nl,
                   bool use_verilog_module_runtime,
                   bool use_verilog_synth)
 {
-    assert(!(use_verilog_module_runtime && use_verilog_synth));
+    require(!(use_verilog_module_runtime && use_verilog_synth), "invalid build_adc flags");
 
     adc_net r{};
     r.nl = __builtin_addressof(nl);
@@ -121,20 +133,20 @@ adc_net build_adc(::phy_engine::netlist::netlist& nl,
     {
         auto [rin, rin_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::resistance{.r = kRin});
         (void)rin_pos;
-        assert(rin != nullptr);
+        require(rin != nullptr, "add_model(resistance) failed");
         rin->name = ::fast_io::u8string{u8"vin"};
-        assert(::phy_engine::netlist::add_to_node(nl, *rin, 0, vin));
-        assert(::phy_engine::netlist::add_to_node(nl, *rin, 1, nl.ground_node));
+        require(::phy_engine::netlist::add_to_node(nl, *rin, 0, vin), "add_to_node(vin,r) failed");
+        require(::phy_engine::netlist::add_to_node(nl, *rin, 1, nl.ground_node), "add_to_node(gnd,r) failed");
     }
 
     // Reference source for the divider ladder.
     {
         auto [vref, vref_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::VDC{.V = kVref});
         (void)vref_pos;
-        assert(vref != nullptr);
+        require(vref != nullptr, "add_model(VDC vref) failed");
         vref->name = ::fast_io::u8string{u8"vref"};
-        assert(::phy_engine::netlist::add_to_node(nl, *vref, 0, *n_div[kLevels]));
-        assert(::phy_engine::netlist::add_to_node(nl, *vref, 1, nl.ground_node));
+        require(::phy_engine::netlist::add_to_node(nl, *vref, 0, *n_div[kLevels]), "add_to_node(vref,+) failed");
+        require(::phy_engine::netlist::add_to_node(nl, *vref, 1, nl.ground_node), "add_to_node(vref,-) failed");
     }
 
     // Resistor string (Vref -> ... -> gnd), equally spaced thresholds.
@@ -142,12 +154,12 @@ adc_net build_adc(::phy_engine::netlist::netlist& nl,
     {
         auto [rr, rr_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::resistance{.r = kRladder});
         (void)rr_pos;
-        assert(rr != nullptr);
+        require(rr != nullptr, "add_model(ladder resistance) failed");
         rr->name = ::fast_io::u8string{u8"ladder_r["};
         append_u8_decimal(rr->name, i - 1);
         append_u8(rr->name, u8"]");
-        assert(::phy_engine::netlist::add_to_node(nl, *rr, 0, *n_div[i]));
-        assert(::phy_engine::netlist::add_to_node(nl, *rr, 1, *n_div[i - 1]));
+        require(::phy_engine::netlist::add_to_node(nl, *rr, 0, *n_div[i]), "add_to_node(ladder r,0) failed");
+        require(::phy_engine::netlist::add_to_node(nl, *rr, 1, *n_div[i - 1]), "add_to_node(ladder r,1) failed");
     }
 
     // Optional: an internal VIN source used only for PE-side simulation.
@@ -155,10 +167,10 @@ adc_net build_adc(::phy_engine::netlist::netlist& nl,
     {
         auto [vsrc, vsrc_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::VDC{.V = 0.0});
         (void)vsrc_pos;
-        assert(vsrc != nullptr);
+        require(vsrc != nullptr, "add_model(VDC vin_src) failed");
         vsrc->name = ::fast_io::u8string{u8"vin_src"};
-        assert(::phy_engine::netlist::add_to_node(nl, *vsrc, 0, vin));
-        assert(::phy_engine::netlist::add_to_node(nl, *vsrc, 1, nl.ground_node));
+        require(::phy_engine::netlist::add_to_node(nl, *vsrc, 0, vin), "add_to_node(vin_src,+) failed");
+        require(::phy_engine::netlist::add_to_node(nl, *vsrc, 1, nl.ground_node), "add_to_node(vin_src,-) failed");
         r.vin_src = vsrc;
     }
 
@@ -174,14 +186,14 @@ adc_net build_adc(::phy_engine::netlist::netlist& nl,
         cmp.Hl = 5.0;
         auto [u, u_pos] = ::phy_engine::netlist::add_model(nl, ::std::move(cmp));
         (void)u_pos;
-        assert(u != nullptr);
+        require(u != nullptr, "add_model(comparator) failed");
         u->name = ::fast_io::u8string{u8"cmp["};
         append_u8_decimal(u->name, i);
         append_u8(u->name, u8"]");
 
-        assert(::phy_engine::netlist::add_to_node(nl, *u, 0, vin));               // A
-        assert(::phy_engine::netlist::add_to_node(nl, *u, 1, *n_div[i + 1]));     // B
-        assert(::phy_engine::netlist::add_to_node(nl, *u, 2, n_cmp));             // o
+        require(::phy_engine::netlist::add_to_node(nl, *u, 0, vin), "add_to_node(cmp.A) failed");           // A
+        require(::phy_engine::netlist::add_to_node(nl, *u, 1, *n_div[i + 1]), "add_to_node(cmp.B) failed");  // B
+        require(::phy_engine::netlist::add_to_node(nl, *u, 2, n_cmp), "add_to_node(cmp.o) failed");          // o
     }
 
     // Output nodes + probes (Logic Outputs in PL export).
@@ -194,13 +206,13 @@ adc_net build_adc(::phy_engine::netlist::netlist& nl,
 
         auto [outp, outp_pos] = ::phy_engine::netlist::add_model(nl, ::phy_engine::model::OUTPUT{});
         (void)outp_pos;
-        assert(outp != nullptr);
+        require(outp != nullptr, "add_model(OUTPUT probe) failed");
         outp->name = ::fast_io::u8string{u8"out["};
         append_u8_decimal(outp->name, i);
         append_u8(outp->name, u8"]");
         r.out_probes[i] = outp;
 
-        assert(::phy_engine::netlist::add_to_node(nl, *outp, 0, n_out));
+        require(::phy_engine::netlist::add_to_node(nl, *outp, 0, n_out), "add_to_node(OUTPUT) failed");
     }
 
     // Verilog: encode comparator thermometer bits to a 16-bit one-hot output.
@@ -232,31 +244,31 @@ endmodule
     {
         // Runtime VERILOG_MODULE model (for quick mixed-signal simulation sanity check).
         auto vm = ::phy_engine::model::make_verilog_module(verilog_src, u8"adc16_onehot");
-        assert(vm.design != nullptr && vm.top_instance.mod != nullptr);
+        require(vm.design != nullptr && vm.top_instance.mod != nullptr, "make_verilog_module failed");
 
         auto [m, mpos] = ::phy_engine::netlist::add_model(nl, ::std::move(vm));
         (void)mpos;
-        assert(m != nullptr);
+        require(m != nullptr, "add_model(VERILOG_MODULE) failed");
         m->name = ::fast_io::u8string{u8"adc16_onehot"};
 
         // Bind pins by port name (do not assume order).
         auto pv = m->ptr->generate_pin_view();
-        assert(pv.size == (kThresholds + kLevels));
+        require(pv.size == (kThresholds + kLevels), "unexpected pin count for adc16_onehot");
         for(std::size_t pi{}; pi < pv.size; ++pi)
         {
             auto const pn_u8 = pv.pins[pi].name;
             std::string const pn(reinterpret_cast<char const*>(pn_u8.data()), pn_u8.size());
             if(auto idx = parse_bit_index(pn, "cmp"); idx && *idx < kThresholds)
             {
-                assert(::phy_engine::netlist::add_to_node(nl, *m, pi, *r.cmp_nodes[*idx]));
+                require(::phy_engine::netlist::add_to_node(nl, *m, pi, *r.cmp_nodes[*idx]), "add_to_node(VERILOG_MODULE.cmp) failed");
                 continue;
             }
             if(auto idx = parse_bit_index(pn, "out"); idx && *idx < kLevels)
             {
-                assert(::phy_engine::netlist::add_to_node(nl, *m, pi, *r.out_nodes[*idx]));
+                require(::phy_engine::netlist::add_to_node(nl, *m, pi, *r.out_nodes[*idx]), "add_to_node(VERILOG_MODULE.out) failed");
                 continue;
             }
-            assert(false && "unexpected port name");
+            die("unexpected port name in VERILOG_MODULE pin view");
         }
     }
 
@@ -264,12 +276,12 @@ endmodule
     {
         // Compile + elaborate.
         auto cr = ::phy_engine::verilog::digital::compile(verilog_src);
-        assert(cr.errors.empty());
+        require(cr.errors.empty(), "verilog compile failed");
         auto design = ::phy_engine::verilog::digital::build_design(::std::move(cr));
         auto const* mod = ::phy_engine::verilog::digital::find_module(design, u8"adc16_onehot");
-        assert(mod != nullptr);
+        require(mod != nullptr, "find_module(adc16_onehot) failed");
         auto inst = ::phy_engine::verilog::digital::elaborate(design, *mod);
-        assert(inst.mod != nullptr);
+        require(inst.mod != nullptr, "elaborate(adc16_onehot) failed");
 
         // Provide the external port node list in module port order.
         std::vector<::phy_engine::model::node_t*> ports{};
@@ -287,16 +299,16 @@ endmodule
                 ports.push_back(r.out_nodes[*idx]);
                 continue;
             }
-            assert(false && "unexpected port name");
+            die("unexpected port name in synthesized module port list");
         }
-        assert(ports.size() == (kThresholds + kLevels));
+        require(ports.size() == (kThresholds + kLevels), "unexpected port vector size");
 
         ::phy_engine::verilog::digital::pe_synth_error err{};
         ::phy_engine::verilog::digital::pe_synth_options opt{
             .allow_inout = true,
             .allow_multi_driver = true,
         };
-        assert(::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, inst, ports, &err, opt));
+        require(::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, inst, ports, &err, opt), "synthesize_to_pe_netlist failed");
     }
 
     return r;
@@ -307,8 +319,8 @@ void set_vdc(::phy_engine::model::model_base& mb, double v)
     ::phy_engine::model::variant vi{};
     vi.d = v;
     vi.type = ::phy_engine::model::variant_type::d;
-    assert(mb.ptr != nullptr);
-    assert(mb.ptr->set_attribute(0, vi));
+    require(mb.ptr != nullptr, "set_vdc: null ptr");
+    require(mb.ptr->set_attribute(0, vi), "set_vdc: set_attribute(V) failed");
 }
 
 char dn_char(::phy_engine::model::digital_node_statement_t st) noexcept
@@ -357,16 +369,15 @@ bool check_onehot_outputs(adc_net const& adc, double vin, std::size_t expected_i
 int run_pe_sanity(bool use_verilog_module_runtime)
 {
     ::phy_engine::circult c{};
-    c.set_analyze_type(::phy_engine::analyze_type::TR);
-    c.get_analyze_setting().tr.t_step = 1e-9;
-    c.get_analyze_setting().tr.t_stop = 1e-9;
+    // DC is sufficient here: the analog ladder is static; digital updates are driven by digital_clk().
+    c.set_analyze_type(::phy_engine::analyze_type::DC);
     auto& nl = c.get_netlist();
 
     auto adc = build_adc(nl,
                          /*with_vin_source=*/true,
                          /*use_verilog_module_runtime=*/use_verilog_module_runtime,
                          /*use_verilog_synth=*/!use_verilog_module_runtime);
-    assert(adc.vin_src != nullptr);
+    require(adc.vin_src != nullptr, "vin_src missing");
 
     // Sweep a few representative points (including edges).
     std::vector<double> samples{

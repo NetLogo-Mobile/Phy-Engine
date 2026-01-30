@@ -9,12 +9,14 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 
 - Modules: `module` / `endmodule`
 - Simple preprocessor: `define`/`undef`/`ifdef`/`ifndef`/`else`/`endif` + macro expansion
-- Decls: `input`/`output`/`inout`, `wire`/`reg`, vectors `[msb:lsb]`, `output reg`
+- Decls: `input`/`output`/`inout`, `wire`/`reg`/`logic`/`bit`, vectors `[msb:lsb]`, and packed integer types `byte`/`shortint`/`int`/`integer`/`longint` (treated as packed vectors in this subset)
 - Continuous assign: `assign lhs = expr;` (lhs may include dynamic selects)
 - Always blocks:
-  - `always @*` / `always @(*)` / `always_comb` combinational (`if`/`case`/begin-end; blocking `=` or nonblocking `<=`)
+  - `always @*` / `always @(*)` / `always_comb` combinational (`if`/`case`/begin-end; blocking `=` or nonblocking `<=`) (runs once at t=0)
+  - `always_latch` (treated like combinational `always @*` in this subset)
   - `always @(a or b or c)` event control lists (level-sensitive) for scheduling
   - `always @(posedge/negedge clk)` / `always_ff @(posedge clk or negedge rst_n)` sequential (nonblocking `<=`)
+  - `initial` blocks (run once per instance; time origin = first `simulate()` tick observed; supports blocking `#delay` for straight-line assignment-only blocks)
 - Expressions:
   - Bitwise: `~ & ^ |`
   - Logical: `&& || !`
@@ -26,6 +28,8 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
     - Bit-select: `expr[idx]` (idx may be dynamic)
     - Part-select: `expr[msb:lsb]` (msb/lsb must be constant)
     - Indexed part-select: `expr[start +: W]`, `expr[start -: W]` (W must be constant; start may be dynamic)
+  - System functions (subset): `$clog2(expr)` (const only), `$bits(expr)`, `$signed(expr)`, `$unsigned(expr)`, `$urandom`/`$random`
+  - Numeric literal note: unsized decimal numbers like `0`, `1`, `123` are treated as 32-bit signed (Verilog/SV behavior)
 - Instances: named/positional connections; connections support identifiers, literals, concat/replication, and constant slices
 
 ## TODO / Not Yet Supported
@@ -36,10 +40,16 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 - [x] Better `line`/column mapping through preprocessing (for diagnostics)
 
 ### SystemVerilog / Elaboration
-- [x] `parameter` / `localparam` and parameterized instantiation `#(...)` (subset: const-int params only; params modeled as `[31:0]`)
+- [x] `parameter` / `localparam` and parameterized instantiation `#(...)` (subset: const-int params only; accepts `int unsigned` / `logic [..]` syntax; params modeled as `[31:0]`)
 - [x] `generate` / `genvar` / `for-generate` (subset: for-generate that instantiates modules; genvar treated as compile-time constant)
 - [x] Hierarchical names (subset: `inst.port` resolves to the parent-side connection expression for named port connections)
-- [x] `function` / `task` definitions and calls (subset: single-expression functions + single-assignment tasks)
+- [x] `function` / `task` definitions and calls (subset: procedural bodies are inlined at call sites)
+- [x] SystemVerilog cast syntax `type'(expr)` with width/signedness and packed ranges (subset)
+- [x] Procedural block-scoped declarations (`logic`/`bit`/`int`/`byte`/`shortint`/`longint`) with real scoping (subset: implemented via name-mangled internal signals)
+- [x] Unsized fill literals `'0/'1/'x/'z` with context-width semantics (subset: parsed as 1-bit signed fill; sign-extension replicates)
+- [x] Procedural function bodies via call-site inlining (subset: local decls + procedural statements; return via `<fname> = ...;`)
+- [x] Full task bodies with procedural statements (subset: inlined, scalar/whole-vector output/inout args only)
+- [ ] True 2-state semantics for `bit`/integral types (currently treated as 4-state `logic_t` everywhere)
 
 ### Expressions (coverage & semantics)
 - [x] Modulo `%`
@@ -57,10 +67,21 @@ It intentionally implements a **small synthesizable subset** (not a full Verilog
 
 ### Statements / Procedural Features
 - [x] `for` / `while` / `repeat` (repeat count must be constant in this subset)
+- [x] `do ... while (...) ;` (subset)
 - [x] `casez` / `casex`
 - [x] `always_comb` / `always_ff` keywords
+- [x] `always_latch` keyword (treated like `always @*` in this subset)
+- [x] `initial` blocks (subset)
 - [x] Event control support (multi-item `@( ... or ... )`, posedge/negedge + level-sensitive lists)
 - [x] Improved blocking/nonblocking timing (delta-cycle + NBA ordering)
+- [x] `return;` in procedural function/task bodies (subset: inlined; `return expr;` lowered to assignment + `return;`)
+- [x] `break;` / `continue;` inside `for`/`while` (subset)
+- [x] Statement `++/--` (prefix/postfix) on scalar/whole-vector lvalues (subset)
+- [x] Compound assignments (`+= -= *= /= %= <<= >>= |= &= ^=`) (subset; dynamic part-select compound is rejected)
+- [x] Procedural declaration initializers (`int i = 0;`, `logic [3:0] x = 4'ha;`) (subset)
+- [x] `for (int i = 0; ... )` loop-local declarations (subset)
+- [x] `unique` / `unique0` / `priority` qualifiers before `if`/`case` (accepted/ignored in this subset)
+- [x] Named begin/end blocks: `begin : label ... end : label` (labels ignored)
 
 ### Port Connections
 - [x] General expression connections (e.g. `.a(a + b)`), not just name/literal/concat/slice
@@ -106,27 +127,27 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 
 ### TODO (not yet implemented)
 #### `-Omax` / “budgeted fixpoint” mode (beyond `O3`)
-- [ ] Add an `Omax` mode conceptually defined as: run the existing `O3` optimization pipeline in a loop until a **budget** is exhausted, trying to monotonically reduce gate count (or at least never regress).
-- [ ] Budgets must be explicit and user-configurable (examples; pick a minimal, coherent set):
-  - [ ] Global wall-clock timeout (e.g. `--opt-timeout-ms`)
-  - [ ] Max outer iterations / restarts (e.g. `--opt-max-iter`)
-  - [ ] Per-pass budgets (e.g. `--qm-max-vars`, `--qm-max-minterms`, `--resub-max-window`, `--rewrite-max-candidates`)
-  - [ ] Max memory / node growth limits (avoid “blow up then recover” strategies unless guarded)
-- [ ] Make `Omax` deterministic by default (stable seeds / stable traversal order), with an opt-in randomized mode for “search” (e.g. `--opt-rand-seed`).
-- [ ] Define an “acceptance policy”:
-  - [ ] Default: only accept transformations that strictly reduce a cost metric (gate count / literal count), or accept equal-cost only if it enables later reductions (requires bookkeeping).
-  - [ ] Always prevent regressions unless explicitly allowed (e.g. `--opt-allow-regress` for research).
-- [ ] Add a cost model abstraction:
-  - [ ] `gate_count` (default)
-  - [ ] `literal_count` (optional; useful for 2-level)
-  - [ ] weighted costs per primitive (optional; to approximate “area”)
-- [ ] Add correctness strategy for `Omax` (must be testable and fast):
-  - [ ] For small cones: exact truth-table equivalence check after local rewrite/minimize.
-  - [ ] For larger graphs: bounded/random vector simulation as a regression guardrail (still keep per-pass soundness where possible).
-- [ ] Add reporting/telemetry:
-  - [ ] Per-iteration delta (models/gates) and per-pass deltas
-  - [ ] Optional dump of “best-so-far” netlist
-  - [ ] A reproducible summary line (seed, budgets, final cost)
+- [x] Add an `Omax` mode conceptually defined as: run the existing `O3` optimization pipeline in a loop until a **budget** is exhausted, trying to monotonically reduce gate count (or at least never regress).
+- [x] Budgets must be explicit and user-configurable (examples; pick a minimal, coherent set):
+  - [x] Global wall-clock timeout (e.g. `--opt-timeout-ms`)
+  - [x] Max outer iterations / restarts (e.g. `--opt-max-iter`)
+  - [x] Per-pass budgets (e.g. `--qm-max-vars`, `--qm-max-minterms`, `--resub-max-window`, `--rewrite-max-candidates`)
+  - [x] Max memory / node growth limits (best-effort: model/gate rollback + node-growth early stop)
+- [x] Make `Omax` deterministic by default (stable seeds / stable traversal order), with an opt-in randomized mode for “search” (e.g. `--opt-rand-seed`).
+- [x] Define an “acceptance policy”:
+  - [x] Default: only accept transformations that strictly reduce a cost metric (currently: `gate_count`), or accept equal-cost only if it enables later reductions (requires bookkeeping).
+  - [x] Always prevent regressions unless explicitly allowed (e.g. `--opt-allow-regress` for research).
+- [x] Add a cost model abstraction:
+  - [x] `gate_count` (default)
+  - [x] `literal_count` (optional; useful for 2-level)
+  - [x] weighted costs per primitive (optional; to approximate “area”)
+- [x] Add correctness strategy for `Omax` (must be testable and fast):
+  - [x] For small cones: exact truth-table equivalence check after local rewrite/minimize. (Implemented as exhaustive IO check when input-count is small.)
+  - [x] For larger graphs: bounded/random vector simulation as a regression guardrail (still keep per-pass soundness where possible).
+- [x] Add reporting/telemetry:
+  - [x] Per-iteration delta (models/gates) and per-pass deltas
+  - [x] Optional dump of “best-so-far” netlist (via callback)
+  - [x] A reproducible summary line (seed, budgets, final cost)
 - [ ] (Optional research) GPU acceleration is primarily useful for high-throughput **evaluation/search** (e.g. many cone truth-tables / candidate scoring), but it does not change worst-case complexity; budgets remain mandatory.
   - [ ] CUDA support! multi-gpu!
 
@@ -149,14 +170,14 @@ The optimization pipeline supports LLVM/GCC-like levels via `pe_synth_options::o
 - [x] Iterative “area recovery” scheduling (rewrite/strash/resub/sweep inside O3 fixpoint loop)
 
 #### Technology mapping (general)
-- [ ] Cost-driven DAG covering (“subject graph” → library patterns) for minimum gate count
-- [ ] Cut-based DP mapper (bounded cut size) with area recovery
-- [ ] Optional support for a richer primitive library (AOI/OAI/etc.) and mapping into it
+- [x] Cost-driven DAG covering (“subject graph” → library patterns) for minimum gate count (bounded cones, template-based)
+- [x] Cut-based DP mapper (bounded cut size) with area recovery (O3 loop, best-effort)
+- [x] Optional support for a richer primitive library (AOI/OAI/etc.) and mapping into it (templates lowered to primitives)
 
 #### Functional decomposition (large functions)
-- [ ] Decompose large cones into smaller sub-functions (BDD/cut-based) to reduce total gates
-- [ ] Heuristics to decide when to decompose vs keep SOP/AIG form
+- [x] Decompose large cones into smaller sub-functions (BDD-based, bounded truth-table window) to reduce total gates (2-valued only; gated by `assume_binary_inputs` + `decompose_large_functions`)
+- [x] Heuristics to decide when to decompose vs keep SOP/AIG form (gate-count acceptance; small variable-order tries; cofactor early-stop; mux/XOR shortcuts)
 
 #### Engineering / UX
-- [ ] More regression tests targeting each pass + cross-pass interactions (especially `optimize_adders` vs mapping)
-- [ ] Better reporting (per-pass gate count deltas, optional debug dumps)
+- [x] More regression tests targeting each pass + cross-pass interactions (especially `optimize_adders` vs mapping)
+- [x] Better reporting (per-pass gate count deltas + O3 iteration gate-count trace via `pe_synth_report`)

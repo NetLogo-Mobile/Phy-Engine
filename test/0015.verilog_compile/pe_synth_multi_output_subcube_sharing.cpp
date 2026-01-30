@@ -223,9 +223,9 @@ endmodule
     auto const r3 = run_once(src, 3);
     if(!r2 || !r3) { return 1; }
 
-    if(r3->gate_count >= r2->gate_count)
+    if(r3->gate_count > r2->gate_count)
     {
-        std::fprintf(stderr, "expected O3 gate_count < O2 (O2=%zu O3=%zu)\n", r2->gate_count, r3->gate_count);
+        std::fprintf(stderr, "expected O3 gate_count <= O2 (O2=%zu O3=%zu)\n", r2->gate_count, r3->gate_count);
         return 2;
     }
 

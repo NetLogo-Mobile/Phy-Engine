@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdio>
 
 #include <phy_engine/phy_engine.h>
 #include <phy_engine/verilog/digital/digital.h>
@@ -18,13 +19,10 @@ namespace
 int main()
 {
     // This Verilog subset does not support the `$isunknown()` system function,
-    // so use a user-defined function (supported subset syntax) to detect X/Z.
+    // so use case equality to detect X/Z.
     decltype(auto) src = u8R"(
 module top(input a, output y);
-  function isunknown(input x);
-    return (x === 1'bx) | (x === 1'bz);
-  endfunction
-  assign y = isunknown(a);
+  assign y = (a === 1'bx) | (a === 1'bz);
 endmodule
 )";
 
@@ -36,8 +34,13 @@ endmodule
 
     auto& nl = c.get_netlist();
 
-    auto cr = ::phy_engine::verilog::digital::compile(src);
-    if(!cr.errors.empty() || cr.modules.empty()) { return 1; }
+    auto cr = ::phy_engine::verilog::digital::compile(::fast_io::u8string_view{src, sizeof(src) - 1});
+    if(!cr.errors.empty() || cr.modules.empty())
+    {
+        auto msg = ::phy_engine::verilog::digital::format_compile_errors(cr, ::fast_io::u8string_view{src, sizeof(src) - 1});
+        std::fprintf(stderr, "%.*s\n", static_cast<int>(msg.size()), reinterpret_cast<char const*>(msg.data()));
+        return 1;
+    }
     auto design = ::phy_engine::verilog::digital::build_design(::std::move(cr));
     auto const* mod = ::phy_engine::verilog::digital::find_module(design, u8"top");
     if(mod == nullptr) { return 2; }
@@ -57,19 +60,31 @@ endmodule
     (void)p0;
     (void)p1;
     if(in_a == nullptr || out_y == nullptr) { return 4; }
+    // Mark as external IO so pe_synth doesn't treat it as a constant INPUT.
+    in_a->name = ::fast_io::u8string{u8"a"};
+    out_y->name = ::fast_io::u8string{u8"y"};
 
     if(!::phy_engine::netlist::add_to_node(nl, *in_a, 0, *ports[0])) { return 5; }
     if(!::phy_engine::netlist::add_to_node(nl, *out_y, 0, *ports[1])) { return 6; }
 
     ::phy_engine::verilog::digital::pe_synth_error err{};
-    if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, {.allow_inout = true, .allow_multi_driver = true})) { return 7; }
+    if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, top_inst, ports, &err, {.allow_inout = true, .allow_multi_driver = true}))
+    {
+        std::fprintf(stderr, "pe_synth failed: %.*s\n", static_cast<int>(err.message.size()), reinterpret_cast<char const*>(err.message.data()));
+        return 7;
+    }
 
     if(!c.analyze()) { return 8; }
 
     // a=Z => isunknown(a)=1
     (void)in_a->ptr->set_attribute(0, dv(::phy_engine::model::digital_node_statement_t::high_impedence_state));
     c.digital_clk();
-    if(ports[1]->node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state) { return 9; }
+    if(ports[1]->node_information.dn.state != ::phy_engine::model::digital_node_statement_t::true_state)
+    {
+        auto const s = ports[1]->node_information.dn.state;
+        std::fprintf(stderr, "expected y=1 for a=Z, got state=%u\n", static_cast<unsigned>(s));
+        return 9;
+    }
 
     return 0;
 }
