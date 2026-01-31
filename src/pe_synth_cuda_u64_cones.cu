@@ -252,10 +252,10 @@ namespace phy_engine::verilog::digital::details
 
         struct best_item
         {
-            std::int32_t score{};
-            std::uint32_t gain{};
-            std::uint32_t cost{};
-            std::uint32_t idx{};
+            std::int32_t score;
+            std::uint32_t gain;
+            std::uint32_t cost;
+            std::uint32_t idx;
         };
 
         __device__ __forceinline__ bool best_item_better(best_item const& a, best_item const& b) noexcept
