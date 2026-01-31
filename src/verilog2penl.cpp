@@ -91,6 +91,7 @@ namespace
                         "  --cuda-opt                                 Enable CUDA acceleration for some O3/O4/Omax passes (default: off)\n"
                         "  --cuda-device-mask MASK                    CUDA device bitmask (0 = all; e.g. 3 uses GPU0+GPU1)\n"
                         "  --cuda-min-batch N                         Minimum cone batch size before offloading (default: 1024)\n"
+                        "  --cuda-qm-no-host-cov                      QM greedy cover: keep cov matrix on GPU and fetch only selected rows (faster, may affect quality)\n"
                         "  --cuda-expand-windows                      (Optional) Under -Ocuda: increase some bounded windows (resub/sweep) for quality at higher runtime\n"
                         "  --cuda-trace                               Collect per-pass CUDA telemetry (printed in --report)\n"
                         "  --time                                    Print per-step wall time using fast_io::timer\n"
@@ -424,6 +425,7 @@ int main(int argc, char** argv)
         bool const cuda_opt = has_flag(argc, argv, "--cuda-opt") || ocuda;
         bool const cuda_expand_windows = has_flag(argc, argv, "--cuda-expand-windows");
         bool const cuda_trace = has_flag(argc, argv, "--cuda-trace");
+        bool const cuda_qm_no_host_cov = has_flag(argc, argv, "--cuda-qm-no-host-cov");
         bool const step_time = has_flag(argc, argv, "--time") || has_flag(argc, argv, "--timing");
         std::uint32_t cuda_device_mask = 0;
         if(auto s = arg_after(argc, argv, "--cuda-device-mask"))
@@ -691,6 +693,7 @@ int main(int argc, char** argv)
             opt.cuda_device_mask = cuda_device_mask;
             opt.cuda_min_batch = cuda_min_batch;
             opt.cuda_trace_enable = cuda_trace;
+            opt.cuda_qm_no_host_cov = cuda_qm_no_host_cov;
             if(ocuda)
             {
                 opt.decomp_var_order_tries = std::max<std::size_t>(opt.decomp_var_order_tries, 16u);
@@ -773,8 +776,12 @@ int main(int argc, char** argv)
                                         u8": ",
                                         ps.before,
                                         u8" -> ",
-                                        ps.after,
-                                        u8"\n");
+                                        ps.after);
+                    if(step_time)
+                    {
+                        ::fast_io::io::perr(::fast_io::u8err(), u8" (us=", ps.elapsed_us, u8")");
+                    }
+                    ::fast_io::io::perr(::fast_io::u8err(), u8"\n");
                 }
                 if(!rep.omax_best_cost.empty())
                 {

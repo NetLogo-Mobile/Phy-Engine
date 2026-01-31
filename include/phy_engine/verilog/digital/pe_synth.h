@@ -138,6 +138,7 @@ namespace phy_engine::verilog::digital
         ::std::uint32_t cuda_device_mask{0};        // bitmask of devices to use; 0 means "all available"
         ::std::size_t cuda_min_batch{1024};         // minimum number of cones/candidates before offloading (avoid launch overhead)
         bool cuda_trace_enable{false};              // collect per-pass CUDA telemetry into `pe_synth_report` (best-effort)
+        bool cuda_qm_no_host_cov{false};            // QM greedy cover: keep cov matrix on device, fetch only selected rows (reduces CPU & D2H)
         ::std::size_t decomp_var_order_tries{4};    // BDD decomposition: max variable-order variants to try (bounded, deterministic unless randomized)
         bool optimize_wires{false};                 // best-effort: remove synthesized YES buffers (net aliasing), keeps top-level port nodes intact
         bool optimize_mul2{false};                  // best-effort: replace 2-bit multiplier tiles with MUL2 models
@@ -191,6 +192,7 @@ namespace phy_engine::verilog::digital
         ::fast_io::u8string_view pass{};
         ::std::size_t before{};
         ::std::size_t after{};
+        ::std::size_t elapsed_us{};  // wall time spent inside the pass (best-effort)
     };
 
     struct pe_synth_report
@@ -1889,6 +1891,9 @@ namespace phy_engine::verilog::digital
                                                                        ::std::uint64_t const* rows,
                                                                        ::std::size_t row_count,
                                                                        ::std::uint32_t stride_words) noexcept;
+        extern "C" void* phy_engine_pe_synth_cuda_bitset_matrix_create_empty(::std::uint32_t device_mask,
+                                                                             ::std::size_t row_count,
+                                                                             ::std::uint32_t stride_words) noexcept;
         extern "C" void phy_engine_pe_synth_cuda_bitset_matrix_destroy(void* handle) noexcept;
         extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_row_and_popcount(void* handle,
                                                                                 ::std::uint64_t const* mask,
@@ -1898,6 +1903,38 @@ namespace phy_engine::verilog::digital
                                                                            ::std::uint64_t const* mask,
                                                                            ::std::uint32_t mask_words,
                                                                            ::std::uint8_t* out_any) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_set_row_cost_u32(void* handle,
+                                                                                ::std::uint32_t const* costs,
+                                                                                ::std::size_t cost_count) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_disable_row(void* handle, ::std::size_t row_idx) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_best_row(void* handle,
+                                                                        ::std::uint64_t const* mask,
+                                                                        ::std::uint32_t mask_words,
+                                                                        ::std::uint32_t* out_best_row,
+                                                                        ::std::uint32_t* out_best_gain,
+                                                                        ::std::int32_t* out_best_score) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_set_mask(void* handle,
+                                                                        ::std::uint64_t const* mask,
+                                                                        ::std::uint32_t mask_words) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_get_mask(void* handle,
+                                                                        ::std::uint32_t mask_words,
+                                                                        ::std::uint64_t* out_mask) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_best_row_resident_mask(void* handle,
+                                                                                      ::std::uint32_t* out_best_row,
+                                                                                      ::std::uint32_t* out_best_gain,
+                                                                                      ::std::int32_t* out_best_score) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_mask_andnot_row(void* handle, ::std::size_t row_idx) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_get_row(void* handle,
+                                                                       ::std::size_t row_idx,
+                                                                       ::std::uint32_t row_words,
+                                                                       ::std::uint64_t* out_row) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_fill_qm_cov(void* handle,
+                                                                           cuda_cube_desc const* cubes,
+                                                                           ::std::size_t cube_count,
+                                                                           ::std::uint16_t const* on_minterms,
+                                                                           ::std::size_t on_count,
+                                                                           ::std::uint32_t var_count,
+                                                                           ::std::uint64_t* out_rows_host) noexcept;
 
         extern "C" bool phy_engine_pe_synth_cuda_espresso_cube_hits_off(::std::uint32_t device_mask,
                                                                         cuda_cube_desc const* cubes,
@@ -1916,6 +1953,12 @@ namespace phy_engine::verilog::digital
         extern "C" void phy_engine_pe_synth_cuda_espresso_off_destroy(void* handle) noexcept;
         extern "C" bool
             phy_engine_pe_synth_cuda_espresso_off_hits(void* handle, cuda_cube_desc const* cubes, ::std::size_t cube_count, ::std::uint8_t* out_hits) noexcept;
+        extern "C" bool phy_engine_pe_synth_cuda_espresso_off_expand_best(void* handle,
+                                                                          cuda_cube_desc* cubes,
+                                                                          ::std::size_t cube_count,
+                                                                          ::std::uint8_t const* cand_vars,
+                                                                          ::std::uint32_t cand_vars_count,
+                                                                          ::std::uint32_t max_rounds) noexcept;
 #endif
 
         [[nodiscard]] inline bool
@@ -2040,6 +2083,255 @@ namespace phy_engine::verilog::digital
             cuda_trace_add(u8"bitset_create", row_count, static_cast<std::size_t>(stride_words) * row_count, 0u, 0u, 0u, false, u8"not_built");
 #endif
             return r;
+        }
+
+        [[nodiscard]] inline cuda_bitset_matrix_raii
+            cuda_bitset_matrix_create_empty(::std::uint32_t device_mask, ::std::size_t row_count, ::std::uint32_t stride_words) noexcept
+        {
+            cuda_bitset_matrix_raii r{};
+            r.row_count = static_cast<::std::uint32_t>(row_count > 0xFFFFFFFFull ? 0u : row_count);
+            r.stride_words = stride_words;
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(row_count == 0u || stride_words == 0u) { return r; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            r.handle = phy_engine_pe_synth_cuda_bitset_matrix_create_empty(device_mask, row_count, stride_words);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_create_empty",
+                           row_count,
+                           static_cast<std::size_t>(stride_words) * row_count,
+                           0u,
+                           0u,
+                           us,
+                           r.handle != nullptr);
+#else
+            (void)device_mask;
+            (void)row_count;
+            (void)stride_words;
+            cuda_trace_add(u8"bitset_create_empty", row_count, static_cast<std::size_t>(stride_words) * row_count, 0u, 0u, 0u, false, u8"not_built");
+#endif
+            return r;
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_fill_qm_cov(cuda_bitset_matrix_raii const& m,
+                                                                 cuda_cube_desc const* cubes,
+                                                                 ::std::size_t cube_count,
+                                                                 ::std::uint16_t const* on_minterms,
+                                                                 ::std::size_t on_count,
+                                                                 ::std::uint32_t var_count,
+                                                                 ::std::uint64_t* out_rows_host) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || cubes == nullptr || cube_count == 0u || on_minterms == nullptr || on_count == 0u || var_count == 0u || var_count > 16u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_fill_qm_cov(m.handle, cubes, cube_count, on_minterms, on_count, var_count, out_rows_host);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_fill_qm_cov",
+                           cube_count,
+                           m.stride_words,
+                           cube_count * sizeof(cuda_cube_desc) + on_count * sizeof(::std::uint16_t),
+                           (out_rows_host != nullptr) ? (cube_count * static_cast<std::size_t>(m.stride_words) * sizeof(::std::uint64_t)) : 0u,
+                           us,
+                           ok);
+            return ok;
+#else
+            (void)m;
+            (void)cubes;
+            (void)cube_count;
+            (void)on_minterms;
+            (void)on_count;
+            (void)var_count;
+            (void)out_rows_host;
+            cuda_trace_add(u8"bitset_fill_qm_cov", cube_count, m.stride_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_set_row_cost_u32(cuda_bitset_matrix_raii const& m,
+                                                                      ::std::uint32_t const* costs,
+                                                                      ::std::size_t cost_count) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || costs == nullptr || cost_count == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_set_row_cost_u32(m.handle, costs, cost_count);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_set_cost", cost_count, 0u, cost_count * sizeof(::std::uint32_t), 0u, us, ok);
+            return ok;
+#else
+            (void)m;
+            (void)costs;
+            (void)cost_count;
+            cuda_trace_add(u8"bitset_set_cost", cost_count, 0u, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_disable_row(cuda_bitset_matrix_raii const& m, ::std::size_t row_idx) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_disable_row(m.handle, row_idx);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_disable_row", 1u, 0u, sizeof(::std::uint8_t), 0u, us, ok);
+            return ok;
+#else
+            (void)m;
+            (void)row_idx;
+            cuda_trace_add(u8"bitset_disable_row", 1u, 0u, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_best_row(cuda_bitset_matrix_raii const& m,
+                                                              ::std::uint64_t const* mask,
+                                                              ::std::uint32_t mask_words,
+                                                              ::std::uint32_t& out_best_row,
+                                                              ::std::uint32_t& out_best_gain,
+                                                              ::std::int32_t& out_best_score) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || mask == nullptr || mask_words == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_best_row(m.handle, mask, mask_words, &out_best_row, &out_best_gain, &out_best_score);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_best_row",
+                           m.row_count,
+                           mask_words,
+                           static_cast<std::size_t>(mask_words) * sizeof(::std::uint64_t),
+                           sizeof(::std::uint32_t) * 2u + sizeof(::std::int32_t),
+                           us,
+                           ok);
+            return ok;
+#else
+            (void)m;
+            (void)mask;
+            (void)mask_words;
+            (void)out_best_row;
+            (void)out_best_gain;
+            (void)out_best_score;
+            cuda_trace_add(u8"bitset_best_row", m.row_count, mask_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_set_mask(cuda_bitset_matrix_raii const& m, ::std::uint64_t const* mask, ::std::uint32_t mask_words) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || mask == nullptr || mask_words == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_set_mask(m.handle, mask, mask_words);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_set_mask",
+                           m.row_count,
+                           mask_words,
+                           static_cast<std::size_t>(mask_words) * sizeof(::std::uint64_t),
+                           0u,
+                           us,
+                           ok);
+            return ok;
+#else
+            (void)m;
+            (void)mask;
+            (void)mask_words;
+            cuda_trace_add(u8"bitset_set_mask", m.row_count, mask_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_get_mask(cuda_bitset_matrix_raii const& m, ::std::uint64_t* out_mask, ::std::uint32_t mask_words) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || out_mask == nullptr || mask_words == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_get_mask(m.handle, mask_words, out_mask);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_get_mask",
+                           m.row_count,
+                           mask_words,
+                           0u,
+                           static_cast<std::size_t>(mask_words) * sizeof(::std::uint64_t),
+                           us,
+                           ok);
+            return ok;
+#else
+            (void)m;
+            (void)out_mask;
+            (void)mask_words;
+            cuda_trace_add(u8"bitset_get_mask", m.row_count, mask_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_best_row_resident_mask(cuda_bitset_matrix_raii const& m,
+                                                                            ::std::uint32_t& out_best_row,
+                                                                            ::std::uint32_t& out_best_gain,
+                                                                            ::std::int32_t& out_best_score) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_best_row_resident_mask(m.handle, &out_best_row, &out_best_gain, &out_best_score);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_best_row_resident", m.row_count, m.stride_words, 0u, sizeof(::std::uint32_t) * 2u + sizeof(::std::int32_t), us, ok);
+            return ok;
+#else
+            (void)m;
+            (void)out_best_row;
+            (void)out_best_gain;
+            (void)out_best_score;
+            cuda_trace_add(u8"bitset_best_row_resident", m.row_count, m.stride_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_mask_andnot_row(cuda_bitset_matrix_raii const& m, ::std::size_t row_idx) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_mask_andnot_row(m.handle, row_idx);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_mask_andnot_row", 1u, m.stride_words, 0u, 0u, us, ok);
+            return ok;
+#else
+            (void)m;
+            (void)row_idx;
+            cuda_trace_add(u8"bitset_mask_andnot_row", 1u, m.stride_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_bitset_matrix_get_row(cuda_bitset_matrix_raii const& m,
+                                                             ::std::size_t row_idx,
+                                                             ::std::uint64_t* out_row,
+                                                             ::std::uint32_t row_words) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(m.handle == nullptr || out_row == nullptr || row_words == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_bitset_matrix_get_row(m.handle, row_idx, row_words, out_row);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            cuda_trace_add(u8"bitset_get_row", 1u, row_words, 0u, static_cast<std::size_t>(row_words) * sizeof(::std::uint64_t), us, ok);
+            return ok;
+#else
+            (void)m;
+            (void)row_idx;
+            (void)out_row;
+            (void)row_words;
+            cuda_trace_add(u8"bitset_get_row", 1u, row_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
         }
 
         [[nodiscard]] inline bool cuda_bitset_matrix_row_and_popcount(cuda_bitset_matrix_raii const& m,
@@ -2215,6 +2507,40 @@ namespace phy_engine::verilog::digital
             (void)cube_count;
             (void)out_hits;
             cuda_trace_add(u8"espresso_hits_off", cube_count, off.off_words, 0u, 0u, 0u, false, u8"not_built");
+            return false;
+#endif
+        }
+
+        [[nodiscard]] inline bool cuda_espresso_off_expand_best(cuda_espresso_off_raii const& off,
+                                                                cuda_cube_desc* cubes,
+                                                                ::std::size_t cube_count,
+                                                                ::std::uint8_t const* cand_vars,
+                                                                ::std::uint32_t cand_vars_count,
+                                                                ::std::uint32_t max_rounds) noexcept
+        {
+#if defined(PHY_ENGINE_ENABLE_CUDA_PE_SYNTH)
+            if(off.handle == nullptr || cubes == nullptr || cube_count == 0u || cand_vars == nullptr || cand_vars_count == 0u || max_rounds == 0u) { return false; }
+            auto const t0 = ::std::chrono::steady_clock::now();
+            bool const ok = phy_engine_pe_synth_cuda_espresso_off_expand_best(off.handle, cubes, cube_count, cand_vars, cand_vars_count, max_rounds);
+            auto const us =
+                static_cast<std::size_t>(::std::chrono::duration_cast<::std::chrono::microseconds>(::std::chrono::steady_clock::now() - t0).count());
+            // OFF-set already resident; transfer cubes in+out and the small var list.
+            cuda_trace_add(u8"espresso_expand_best",
+                           cube_count,
+                           off.off_words,
+                           cube_count * sizeof(cuda_cube_desc) + static_cast<std::size_t>(cand_vars_count) * sizeof(::std::uint8_t),
+                           cube_count * sizeof(cuda_cube_desc),
+                           us,
+                           ok);
+            return ok;
+#else
+            (void)off;
+            (void)cubes;
+            (void)cube_count;
+            (void)cand_vars;
+            (void)cand_vars_count;
+            (void)max_rounds;
+            cuda_trace_add(u8"espresso_expand_best", cube_count, off.off_words, 0u, 0u, 0u, false, u8"not_built");
             return false;
 #endif
         }
@@ -6509,6 +6835,60 @@ namespace phy_engine::verilog::digital
                 best_choice.reserve(c.topo.size() * 2u);
                 best_cost.reserve(c.topo.size() * 2u);
 
+                // Precompute u64 truth-table masks for all candidate cuts in this cone.
+                // This turns tens-of-thousands of tiny eval calls into a few large batches, greatly reducing CPU driver overhead.
+                struct mask_task_pre
+                {
+                    cuda_u64_cone_desc cone{};
+                    ::std::uint64_t mask{};
+                    ::std::vector<::phy_engine::model::node_t*> const* leaves{};
+                    bool ok{};
+                };
+
+                ::std::vector<mask_task_pre> mask_tasks{};
+                mask_tasks.reserve(c.topo.size() * max_cuts);
+                ::std::unordered_map<::phy_engine::model::node_t*, ::std::vector<std::size_t>> mask_task_ids{};
+                mask_task_ids.reserve(c.topo.size() * 2u);
+
+                for(auto* n: c.topo)
+                {
+                    auto itc = cuts.find(n);
+                    if(itc == cuts.end()) { continue; }
+                    for(auto const& ct: itc->second)
+                    {
+                        if(ct.leaves.size() == 1u && ct.leaves[0] == n) { continue; }  // unit cut
+                        cuda_u64_cone_desc cone{};
+                        if(!build_u64_mask_cone(n, ct.leaves, cone)) { continue; }
+                        mask_tasks.push_back(mask_task_pre{.cone = cone, .mask = 0ull, .leaves = __builtin_addressof(ct.leaves), .ok = true});
+                        mask_task_ids[n].push_back(mask_tasks.size() - 1u);
+                    }
+                }
+
+                if(!mask_tasks.empty())
+                {
+                    ::std::vector<cuda_u64_cone_desc> cones{};
+                    cones.reserve(mask_tasks.size());
+                    for(auto const& t: mask_tasks) { cones.push_back(t.cone); }
+
+                    ::std::vector<::std::uint64_t> masks{};
+                    masks.resize(cones.size());
+
+                    bool used_cuda{};
+                    if(!opt.cuda_enable) { cuda_trace_add(u8"u64_eval", cones.size(), 0u, 0u, 0u, 0u, false, u8"disabled"); }
+                    else
+                    {
+                        auto const min_batch = ::std::min<std::size_t>(opt.cuda_min_batch, 256u);
+                        if(cones.size() < min_batch) { cuda_trace_add(u8"u64_eval", cones.size(), 0u, 0u, 0u, 0u, false, u8"small_batch"); }
+                        else if(cuda_eval_u64_cones(opt.cuda_device_mask, cones.data(), cones.size(), masks.data())) { used_cuda = true; }
+                    }
+
+                    if(!used_cuda)
+                    {
+                        for(std::size_t i{}; i < cones.size(); ++i) { masks[i] = eval_u64_cone_cpu(cones[i]); }
+                    }
+                    for(std::size_t i{}; i < mask_tasks.size() && i < masks.size(); ++i) { mask_tasks[i].mask = masks[i]; }
+                }
+
                 bool ok{true};
                 for(auto* n: c.topo)
                 {
@@ -6521,24 +6901,23 @@ namespace phy_engine::verilog::digital
                     std::size_t best{static_cast<std::size_t>(-1)};
                     choice bestc{};
 
-                    struct mask_task
+                    auto itids = mask_task_ids.find(n);
+                    if(itids == mask_task_ids.end() || itids->second.empty())
                     {
-                        cuda_u64_cone_desc cone{};
-                        ::std::uint64_t mask{};
-                        ::std::vector<::phy_engine::model::node_t*> const* leaves{};
-                        std::size_t leaf_cost{};
-                        bool ok{};
-                    };
+                        ok = false;
+                        break;
+                    }
 
-                    ::std::vector<mask_task> tasks{};
-                    tasks.reserve(itc->second.size());
-
-                    for(auto const& ct: itc->second)
+                    for(auto const tid: itids->second)
                     {
-                        if(ct.leaves.size() == 1u && ct.leaves[0] == n) { continue; }  // unit cut only for parent enumeration
+                        if(tid >= mask_tasks.size()) { continue; }
+                        auto const& t = mask_tasks[tid];
+                        if(!t.ok || t.leaves == nullptr) { continue; }
+                        auto const nleaves = t.leaves->size();
+                        if(nleaves == 0u || nleaves > 4u) { continue; }
 
                         std::size_t leaf_cost{};
-                        for(auto* leaf: ct.leaves)
+                        for(auto* leaf: *t.leaves)
                         {
                             if(c.internal.contains(leaf))
                             {
@@ -6553,62 +6932,11 @@ namespace phy_engine::verilog::digital
                         }
                         if(leaf_cost == static_cast<std::size_t>(-1)) { continue; }
 
-                        cuda_u64_cone_desc cone{};
-                        if(!build_u64_mask_cone(n, ct.leaves, cone)) { continue; }
-                        tasks.push_back(mask_task{.cone = cone, .mask = 0ull, .leaves = __builtin_addressof(ct.leaves), .leaf_cost = leaf_cost, .ok = true});
-                    }
-
-                    if(tasks.empty())
-                    {
-                        ok = false;
-                        break;
-                    }
-
-                    // Evaluate masks (CUDA best-effort, batched).
-                    bool used_cuda{};
-                    if(!opt.cuda_enable) { cuda_trace_add(u8"u64_eval", tasks.size(), 0u, 0u, 0u, 0u, false, u8"disabled"); }
-                    else if(tasks.size() < opt.cuda_min_batch) { cuda_trace_add(u8"u64_eval", tasks.size(), 0u, 0u, 0u, 0u, false, u8"small_batch"); }
-                    if(opt.cuda_enable && tasks.size() >= opt.cuda_min_batch)
-                    {
-                        ::std::vector<cuda_u64_cone_desc> cones{};
-                        cones.reserve(tasks.size());
-                        for(auto const& t: tasks)
-                        {
-                            if(!t.ok) { continue; }
-                            cones.push_back(t.cone);
-                        }
-                        ::std::vector<::std::uint64_t> masks{};
-                        masks.resize(cones.size());
-                        if(!cones.empty() && cuda_eval_u64_cones(opt.cuda_device_mask, cones.data(), cones.size(), masks.data()))
-                        {
-                            used_cuda = true;
-                            std::size_t mi{};
-                            for(auto& t: tasks)
-                            {
-                                if(!t.ok) { continue; }
-                                t.mask = masks[mi++];
-                            }
-                        }
-                    }
-                    if(!used_cuda)
-                    {
-                        for(auto& t: tasks)
-                        {
-                            if(!t.ok) { continue; }
-                            t.mask = eval_u64_cone_cpu(t.cone);
-                        }
-                    }
-
-                    for(auto const& t: tasks)
-                    {
-                        if(!t.ok || t.leaves == nullptr) { continue; }
-                        auto const nleaves = t.leaves->size();
-                        if(nleaves == 0u || nleaves > 4u) { continue; }
                         auto const U = static_cast<std::size_t>(1u << nleaves);
                         auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
                         auto const mask = t.mask & all_mask;
 
-                        auto match = match_best(mask, *t.leaves, t.leaf_cost);
+                        auto match = match_best(mask, *t.leaves, leaf_cost);
                         if(!match) { continue; }
                         auto const& cand_choice = match->first;
                         auto const cand_cost = match->second;
@@ -10500,47 +10828,41 @@ namespace phy_engine::verilog::digital
                 for(std::size_t v{}; v < var_count; ++v) { var_order.push_back(v); }
             }
 
-            ::std::vector<bool> is_on{};
-            ::std::vector<bool> is_dc{};
-            is_on.assign(U, false);
-            is_dc.assign(U, false);
-            for(auto const m: on)
-            {
-                if(static_cast<std::size_t>(m) < U) { is_on[static_cast<std::size_t>(m)] = true; }
-            }
-            for(auto const m: dc)
-            {
-                if(static_cast<std::size_t>(m) < U) { is_dc[static_cast<std::size_t>(m)] = true; }
-            }
-
             // Initial cover: one cube per ON minterm.
             ::std::vector<qm_implicant> cover{};
             cover.reserve(on.size());
             for(auto const m: on) { cover.push_back(qm_implicant{m, 0u, false}); }
 
-            // Precompute OFF-set as a u64 bitset over the full universe to make hits-OFF checks fast and batchable.
             auto const blocksU = (U + 63u) / 64u;
+            // Build ON/DC/OFF sets as u64 bitsets over the full universe.
+            // This avoids per-cone O(U) loops with vector<bool> and makes hits-OFF checks fast and batchable.
             ::std::vector<::std::uint64_t> off_bits{};
-            off_bits.assign(blocksU, 0ull);
-            for(std::size_t m{}; m < U; ++m)
+            ::std::vector<::std::uint64_t> on_bits{};
+            ::std::vector<::std::uint64_t> dc_bits{};
+            on_bits.assign(blocksU, 0ull);
+            dc_bits.assign(blocksU, 0ull);
+            off_bits.assign(blocksU, ~0ull);
+            for(auto const m: on)
             {
-                if(is_on[m] || is_dc[m]) { continue; }
-                off_bits[m / 64u] |= (1ull << (m % 64u));
+                auto const mi = static_cast<std::size_t>(m);
+                if(mi >= U) { continue; }
+                on_bits[mi / 64u] |= (1ull << (mi % 64u));
+                off_bits[mi / 64u] &= ~(1ull << (mi % 64u));
+            }
+            for(auto const m: dc)
+            {
+                auto const mi = static_cast<std::size_t>(m);
+                if(mi >= U) { continue; }
+                dc_bits[mi / 64u] |= (1ull << (mi % 64u));
+                off_bits[mi / 64u] &= ~(1ull << (mi % 64u));
             }
             if(U % 64u)
             {
                 auto const rem = U % 64u;
                 auto const mask = (rem == 64u) ? ~0ull : ((1ull << rem) - 1ull);
                 off_bits.back() &= mask;
-            }
-
-            ::std::vector<::std::uint64_t> on_bits{};
-            on_bits.assign(blocksU, 0ull);
-            for(auto const m: on)
-            {
-                auto const mi = static_cast<std::size_t>(m);
-                if(mi >= U) { continue; }
-                on_bits[mi / 64u] |= (1ull << (mi % 64u));
+                on_bits.back() &= mask;
+                dc_bits.back() &= mask;
             }
 
             auto cube_cover_word = [&](qm_implicant const& c, std::uint32_t word_idx) noexcept -> std::uint64_t
@@ -10593,6 +10915,35 @@ namespace phy_engine::verilog::digital
                     if((covw & off_bits[w]) != 0ull) { return true; }
                 }
                 return false;
+            };
+
+            auto cover_hits_off_fast = [&](::std::vector<qm_implicant> const& cov) noexcept -> bool
+            {
+                for(auto const& c: cov)
+                {
+                    if(cube_hits_off_fast(c)) { return true; }
+                }
+                return false;
+            };
+
+            auto cover_covers_all_on_fast = [&](::std::vector<qm_implicant> const& cov) noexcept -> bool
+            {
+                if(on.empty()) { return true; }
+                if(blocksU == 0u) { return false; }
+                ::std::vector<::std::uint64_t> acc{};
+                acc.assign(blocksU, 0ull);
+                for(auto const& c: cov)
+                {
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
+                    {
+                        acc[w] |= (cube_cover_word(c, w) & on_bits[w]);
+                    }
+                }
+                for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
+                {
+                    if(acc[w] != on_bits[w]) { return false; }
+                }
+                return true;
             };
 
             // Optional: keep OFF-set resident on GPU across the Espresso loop to avoid re-uploading it for each query.
@@ -10685,8 +11036,48 @@ namespace phy_engine::verilog::digital
                 // Here we generate a larger pool per round (single- and double-literal relaxations),
                 // query hits-off in one batched call, then apply the best safe candidate per cube.
                 bool any{};
-                constexpr std::size_t max_rounds = 3;
-                auto const var_limit = ::std::min<std::size_t>(var_order.size(), 12u);
+                // When using the GPU expand-best kernel, extra rounds are cheap (no host-side candidate generation)
+                // and help both utilization and (sometimes) cover quality.
+                auto const max_rounds = static_cast<::std::uint32_t>((opt.cuda_enable && use_off_gpu) ? 8u : 3u);
+                auto const var_limit_cpu = ::std::min<std::size_t>(var_order.size(), 12u);
+                // For the GPU expand-best kernel we do deeper per-cube search; cap vars to keep worst-case combos bounded.
+                auto const var_limit_gpu = ::std::min<std::size_t>(var_order.size(), 12u);
+
+                // Fast path: keep both OFF-set and the cover cubes on GPU for the whole expand step.
+                // This avoids uploading O(cover * candidates) cube descriptors and significantly reduces CPU involvement.
+                if(opt.cuda_enable && use_off_gpu && (cover.size() * blocksU) >= opt.cuda_min_batch)
+                {
+                    ::std::vector<cuda_cube_desc> desc{};
+                    desc.resize(cover.size());
+                    for(std::size_t i{}; i < cover.size(); ++i)
+                    {
+                        desc[i].value = cover[i].value;
+                        desc[i].mask = cover[i].mask;
+                    }
+                    ::std::vector<std::uint8_t> vars{};
+                    vars.reserve(var_limit_gpu);
+                    for(std::size_t i{}; i < var_limit_gpu; ++i) { vars.push_back(static_cast<std::uint8_t>(var_order[i])); }
+
+                    bool const ok = cuda_espresso_off_expand_best(off_gpu,
+                                                                  desc.data(),
+                                                                  desc.size(),
+                                                                  vars.data(),
+                                                                  static_cast<::std::uint32_t>(vars.size()),
+                                                                  max_rounds);
+                    if(ok)
+                    {
+                        for(std::size_t i{}; i < cover.size(); ++i)
+                        {
+                            if(cover[i].mask != desc[i].mask || cover[i].value != desc[i].value)
+                            {
+                                cover[i].mask = desc[i].mask;
+                                cover[i].value = desc[i].value;
+                                any = true;
+                            }
+                        }
+                        return any;
+                    }
+                }
 
                 struct cand_meta
                 {
@@ -10698,21 +11089,21 @@ namespace phy_engine::verilog::digital
                 ::std::vector<qm_implicant> cands{};
                 ::std::vector<std::uint8_t> hits{};
 
-                for(std::size_t round{}; round < max_rounds; ++round)
+                for(std::size_t round{}; round < static_cast<std::size_t>(max_rounds); ++round)
                 {
                     meta.clear();
                     cands.clear();
 
                     // Conservative reserve; still bounded.
-                    meta.reserve(cover.size() * (var_limit + (var_limit * (var_limit - 1u)) / 2u));
-                    cands.reserve(cover.size() * (var_limit + (var_limit * (var_limit - 1u)) / 2u));
+                    meta.reserve(cover.size() * (var_limit_cpu + (var_limit_cpu * (var_limit_cpu - 1u)) / 2u));
+                    cands.reserve(cover.size() * (var_limit_cpu + (var_limit_cpu * (var_limit_cpu - 1u)) / 2u));
 
                     for(std::size_t ci{}; ci < cover.size(); ++ci)
                     {
                         auto const& c0 = cover[ci];
                         ::std::vector<::std::uint16_t> bits{};
-                        bits.reserve(var_limit);
-                        for(std::size_t oi{}; oi < var_limit; ++oi)
+                        bits.reserve(var_limit_cpu);
+                        for(std::size_t oi{}; oi < var_limit_cpu; ++oi)
                         {
                             auto const v = var_order[oi];
                             auto const bit = static_cast<::std::uint16_t>(1u << v);
@@ -10787,57 +11178,96 @@ namespace phy_engine::verilog::digital
             auto irredundant = [&]() noexcept -> bool
             {
                 if(cover.empty()) { return false; }
-                ::std::vector<::std::uint16_t> cnt{};
-                cnt.assign(U, 0u);
+                // Exact irredundant check using bitsets over ON-set:
+                // A cube is redundant iff all ON-minterms it covers are also covered by (OR of) other cubes.
+                //
+                // This avoids O(|cover|*|on|) per-iteration scanning and keeps the hot path in word-wise ops.
+                if(blocksU == 0u) { return false; }
 
-                for(auto const& c: cover)
+                auto cov_row = [&](qm_implicant const& c, std::uint32_t word_idx) noexcept -> std::uint64_t
                 {
-                    for(auto const m: on)
+                    return cube_cover_word(c, word_idx) & on_bits[word_idx];
+                };
+
+                auto const n = cover.size();
+                ::std::vector<::std::uint64_t> suffix_or{};
+                suffix_or.assign((n + 1u) * blocksU, 0ull);
+
+                auto row_ptr = [&](std::vector<std::uint64_t>& v, std::size_t i) noexcept -> std::uint64_t*
+                { return v.data() + i * blocksU; };
+                auto row_ptrc = [&](std::vector<std::uint64_t> const& v, std::size_t i) noexcept -> std::uint64_t const*
+                { return v.data() + i * blocksU; };
+
+                // suffix_or[i] = OR of rows i..n-1
+                for(std::size_t i = n; i-- > 0u;)
+                {
+                    auto* dst = row_ptr(suffix_or, i);
+                    auto const* nxt = row_ptrc(suffix_or, i + 1u);
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
                     {
-                        if(implicant_covers(c, m))
-                        {
-                            auto& x = cnt[static_cast<std::size_t>(m)];
-                            if(x != ::std::numeric_limits<::std::uint16_t>::max()) { ++x; }
-                        }
+                        dst[w] = nxt[w] | cov_row(cover[i], w);
                     }
                 }
+
+                ::std::vector<std::uint64_t> prefix{};
+                prefix.assign(blocksU, 0ull);
 
                 bool changed{};
                 for(std::size_t i{}; i < cover.size();)
                 {
                     auto const c = cover[i];
+                    auto const* suf = row_ptrc(suffix_or, i + 1u);
+
                     bool redundant{true};
                     bool covers_any{};
-                    for(auto const m: on)
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
                     {
-                        if(!implicant_covers(c, m)) { continue; }
-                        covers_any = true;
-                        if(cnt[static_cast<std::size_t>(m)] <= 1u)
+                        auto const covw = cov_row(c, w);
+                        if(covw) { covers_any = true; }
+                        auto const or_others = prefix[w] | suf[w];
+                        if((covw & ~or_others) != 0ull)
                         {
                             redundant = false;
                             break;
                         }
                     }
-
                     if(!covers_any) { redundant = true; }
 
                     if(!redundant)
                     {
+                        // Update prefix |= cov_row(c)
+                        for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w) { prefix[w] |= cov_row(c, w); }
                         ++i;
                         continue;
                     }
 
-                    // Remove cube and update counts.
-                    for(auto const m: on)
-                    {
-                        if(!implicant_covers(c, m)) { continue; }
-                        auto& x = cnt[static_cast<std::size_t>(m)];
-                        if(x) { --x; }
-                    }
+                    // Remove redundant cube (swap-pop). Note: suffix_or was computed for the original order.
+                    // This is still safe for correctness of the current cube removal because:
+                    // - We only use suffix_or[i+1] which corresponds to OR of original tail; after swap, we may miss
+                    //   some coverage contributions of the swapped-in element if it came from earlier in the original list.
+                    // To keep it exact, we do a cheap rebuild of suffix_or when we remove anything.
                     cover[i] = cover.back();
                     cover.pop_back();
                     changed = true;
+
+                    // Rebuild suffix_or and restart with a clean prefix (still O(n*blocksU), but far cheaper than O(n*|on|)).
+                    {
+                        auto const n2 = cover.size();
+                        suffix_or.assign((n2 + 1u) * blocksU, 0ull);
+                        for(std::size_t k = n2; k-- > 0u;)
+                        {
+                            auto* dst = row_ptr(suffix_or, k);
+                            auto const* nxt = row_ptrc(suffix_or, k + 1u);
+                            for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
+                            {
+                                dst[w] = nxt[w] | cov_row(cover[k], w);
+                            }
+                        }
+                        prefix.assign(blocksU, 0ull);
+                        i = 0u;
+                    }
                 }
+
                 return changed;
             };
 
@@ -10859,94 +11289,109 @@ namespace phy_engine::verilog::digital
             auto reduce_step = [&]() noexcept
             {
                 if(cover.empty()) { return; }
-                // Coverage counts over ON minterms.
-                ::std::vector<::std::uint16_t> cnt{};
-                cnt.assign(U, 0u);
-                for(auto const& c: cover)
+                // Espresso REDUCE step (bitset-based):
+                // Instead of O(|cover|*|on|) minterm scanning, operate on u64 masks over the ON-set.
+                // For each cube, compute its "essential region" bits (covered by this cube and not by others),
+                // then specialize don't-care vars that are constant over that region.
+                if(blocksU == 0u) { return; }
+
+                auto var_word_pat = [&](unsigned v, std::uint32_t word_idx) noexcept -> std::uint64_t
                 {
-                    for(auto const m: on)
+                    if(v < 6u)
                     {
-                        if(!implicant_covers(c, m)) { continue; }
-                        auto& x = cnt[static_cast<std::size_t>(m)];
-                        if(x != ::std::numeric_limits<::std::uint16_t>::max()) { ++x; }
+                        constexpr std::uint64_t leaf_pat[6] = {
+                            0xAAAAAAAAAAAAAAAAull,
+                            0xCCCCCCCCCCCCCCCCull,
+                            0xF0F0F0F0F0F0F0F0ull,
+                            0xFF00FF00FF00FF00ull,
+                            0xFFFF0000FFFF0000ull,
+                            0xFFFFFFFF00000000ull,
+                        };
+                        return leaf_pat[v];
+                    }
+                    auto const wi = static_cast<unsigned>(word_idx);
+                    return (((wi >> (v - 6u)) & 1u) != 0u) ? ~0ull : 0ull;
+                };
+
+                auto row_ptr = [&](std::vector<std::uint64_t>& v, std::size_t i) noexcept -> std::uint64_t*
+                { return v.data() + i * blocksU; };
+                auto row_ptrc = [&](std::vector<std::uint64_t> const& v, std::size_t i) noexcept -> std::uint64_t const*
+                { return v.data() + i * blocksU; };
+
+                auto const n = cover.size();
+                ::std::vector<::std::uint64_t> cov_bits{};
+                cov_bits.assign(n * blocksU, 0ull);
+                for(std::size_t i{}; i < n; ++i)
+                {
+                    auto* dst = row_ptr(cov_bits, i);
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
+                    {
+                        dst[w] = cube_cover_word(cover[i], w) & on_bits[w];
                     }
                 }
 
-                for(auto& c: cover)
+                // suffix_or[i] = OR of rows i..n-1 (over ON-set).
+                ::std::vector<::std::uint64_t> suffix_or{};
+                suffix_or.assign((n + 1u) * blocksU, 0ull);
+                for(std::size_t i = n; i-- > 0u;)
                 {
-                    // Essential region R: ON minterms uniquely covered by c.
-                    bool has_r{};
-                    ::std::uint16_t r_min{};
-                    for(auto const m: on)
+                    auto* dst = row_ptr(suffix_or, i);
+                    auto const* nxt = row_ptrc(suffix_or, i + 1u);
+                    auto const* row = row_ptrc(cov_bits, i);
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w) { dst[w] = nxt[w] | row[w]; }
+                }
+
+                ::std::vector<::std::uint64_t> prefix{};
+                prefix.assign(blocksU, 0ull);
+                ::std::vector<::std::uint64_t> unique{};
+                unique.assign(blocksU, 0ull);
+
+                for(std::size_t i{}; i < n; ++i)
+                {
+                    auto* row = row_ptr(cov_bits, i);
+                    auto const* suf = row_ptrc(suffix_or, i + 1u);
+
+                    bool unique_any{};
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
                     {
-                        if(!implicant_covers(c, m)) { continue; }
-                        if(cnt[static_cast<std::size_t>(m)] == 1u)
-                        {
-                            r_min = m;
-                            has_r = true;
-                            break;
-                        }
-                    }
-                    if(!has_r)
-                    {
-                        // No unique responsibility: anchor reduction to the first ON minterm covered by this cube (if any).
-                        bool found{};
-                        for(auto const m: on)
-                        {
-                            if(implicant_covers(c, m))
-                            {
-                                r_min = m;
-                                found = true;
-                                break;
-                            }
-                        }
-                        if(!found) { continue; }
+                        auto const or_others = prefix[w] | suf[w];
+                        auto const u = row[w] & ~or_others;
+                        unique[w] = u;
+                        unique_any |= (u != 0ull);
                     }
 
-                    // Reduce: for each don't-care var, if all R minterms share the same bit, specialize to that bit.
-                    // In the anchored case (single minterm), this specializes all don't-care vars, shrinking to that minterm.
+                    auto const* anchor = unique_any ? unique.data() : row;
+
+                    // Specialize: for each don't-care var, if all anchor minterms share the same bit, fix it.
                     for(auto const v: var_order)
                     {
                         auto const bit = static_cast<::std::uint16_t>(1u << v);
-                        if(((c.mask >> v) & 1u) == 0u) { continue; }  // already specified
+                        if(((cover[i].mask >> v) & 1u) == 0u) { continue; }  // already specified
 
-                        bool all0{true};
-                        bool all1{true};
-
-                        if(has_r)
+                        bool any0{};
+                        bool any1{};
+                        for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w)
                         {
-                            for(auto const m: on)
-                            {
-                                if(!implicant_covers(c, m)) { continue; }
-                                if(cnt[static_cast<std::size_t>(m)] != 1u) { continue; }
-                                if(m & bit) { all0 = false; }
-                                else
-                                {
-                                    all1 = false;
-                                }
-                                if(!all0 && !all1) { break; }
-                            }
+                            auto const bits = anchor[w];
+                            if(bits == 0ull) { continue; }
+                            auto const pat = var_word_pat(static_cast<unsigned>(v), w);
+                            if((bits & pat) != 0ull) { any1 = true; }
+                            if((bits & ~pat) != 0ull) { any0 = true; }
+                            if(any0 && any1) { break; }
                         }
+
+                        if(any0 == any1) { continue; }  // either empty anchor, or mixed -> can't specialize
+
+                        cover[i].mask = static_cast<::std::uint16_t>(cover[i].mask & static_cast<::std::uint16_t>(~bit));
+                        if(any1) { cover[i].value = static_cast<::std::uint16_t>(cover[i].value | bit); }
                         else
                         {
-                            // anchored single minterm
-                            if(r_min & bit) { all0 = false; }
-                            else
-                            {
-                                all1 = false;
-                            }
-                        }
-
-                        if(all0 != all1)  // exactly one is true
-                        {
-                            c.mask = static_cast<::std::uint16_t>(c.mask & static_cast<::std::uint16_t>(~bit));
-                            if(all1) { c.value = static_cast<::std::uint16_t>(c.value | bit); }
-                            else
-                            {
-                                c.value = static_cast<::std::uint16_t>(c.value & static_cast<::std::uint16_t>(~bit));
-                            }
+                            cover[i].value = static_cast<::std::uint16_t>(cover[i].value & static_cast<::std::uint16_t>(~bit));
                         }
                     }
+
+                    // Update prefix using the original (pre-reduce) coverage row to keep the region definition stable.
+                    for(std::uint32_t w{}; w < static_cast<std::uint32_t>(blocksU); ++w) { prefix[w] |= row[w]; }
                 }
             };
 
@@ -10993,7 +11438,7 @@ namespace phy_engine::verilog::digital
                 auto const prev_best = best_cost;
 
                 step_expand();
-                if(two_level_cover_covers_all_on(cover, on) && !two_level_cover_hits_off(cover, is_on, is_dc))
+                if(cover_covers_all_on_fast(cover) && !cover_hits_off_fast(cover))
                 {
                     auto const cst = two_level_cover_cost(cover, var_count, opt);
                     if(cst < best_cost)
@@ -11004,7 +11449,7 @@ namespace phy_engine::verilog::digital
                 }
 
                 step_reduce();
-                if(two_level_cover_covers_all_on(cover, on) && !two_level_cover_hits_off(cover, is_on, is_dc))
+                if(cover_covers_all_on_fast(cover) && !cover_hits_off_fast(cover))
                 {
                     auto const cst = two_level_cover_cost(cover, var_count, opt);
                     if(cst < best_cost)
@@ -11045,7 +11490,7 @@ namespace phy_engine::verilog::digital
                         step_expand();
                         step_reduce();
                     }
-                    if(!two_level_cover_covers_all_on(cover, on) || two_level_cover_hits_off(cover, is_on, is_dc)) { continue; }
+                    if(!cover_covers_all_on_fast(cover) || cover_hits_off_fast(cover)) { continue; }
                     auto const cst = two_level_cover_cost(cover, var_count, opt);
                     if(cst < best_cost)
                     {
@@ -11056,8 +11501,8 @@ namespace phy_engine::verilog::digital
             }
 
             // Validate cover (best-effort). If something went wrong, bail.
-            if(!two_level_cover_covers_all_on(best_cover, on)) { return sol; }
-            if(two_level_cover_hits_off(best_cover, is_on, is_dc)) { return sol; }
+            if(!cover_covers_all_on_fast(best_cover)) { return sol; }
+            if(cover_hits_off_fast(best_cover)) { return sol; }
 
             sol.cover = ::std::move(best_cover);
             sol.cost = best_cost;
@@ -11527,14 +11972,69 @@ namespace phy_engine::verilog::digital
             ::std::vector<::std::size_t> prime_cost{};
             prime_cost.resize(primes.size());
 
-            for(std::size_t pi{}; pi < primes.size(); ++pi)
+            for(std::size_t pi{}; pi < primes.size(); ++pi) { prime_cost[pi] = qm_cover_cost(primes, ::std::vector<std::size_t>{pi}, var_count, opt); }
+
+            // Build the cover matrix.
+            // CPU fallback: O(|primes|*|on|) implicant checks.
+            // CUDA fast path: build row bitsets on GPU and (optionally) copy back to host for the remaining CPU bookkeeping.
+            cuda_bitset_matrix_raii cov_gpu{};
+            bool built_cov_with_cuda{};
+            if(opt.cuda_enable && blocks != 0u && !primes.empty() && var_count <= 16u)
             {
-                prime_cost[pi] = qm_cover_cost(primes, ::std::vector<std::size_t>{pi}, var_count, opt);
-                for(std::size_t mi{}; mi < on.size(); ++mi)
+                auto const workload = primes.size() * blocks;
+                if(workload >= opt.cuda_min_batch)
                 {
-                    if(implicant_covers(primes[pi], on[mi])) { cov_row(pi)[mi / 64u] |= (1ull << (mi % 64u)); }
+                    cov_gpu = cuda_bitset_matrix_create_empty(opt.cuda_device_mask, primes.size(), static_cast<::std::uint32_t>(blocks));
+                    if(cov_gpu.handle != nullptr)
+                    {
+                        ::std::vector<cuda_cube_desc> cubes{};
+                        cubes.resize(primes.size());
+                        for(std::size_t i{}; i < primes.size(); ++i)
+                        {
+                            cubes[i].value = primes[i].value;
+                            cubes[i].mask = primes[i].mask;
+                        }
+                        // In cuda_qm_no_host_cov mode we keep the cov matrix only on the device and fetch selected rows on demand.
+                        // This avoids copying the full (primes x on) matrix back to the host.
+                        built_cov_with_cuda = cuda_bitset_matrix_fill_qm_cov(
+                            cov_gpu, cubes.data(), cubes.size(), on.data(), on.size(), var_count, opt.cuda_qm_no_host_cov ? nullptr : cov.data());
+                    }
+                }
+                else
+                {
+                    cuda_trace_add(u8"bitset_create_empty", primes.size(), workload, 0u, 0u, 0u, false, u8"small_batch");
                 }
             }
+
+            if(!built_cov_with_cuda)
+            {
+                for(std::size_t pi{}; pi < primes.size(); ++pi)
+                {
+                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    {
+                        if(implicant_covers(primes[pi], on[mi])) { cov_row(pi)[mi / 64u] |= (1ull << (mi % 64u)); }
+                    }
+                }
+            }
+
+            bool host_cov_valid = true;
+            if(opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr) { host_cov_valid = false; }
+
+            auto ensure_host_cov = [&]() noexcept -> void
+            {
+                if(host_cov_valid) { return; }
+                // Best-effort fallback: rebuild cov on CPU if we unexpectedly need it (e.g. CUDA best-row failed).
+                // This is expensive, but it should only happen on error paths.
+                for(auto& w: cov) { w = 0ull; }
+                for(std::size_t pi{}; pi < primes.size(); ++pi)
+                {
+                    for(std::size_t mi{}; mi < on.size(); ++mi)
+                    {
+                        if(implicant_covers(primes[pi], on[mi])) { cov_row(pi)[mi / 64u] |= (1ull << (mi % 64u)); }
+                    }
+                }
+                host_cov_valid = true;
+            };
 
             auto popcount64 = [](std::uint64_t x) noexcept -> std::size_t { return static_cast<std::size_t>(__builtin_popcountll(x)); };
 
@@ -11552,14 +12052,24 @@ namespace phy_engine::verilog::digital
             cover_count.assign(on.size(), 0u);
             last_prime.assign(on.size(), static_cast<std::size_t>(-1));
 
-            for(std::size_t pi{}; pi < primes.size(); ++pi)
+            // In cuda_qm_no_host_cov mode, we don't have the cov matrix on host; skip essential extraction.
+            if(!(opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr))
             {
-                for(std::size_t mi{}; mi < on.size(); ++mi)
+                for(std::size_t pi{}; pi < primes.size(); ++pi)
                 {
-                    if((cov_row_c(pi)[mi / 64u] >> (mi % 64u)) & 1ull)
+                    auto const* row = cov_row_c(pi);
+                    for(std::size_t b{}; b < blocks; ++b)
                     {
-                        ++cover_count[mi];
-                        last_prime[mi] = pi;
+                        auto x = row[b];
+                        while(x)
+                        {
+                            auto const bit = static_cast<unsigned>(__builtin_ctzll(x));
+                            x &= (x - 1ull);
+                            auto const mi = b * 64u + static_cast<std::size_t>(bit);
+                            if(mi >= on.size()) { continue; }
+                            ++cover_count[mi];
+                            last_prime[mi] = pi;
+                        }
                     }
                 }
             }
@@ -11570,6 +12080,7 @@ namespace phy_engine::verilog::digital
             auto apply_pick = [&](std::size_t pi) noexcept
             {
                 if(pi >= primes.size() || picked[pi]) { return; }
+                if(!host_cov_valid) { ensure_host_cov(); }
                 picked[pi] = true;
                 sol.pick.push_back(pi);
                 auto const* r = cov_row_c(pi);
@@ -11577,16 +12088,19 @@ namespace phy_engine::verilog::digital
             };
 
             bool changed{true};
-            while(changed)
+            if(!(opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr))
             {
-                changed = false;
-                for(std::size_t mi{}; mi < on.size(); ++mi)
+                while(changed)
                 {
-                    if(((uncovered[mi / 64u] >> (mi % 64u)) & 1ull) == 0ull) { continue; }
-                    if(cover_count[mi] == 1u && last_prime[mi] != static_cast<std::size_t>(-1))
+                    changed = false;
+                    for(std::size_t mi{}; mi < on.size(); ++mi)
                     {
-                        apply_pick(last_prime[mi]);
-                        changed = true;
+                        if(((uncovered[mi / 64u] >> (mi % 64u)) & 1ull) == 0ull) { continue; }
+                        if(cover_count[mi] == 1u && last_prime[mi] != static_cast<std::size_t>(-1))
+                        {
+                            apply_pick(last_prime[mi]);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -11600,11 +12114,12 @@ namespace phy_engine::verilog::digital
                 return false;
             };
 
-            // Optional CUDA acceleration for masked popcount scoring (best-effort).
-            // We keep the cover matrix on the device(s) and only stream the changing mask (`uncovered`) per iteration.
-            cuda_bitset_matrix_raii cov_gpu{};
+            // Optional CUDA acceleration for masked popcount scoring / best-row selection (best-effort).
+            // If the matrix was built on GPU, `cov_gpu` is already populated; otherwise we can still upload it.
             bool use_cuda_gains{false};
             ::std::vector<::std::uint32_t> gains_gpu{};
+            bool use_cuda_best{false};
+            ::std::vector<::std::uint32_t> cost_u32{};
             if(!opt.cuda_enable && blocks != 0u && !primes.empty())
             {
                 cuda_trace_add(u8"bitset_create", primes.size(), primes.size() * blocks, 0u, 0u, 0u, false, u8"disabled");
@@ -11614,11 +12129,28 @@ namespace phy_engine::verilog::digital
                 auto const workload = primes.size() * blocks;
                 if(workload >= opt.cuda_min_batch)
                 {
-                    cov_gpu = cuda_bitset_matrix_create(opt.cuda_device_mask, cov.data(), primes.size(), static_cast<::std::uint32_t>(blocks));
+                    if(cov_gpu.handle == nullptr)
+                    {
+                        cov_gpu = cuda_bitset_matrix_create(opt.cuda_device_mask, cov.data(), primes.size(), static_cast<::std::uint32_t>(blocks));
+                    }
                     if(cov_gpu.handle != nullptr)
                     {
                         gains_gpu.resize(primes.size());
                         use_cuda_gains = true;
+
+                        // Optional: let the GPU pick the best remaining prime directly (reduces CPU scan time).
+                        // Costs are uploaded once per matrix.
+                        cost_u32.resize(primes.size());
+                        for(std::size_t i{}; i < primes.size(); ++i)
+                        {
+                            auto const c = prime_cost[i];
+                            cost_u32[i] = static_cast<::std::uint32_t>(c > 0xFFFFFFFFull ? 0xFFFFFFFFu : c);
+                        }
+                        use_cuda_best = cuda_bitset_matrix_set_row_cost_u32(cov_gpu, cost_u32.data(), cost_u32.size());
+                        if(use_cuda_best)
+                        {
+                            for(auto const pi: sol.pick) { (void)cuda_bitset_matrix_disable_row(cov_gpu, pi); }
+                        }
                     }
                 }
                 else
@@ -11627,8 +12159,89 @@ namespace phy_engine::verilog::digital
                 }
             }
 
+            bool cuda_best_resident{};
+            if(use_cuda_best && opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr)
+            {
+                // Keep uncovered mask resident on GPU and update it there (reduces host work and avoids per-iter mask uploads).
+                // We still mirror uncovered to host for loop termination / safe CPU fallback.
+                cuda_best_resident = cuda_bitset_matrix_set_mask(cov_gpu, uncovered.data(), static_cast<::std::uint32_t>(blocks));
+                if(!cuda_best_resident) { cuda_best_resident = false; }
+            }
+
             while(any_uncovered())
             {
+                if(use_cuda_best)
+                {
+                    ::std::uint32_t best_row{};
+                    ::std::uint32_t best_gain32{};
+                    ::std::int32_t best_score32{};
+                    bool best_ok{};
+                    if(cuda_best_resident)
+                    {
+                        best_ok = cuda_bitset_matrix_best_row_resident_mask(cov_gpu, best_row, best_gain32, best_score32);
+                    }
+                    else
+                    {
+                        best_ok = cuda_bitset_matrix_best_row(cov_gpu,
+                                                              uncovered.data(),
+                                                              static_cast<::std::uint32_t>(blocks),
+                                                              best_row,
+                                                              best_gain32,
+                                                              best_score32);
+                    }
+
+                    if(!best_ok || best_gain32 == 0u)
+                    {
+                        use_cuda_best = false;
+                        cuda_best_resident = false;
+                    }
+                    else
+                    {
+                        auto const best_pi = static_cast<std::size_t>(best_row);
+                        if(best_pi < primes.size() && !picked[best_pi])
+                        {
+                            if(opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr)
+                            {
+                                picked[best_pi] = true;
+                                sol.pick.push_back(best_pi);
+                                if(cuda_best_resident)
+                                {
+                                    // Update uncovered on device, then mirror the device mask back to host for loop termination.
+                                    if(!cuda_bitset_matrix_mask_andnot_row(cov_gpu, best_pi) ||
+                                       !cuda_bitset_matrix_get_mask(cov_gpu, uncovered.data(), static_cast<::std::uint32_t>(blocks)))
+                                    {
+                                        use_cuda_best = false;
+                                        cuda_best_resident = false;
+                                    }
+                                }
+                                else
+                                {
+                                    // Fetch only the selected row from GPU and update the uncovered mask on host.
+                                    ::std::vector<::std::uint64_t> row_bits{};
+                                    row_bits.resize(blocks);
+                                    if(!cuda_bitset_matrix_get_row(cov_gpu, best_pi, row_bits.data(), static_cast<::std::uint32_t>(blocks)))
+                                    {
+                                        use_cuda_best = false;
+                                    }
+                                    else
+                                    {
+                                        for(std::size_t b{}; b < blocks; ++b) { uncovered[b] &= ~row_bits[b]; }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                apply_pick(best_pi);
+                            }
+                            (void)cuda_bitset_matrix_disable_row(cov_gpu, best_pi);
+                            if(use_cuda_best) { continue; }
+                        }
+                        // Shouldn't happen; fall back to CPU scan.
+                        use_cuda_best = false;
+                        cuda_best_resident = false;
+                    }
+                }
+
                 if(use_cuda_gains)
                 {
                     if(!cuda_bitset_matrix_row_and_popcount(cov_gpu, uncovered.data(), static_cast<::std::uint32_t>(blocks), gains_gpu.data()))
@@ -11688,7 +12301,7 @@ namespace phy_engine::verilog::digital
 
                 // Bounded 2-step lookahead (deterministic): among the top candidates, pick one that leaves a good next move.
                 // This tends to improve greedy cover quality when the prime set is large.
-                if(cands.size() >= 2u && blocks != 0u)
+                if(!use_cuda_best && cands.size() >= 2u && blocks != 0u)
                 {
                     ::std::sort(cands.begin(),
                                 cands.end(),
@@ -11763,7 +12376,18 @@ namespace phy_engine::verilog::digital
 
                 auto add_counts = [&](std::size_t pi) noexcept
                 {
-                    auto const* row = cov_row_c(pi);
+                    ::std::vector<::std::uint64_t> tmp_row{};
+                    tmp_row.resize(blocks);
+                    ::std::uint64_t const* row{};
+                    if(opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr)
+                    {
+                        if(!cuda_bitset_matrix_get_row(cov_gpu, pi, tmp_row.data(), static_cast<::std::uint32_t>(blocks))) { return; }
+                        row = tmp_row.data();
+                    }
+                    else
+                    {
+                        row = cov_row_c(pi);
+                    }
                     for(std::size_t b{}; b < blocks; ++b)
                     {
                         auto x = row[b];
@@ -11784,7 +12408,18 @@ namespace phy_engine::verilog::digital
                 for(std::size_t i{}; i < sol.pick.size();)
                 {
                     auto const pi = sol.pick[i];
-                    auto const* row = cov_row_c(pi);
+                    ::std::vector<::std::uint64_t> tmp_row{};
+                    tmp_row.resize(blocks);
+                    ::std::uint64_t const* row{};
+                    if(opt.cuda_enable && opt.cuda_qm_no_host_cov && built_cov_with_cuda && cov_gpu.handle != nullptr)
+                    {
+                        if(!cuda_bitset_matrix_get_row(cov_gpu, pi, tmp_row.data(), static_cast<::std::uint32_t>(blocks))) { ++i; continue; }
+                        row = tmp_row.data();
+                    }
+                    else
+                    {
+                        row = cov_row_c(pi);
+                    }
                     bool redundant{true};
                     bool covers_any{};
                     for(std::size_t b{}; b < blocks && redundant; ++b)
@@ -12613,45 +13248,7 @@ namespace phy_engine::verilog::digital
 
                     auto const var_count = out.leaves.size();
                     if(var_count == 0 || var_count > 16) { return false; }
-
-                    if(!eval_binary_cone_on_dc(root, out.leaves, out.on, out.dc))
-                    {
-                        // Fallback: per-minterm 4-valued evaluation (preserves X/Z -> DC inference semantics).
-                        out.on.reserve(1u << var_count);
-                        for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << var_count); ++m)
-                        {
-                            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
-                            leaf_val.reserve(var_count * 2u);
-                            for(std::size_t i{}; i < var_count; ++i)
-                            {
-                                auto const bit = ((m >> i) & 1u) != 0;
-                                leaf_val.emplace(out.leaves[i],
-                                                 bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                     : ::phy_engine::model::digital_node_statement_t::false_state);
-                            }
-                            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
-                            memo.reserve(out.to_delete.size() * 2u + 8u);
-                            ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
-                            visiting.reserve(out.to_delete.size() * 2u + 8u);
-                            auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
-                            if(r == ::phy_engine::model::digital_node_statement_t::true_state) { out.on.push_back(m); }
-                            else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
-                            else
-                            {
-                                if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { out.dc.push_back(m); }
-                                else
-                                {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-
-                    if(opt.infer_dc_from_fsm)
-                    {
-                        auto const views = build_dc_group_views(out.leaves);
-                        if(!views.empty()) { apply_dc_constraints(out.dc, out.on, out.leaves.size(), views); }
-                    }
+                    // Note: we postpone truth-table evaluation to a batched stage to keep CUDA busy.
 
                     // Normalize deletion list and avoid duplicates.
                     ::std::sort(out.to_delete.begin(),
@@ -12678,6 +13275,314 @@ namespace phy_engine::verilog::digital
                     auto& g = find_group(c.leaves);
                     g.cones.push_back(::std::move(c));
                 }
+
+                // Batched truth-table evaluation for all collected cones.
+                //
+                // Previously each cone did its own CUDA call (cone_count=1), which caused massive kernel-launch and
+                // driver overhead and kept GPU utilization low. Here we group cones and call CUDA in large batches.
+                auto eval_group_cones_batched = [&]() noexcept -> void
+                {
+                    struct u64_job
+                    {
+                        cone* c{};
+                        cuda_u64_cone_desc desc{};
+                    };
+                    struct tt_job
+                    {
+                        cone* c{};
+                        cuda_tt_cone_desc desc{};
+                        ::std::uint32_t blocks{};
+                    };
+
+                    ::std::vector<u64_job> u64_jobs{};
+                    ::std::vector<tt_job> tt_jobs{};
+                    ::std::vector<cone*> fallback{};
+
+                    // Rough reserve (best effort).
+                    std::size_t total{};
+                    for(auto const& g: groups) { total += g.cones.size(); }
+                    u64_jobs.reserve(total);
+                    tt_jobs.reserve(total);
+                    fallback.reserve(64);
+
+                    auto build_u64_desc = [&](::phy_engine::model::node_t* root, cone& cc, cuda_u64_cone_desc& out_desc) noexcept -> bool
+                    {
+                        auto const var_count = cc.leaves.size();
+                        if(var_count == 0u || var_count > 6u) { return false; }
+                        out_desc = cuda_u64_cone_desc{};
+                        out_desc.var_count = static_cast<::std::uint8_t>(var_count);
+                        out_desc.gate_count = 0u;
+
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> leaf_index{};
+                        leaf_index.reserve(var_count * 2u);
+                        for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(cc.leaves[i], static_cast<::std::uint8_t>(i)); }
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
+                        out_index.reserve(128);
+
+                        bool ok2{true};
+                        auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
+                        {
+                            if(!ok2 || n == nullptr)
+                            {
+                                ok2 = false;
+                                return 254u;
+                            }
+                            if(auto itc = const_val.find(n); itc != const_val.end())
+                            {
+                                using dns = ::phy_engine::model::digital_node_statement_t;
+                                if(itc->second == dns::false_state) { return 254u; }
+                                if(itc->second == dns::true_state) { return 255u; }
+                                ok2 = false;
+                                return 254u;
+                            }
+                            if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+                            if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+
+                            auto itg = gate_by_out.find(n);
+                            if(itg == gate_by_out.end())
+                            {
+                                ok2 = false;
+                                return 254u;
+                            }
+                            auto const& gg = itg->second;
+                            auto const a = self(self, gg.in0);
+                            auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
+                            if(!ok2) { return 254u; }
+
+                            if(out_desc.gate_count >= 64u)
+                            {
+                                ok2 = false;
+                                return 254u;
+                            }
+                            auto const gi = static_cast<::std::uint8_t>(out_desc.gate_count++);
+                            out_desc.kind[gi] = enc_kind_tt(gg.k);
+                            out_desc.in0[gi] = a;
+                            out_desc.in1[gi] = b;
+                            auto const out = static_cast<::std::uint8_t>(6u + gi);
+                            out_index.emplace(n, out);
+                            return out;
+                        };
+
+                        (void)dfs2(dfs2, root);
+                        return ok2 && out_desc.gate_count != 0u;
+                    };
+
+                    auto build_tt_desc = [&](::phy_engine::model::node_t* root, cone& cc, cuda_tt_cone_desc& out_desc) noexcept -> bool
+                    {
+                        auto const var_count = cc.leaves.size();
+                        if(var_count <= 6u || var_count > 16u) { return false; }
+                        out_desc = cuda_tt_cone_desc{};
+                        out_desc.var_count = static_cast<::std::uint8_t>(var_count);
+                        out_desc.gate_count = 0u;
+
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> leaf_index{};
+                        leaf_index.reserve(var_count * 2u);
+                        for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(cc.leaves[i], static_cast<::std::uint16_t>(i)); }
+                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> out_index{};
+                        out_index.reserve(256);
+
+                        bool ok2{true};
+                        auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
+                        {
+                            if(!ok2 || n == nullptr)
+                            {
+                                ok2 = false;
+                                return 65534u;
+                            }
+                            if(auto itc = const_val.find(n); itc != const_val.end())
+                            {
+                                using dns = ::phy_engine::model::digital_node_statement_t;
+                                if(itc->second == dns::false_state) { return 65534u; }
+                                if(itc->second == dns::true_state) { return 65535u; }
+                                ok2 = false;
+                                return 65534u;
+                            }
+                            if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+                            if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+
+                            auto itg = gate_by_out.find(n);
+                            if(itg == gate_by_out.end())
+                            {
+                                ok2 = false;
+                                return 65534u;
+                            }
+                            auto const& gg = itg->second;
+                            auto const a = self(self, gg.in0);
+                            auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
+                            if(!ok2) { return 65534u; }
+
+                            if(out_desc.gate_count >= 256u)
+                            {
+                                ok2 = false;
+                                return 65534u;
+                            }
+                            auto const gi = static_cast<::std::uint16_t>(out_desc.gate_count++);
+                            out_desc.kind[gi] = enc_kind_tt(gg.k);
+                            out_desc.in0[gi] = a;
+                            out_desc.in1[gi] = b;
+                            auto const out = static_cast<::std::uint16_t>(16u + gi);
+                            out_index.emplace(n, out);
+                            return out;
+                        };
+
+                        (void)dfs2(dfs2, root);
+                        return ok2 && out_desc.gate_count != 0u;
+                    };
+
+                    for(auto& g: groups)
+                    {
+                        for(auto& cc: g.cones)
+                        {
+                            cc.on.clear();
+                            cc.dc.clear();
+                            auto const var_count = cc.leaves.size();
+                            if(var_count == 0u || var_count > 16u)
+                            {
+                                fallback.push_back(__builtin_addressof(cc));
+                                continue;
+                            }
+
+                            if(var_count <= 6u)
+                            {
+                                cuda_u64_cone_desc d{};
+                                if(build_u64_desc(cc.root, cc, d)) { u64_jobs.push_back(u64_job{__builtin_addressof(cc), d}); }
+                                else { fallback.push_back(__builtin_addressof(cc)); }
+                            }
+                            else
+                            {
+                                cuda_tt_cone_desc d{};
+                                if(build_tt_desc(cc.root, cc, d))
+                                {
+                                    auto const U = static_cast<::std::size_t>(1u << var_count);
+                                    auto const blocks = static_cast<::std::uint32_t>((U + 63u) / 64u);
+                                    tt_jobs.push_back(tt_job{__builtin_addressof(cc), d, blocks});
+                                }
+                                else { fallback.push_back(__builtin_addressof(cc)); }
+                            }
+                        }
+                    }
+
+                    // Run u64 cones in one batch.
+                    if(!u64_jobs.empty())
+                    {
+                        ::std::vector<cuda_u64_cone_desc> descs{};
+                        ::std::vector<::std::uint64_t> masks{};
+                        descs.reserve(u64_jobs.size());
+                        masks.resize(u64_jobs.size());
+                        for(auto const& j: u64_jobs) { descs.push_back(j.desc); }
+
+                        bool used_cuda{};
+                        if(opt.cuda_enable)
+                        {
+                            used_cuda = cuda_eval_u64_cones(opt.cuda_device_mask, descs.data(), descs.size(), masks.data());
+                        }
+                        if(!used_cuda)
+                        {
+                            for(std::size_t i{}; i < descs.size(); ++i) { masks[i] = eval_u64_cone_cpu(descs[i]); }
+                        }
+
+                        for(std::size_t i{}; i < u64_jobs.size(); ++i)
+                        {
+                            auto* cc = u64_jobs[i].c;
+                            auto const var_count = cc->leaves.size();
+                            auto const U = static_cast<::std::size_t>(1u << var_count);
+                            auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
+                            auto mask = masks[i] & all_mask;
+                            cc->on.reserve(U);
+                            for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(U); ++m)
+                            {
+                                if((mask >> m) & 1ull) { cc->on.push_back(m); }
+                            }
+                        }
+                    }
+
+                    // Run TT cones grouped by stride_blocks.
+                    if(!tt_jobs.empty())
+                    {
+                        ::std::unordered_map<::std::uint32_t, ::std::vector<std::size_t>> by_blocks{};
+                        by_blocks.reserve(16);
+                        for(std::size_t i{}; i < tt_jobs.size(); ++i)
+                        {
+                            by_blocks[tt_jobs[i].blocks].push_back(i);
+                        }
+
+                        for(auto& kv: by_blocks)
+                        {
+                            auto const blocks = kv.first;
+                            auto const& idxs = kv.second;
+                            if(idxs.empty() || blocks == 0u) { continue; }
+
+                            ::std::vector<cuda_tt_cone_desc> descs{};
+                            descs.reserve(idxs.size());
+                            for(auto const ii: idxs) { descs.push_back(tt_jobs[ii].desc); }
+
+                            ::std::vector<::std::uint64_t> tt{};
+                            tt.assign(idxs.size() * static_cast<std::size_t>(blocks), 0ull);
+
+                            bool used_cuda{};
+                            if(opt.cuda_enable)
+                            {
+                                used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, descs.data(), descs.size(), blocks, tt.data());
+                            }
+                            if(!used_cuda)
+                            {
+                                for(std::size_t i{}; i < descs.size(); ++i)
+                                {
+                                    eval_tt_cone_cpu(descs[i], blocks, tt.data() + i * static_cast<std::size_t>(blocks));
+                                }
+                            }
+
+                            // Scatter into cone.on.
+                            for(std::size_t i{}; i < idxs.size(); ++i)
+                            {
+                                auto* cc = tt_jobs[idxs[i]].c;
+                                auto const var_count = cc->leaves.size();
+                                auto const U = static_cast<::std::size_t>(1u << var_count);
+                                cc->on.reserve(U);
+                                auto const* words = tt.data() + i * static_cast<std::size_t>(blocks);
+                                for(::std::uint32_t bi{}; bi < blocks; ++bi)
+                                {
+                                    auto w = words[bi];
+                                    while(w)
+                                    {
+                                        auto const b = static_cast<::std::uint32_t>(__builtin_ctzll(w));
+                                        auto const m = static_cast<::std::size_t>(bi * 64u + b);
+                                        if(m < U) { cc->on.push_back(static_cast<::std::uint16_t>(m)); }
+                                        w &= (w - 1ull);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback cones: preserve old semantics (rare under assume_binary_inputs).
+                    for(auto* cc: fallback)
+                    {
+                        if(cc == nullptr) { continue; }
+                        if(!eval_binary_cone_on_dc(cc->root, cc->leaves, cc->on, cc->dc))
+                        {
+                            // If we can't evaluate even with the legacy path, leave it empty and let the caller skip the group.
+                            cc->on.clear();
+                            cc->dc.clear();
+                        }
+                    }
+
+                    // Apply FSM-derived DC constraints (bounded).
+                    if(opt.infer_dc_from_fsm)
+                    {
+                        for(auto& g: groups)
+                        {
+                            for(auto& cc: g.cones)
+                            {
+                                if(cc.leaves.empty()) { continue; }
+                                auto const views = build_dc_group_views(cc.leaves);
+                                if(!views.empty()) { apply_dc_constraints(cc.dc, cc.on, cc.leaves.size(), views); }
+                            }
+                        }
+                    }
+                };
+
+                eval_group_cones_batched();
 
                 // Helper: per-output best cover (QM/Petrick/Espresso).
                 auto best_single_cover = [&](::std::vector<::std::uint16_t> const& on,
@@ -13017,6 +13922,506 @@ namespace phy_engine::verilog::digital
                 }
             }
 
+            // Batch the per-root truth-table evaluation.
+            // This avoids thousands of cone_count=1 CUDA calls (launch/driver overhead) and reduces CPU involvement.
+            struct qm_job
+            {
+                ::phy_engine::model::node_t* root{};
+                ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
+                ::std::vector<::phy_engine::model::node_t*> leaves{};
+                ::std::vector<odc_condition> odc_conditions{};
+                ::std::vector<::std::uint16_t> on{};
+                ::std::vector<::std::uint16_t> dc{};
+                bool valid{true};
+            };
+
+            ::std::vector<qm_job> jobs{};
+            jobs.reserve(2048);
+
+            auto process_job = [&](qm_job& j) noexcept -> void
+            {
+                if(!j.valid) { return; }
+                if(j.root == nullptr) { return; }
+                if(j.leaves.empty()) { return; }
+                auto const var_count = j.leaves.size();
+                if(var_count == 0u || var_count > 16u) { return; }
+
+                if(opt.infer_dc_from_fsm)
+                {
+                    auto const views = build_dc_group_views(j.leaves);
+                    if(!views.empty()) { apply_dc_constraints(j.dc, j.on, var_count, views); }
+                }
+                if(!j.odc_conditions.empty()) { apply_odc_conditions(j.on, j.dc, var_count, j.odc_conditions); }
+
+                auto const U = static_cast<std::size_t>(1u << var_count);
+                bool const is_const0 = j.on.empty();
+                bool const is_const1 = (!is_const0 && j.on.size() == U);
+
+                auto const primes = qm_prime_implicants(j.on, j.dc, var_count);
+                if(!is_const0 && !is_const1)
+                {
+                    if(primes.size() > max_primes) { return; }
+                }
+
+                enum class best_kind : std::uint8_t
+                {
+                    const0,
+                    const1,
+                    qm,
+                    espresso,
+                };
+
+                best_kind best{};
+                qm_solution qm_sol{};
+                espresso_solution esp{};
+                std::size_t best_cost{static_cast<std::size_t>(-1)};
+
+                if(is_const0)
+                {
+                    best = best_kind::const0;
+                    best_cost = 0u;
+                }
+                else if(is_const1)
+                {
+                    best = best_kind::const1;
+                    best_cost = 0u;
+                }
+                else
+                {
+                    if(var_count <= exact_vars) { qm_sol = qm_exact_minimum_cover(primes, j.on, var_count, opt); }
+                    else
+                    {
+                        qm_sol = qm_greedy_cover(primes, j.on, var_count, opt);
+                        if(primes.size() <= 64u && j.on.size() <= 64u)
+                        {
+                            auto const pet = qm_petrick_minimum_cover(primes, j.on, var_count, opt);
+                            if(pet.cost != static_cast<std::size_t>(-1) && (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
+                            {
+                                qm_sol = pet;
+                            }
+                        }
+                    }
+                    if(qm_sol.cost == static_cast<std::size_t>(-1)) { return; }
+
+                    best = best_kind::qm;
+                    best_cost = qm_sol.cost;
+
+                    if(var_count > exact_vars)
+                    {
+                        esp = espresso_two_level_minimize(j.on, j.dc, var_count, opt);
+                        if(esp.cost != static_cast<std::size_t>(-1) && esp.cost < best_cost)
+                        {
+                            best = best_kind::espresso;
+                            best_cost = esp.cost;
+                        }
+                    }
+                }
+
+                ::std::sort(j.to_delete.begin(),
+                            j.to_delete.end(),
+                            [](auto const& a, auto const& b) noexcept
+                            {
+                                if(a.chunk_pos != b.chunk_pos) { return a.chunk_pos > b.chunk_pos; }
+                                return a.vec_pos > b.vec_pos;
+                            });
+                j.to_delete.erase(::std::unique(j.to_delete.begin(),
+                                               j.to_delete.end(),
+                                               [](auto const& a, auto const& b) noexcept
+                                               { return a.chunk_pos == b.chunk_pos && a.vec_pos == b.vec_pos; }),
+                                  j.to_delete.end());
+
+                if(best_cost >= j.to_delete.size()) { return; }
+
+                for(auto const& pos: j.to_delete)
+                {
+                    auto* mb = ::phy_engine::netlist::get_model(nl, pos);
+                    if(mb == nullptr) { continue; }
+                    ::phy_engine::netlist::delete_model(nl, pos);
+                }
+
+                auto* const0 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::false_state);
+                auto* const1 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::true_state);
+                if(const0 == nullptr || const1 == nullptr) { return; }
+
+                if(best == best_kind::const0)
+                {
+                    if(is_protected(j.root)) { (void)make_yes(const0, j.root); }
+                    else { (void)rewire_consumers(j.root, const0); }
+                    changed = true;
+                    return;
+                }
+                if(best == best_kind::const1)
+                {
+                    if(is_protected(j.root)) { (void)make_yes(const1, j.root); }
+                    else { (void)rewire_consumers(j.root, const1); }
+                    changed = true;
+                    return;
+                }
+
+                ::std::vector<::phy_engine::model::node_t*> neg{};
+                neg.assign(var_count, nullptr);
+                ::std::unordered_map<cube_key, ::phy_engine::model::node_t*, cube_key_hash, cube_key_eq> term_cache{};
+                term_cache.reserve(256);
+
+                auto ensure_neg = [&](std::size_t v) noexcept -> ::phy_engine::model::node_t*
+                {
+                    if(v >= var_count) { return nullptr; }
+                    if(neg[v] != nullptr) { return neg[v]; }
+                    neg[v] = make_not(j.leaves[v]);
+                    return neg[v];
+                };
+
+                auto build_term_from = [&](qm_implicant const& imp) noexcept -> ::phy_engine::model::node_t*
+                {
+                    auto const keep = static_cast<std::uint16_t>(~imp.mask & ((var_count >= 16) ? 0xFFFFu : ((1u << var_count) - 1u)));
+                    auto const key = cube_key{imp.mask, static_cast<std::uint16_t>(imp.value & keep)};
+                    if(auto it = term_cache.find(key); it != term_cache.end()) { return it->second; }
+
+                    ::phy_engine::model::node_t* term = nullptr;
+                    std::size_t lits{};
+                    for(std::size_t v{}; v < var_count; ++v)
+                    {
+                        if((imp.mask >> v) & 1u) { continue; }
+                        bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
+                        auto* litn = bit_is_1 ? j.leaves[v] : ensure_neg(v);
+                        if(litn == nullptr) { return nullptr; }
+                        ++lits;
+                        if(term == nullptr) { term = litn; }
+                        else { term = make_and(term, litn); }
+                        if(term == nullptr) { return nullptr; }
+                    }
+                    if(lits == 0) { term = const1; }
+                    if(term == nullptr) { return nullptr; }
+                    term_cache.emplace(key, term);
+                    return term;
+                };
+
+                ::std::vector<::phy_engine::model::node_t*> terms{};
+                terms.reserve(256);
+                bool ok_term{true};
+                auto add_term_from = [&](qm_implicant const& imp) noexcept -> void
+                {
+                    if(!ok_term) { return; }
+                    auto* t = build_term_from(imp);
+                    if(t == nullptr) { ok_term = false; return; }
+                    terms.push_back(t);
+                };
+
+                if(best == best_kind::qm)
+                {
+                    for(auto const pi: qm_sol.pick)
+                    {
+                        if(pi >= primes.size()) { ok_term = false; break; }
+                        add_term_from(primes[pi]);
+                        if(!ok_term) { break; }
+                    }
+                }
+                else
+                {
+                    for(auto const& imp: esp.cover)
+                    {
+                        add_term_from(imp);
+                        if(!ok_term) { break; }
+                    }
+                }
+                if(!ok_term || terms.empty()) { return; }
+
+                ::phy_engine::model::node_t* out = terms[0];
+                for(std::size_t i{1}; i < terms.size(); ++i)
+                {
+                    out = make_or(out, terms[i]);
+                    if(out == nullptr) { ok_term = false; break; }
+                }
+                if(!ok_term || out == nullptr) { return; }
+
+                if(best == best_kind::espresso && esp.complemented)
+                {
+                    auto* inv = make_not(out);
+                    if(inv == nullptr) { return; }
+                    out = inv;
+                }
+
+                if(out == j.root)
+                {
+                    changed = true;
+                    return;
+                }
+
+                if(is_protected(j.root)) { (void)make_yes(out, j.root); }
+                else { (void)rewire_consumers(j.root, out); }
+
+                changed = true;
+            };
+
+            auto eval_jobs_batched = [&](::std::vector<qm_job>& batch) noexcept -> void
+            {
+                if(batch.empty()) { return; }
+
+                struct u64_job { std::size_t idx{}; cuda_u64_cone_desc desc{}; };
+                struct tt_job { std::size_t idx{}; cuda_tt_cone_desc desc{}; ::std::uint32_t blocks{}; };
+
+                ::std::vector<u64_job> u64_jobs{};
+                ::std::vector<tt_job> tt_jobs{};
+                ::std::vector<std::size_t> fallback{};
+                u64_jobs.reserve(batch.size());
+                tt_jobs.reserve(batch.size());
+                fallback.reserve(64);
+
+                auto build_u64_desc = [&](qm_job const& j, cuda_u64_cone_desc& out_desc) noexcept -> bool
+                {
+                    auto const var_count = j.leaves.size();
+                    if(var_count == 0u || var_count > 6u) { return false; }
+                    out_desc = cuda_u64_cone_desc{};
+                    out_desc.var_count = static_cast<::std::uint8_t>(var_count);
+                    out_desc.gate_count = 0u;
+
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> leaf_index{};
+                    leaf_index.reserve(var_count * 2u);
+                    for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(j.leaves[i], static_cast<::std::uint8_t>(i)); }
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
+                    out_index.reserve(128);
+
+                    bool ok2{true};
+                    auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
+                    {
+                        if(!ok2 || n == nullptr) { ok2 = false; return 254u; }
+                        if(auto itc = const_val.find(n); itc != const_val.end())
+                        {
+                            using dns = ::phy_engine::model::digital_node_statement_t;
+                            if(itc->second == dns::false_state) { return 254u; }
+                            if(itc->second == dns::true_state) { return 255u; }
+                            ok2 = false;
+                            return 254u;
+                        }
+                        if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+                        if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+
+                        auto itg = gate_by_out.find(n);
+                        if(itg == gate_by_out.end()) { ok2 = false; return 254u; }
+                        auto const& gg = itg->second;
+                        auto const a = self(self, gg.in0);
+                        auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
+                        if(!ok2) { return 254u; }
+
+                        if(out_desc.gate_count >= 64u) { ok2 = false; return 254u; }
+                        auto const gi = static_cast<::std::uint8_t>(out_desc.gate_count++);
+                        out_desc.kind[gi] = enc_kind_tt(gg.k);
+                        out_desc.in0[gi] = a;
+                        out_desc.in1[gi] = b;
+                        auto const out = static_cast<::std::uint8_t>(6u + gi);
+                        out_index.emplace(n, out);
+                        return out;
+                    };
+
+                    (void)dfs2(dfs2, j.root);
+                    return ok2 && out_desc.gate_count != 0u;
+                };
+
+                auto build_tt_desc = [&](qm_job const& j, cuda_tt_cone_desc& out_desc, ::std::uint32_t& blocks_out) noexcept -> bool
+                {
+                    auto const var_count = j.leaves.size();
+                    if(var_count <= 6u || var_count > 16u) { return false; }
+                    out_desc = cuda_tt_cone_desc{};
+                    out_desc.var_count = static_cast<::std::uint8_t>(var_count);
+                    out_desc.gate_count = 0u;
+
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> leaf_index{};
+                    leaf_index.reserve(var_count * 2u);
+                    for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(j.leaves[i], static_cast<::std::uint16_t>(i)); }
+                    ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> out_index{};
+                    out_index.reserve(256);
+
+                    bool ok2{true};
+                    auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
+                    {
+                        if(!ok2 || n == nullptr) { ok2 = false; return 65534u; }
+                        if(auto itc = const_val.find(n); itc != const_val.end())
+                        {
+                            using dns = ::phy_engine::model::digital_node_statement_t;
+                            if(itc->second == dns::false_state) { return 65534u; }
+                            if(itc->second == dns::true_state) { return 65535u; }
+                            ok2 = false;
+                            return 65534u;
+                        }
+                        if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+                        if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+
+                        auto itg = gate_by_out.find(n);
+                        if(itg == gate_by_out.end()) { ok2 = false; return 65534u; }
+                        auto const& gg = itg->second;
+                        auto const a = self(self, gg.in0);
+                        auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
+                        if(!ok2) { return 65534u; }
+
+                        if(out_desc.gate_count >= 256u) { ok2 = false; return 65534u; }
+                        auto const gi = static_cast<::std::uint16_t>(out_desc.gate_count++);
+                        out_desc.kind[gi] = enc_kind_tt(gg.k);
+                        out_desc.in0[gi] = a;
+                        out_desc.in1[gi] = b;
+                        auto const out = static_cast<::std::uint16_t>(16u + gi);
+                        out_index.emplace(n, out);
+                        return out;
+                    };
+
+                    (void)dfs2(dfs2, j.root);
+                    if(!ok2 || out_desc.gate_count == 0u) { return false; }
+                    auto const U = static_cast<::std::size_t>(1u << var_count);
+                    blocks_out = static_cast<::std::uint32_t>((U + 63u) / 64u);
+                    return true;
+                };
+
+                for(std::size_t i{}; i < batch.size(); ++i)
+                {
+                    auto& j = batch[i];
+                    j.on.clear();
+                    j.dc.clear();
+                    j.valid = true;
+                    auto const var_count = j.leaves.size();
+                    if(j.root == nullptr || var_count == 0u || var_count > 16u) { j.valid = false; continue; }
+
+                    if(var_count <= 6u)
+                    {
+                        cuda_u64_cone_desc d{};
+                        if(build_u64_desc(j, d)) { u64_jobs.push_back(u64_job{i, d}); }
+                        else { fallback.push_back(i); }
+                    }
+                    else
+                    {
+                        cuda_tt_cone_desc d{};
+                        ::std::uint32_t blocks{};
+                        if(build_tt_desc(j, d, blocks)) { tt_jobs.push_back(tt_job{i, d, blocks}); }
+                        else { fallback.push_back(i); }
+                    }
+                }
+
+                if(!u64_jobs.empty())
+                {
+                    ::std::vector<cuda_u64_cone_desc> descs{};
+                    ::std::vector<::std::uint64_t> masks{};
+                    descs.reserve(u64_jobs.size());
+                    masks.resize(u64_jobs.size());
+                    for(auto const& j: u64_jobs) { descs.push_back(j.desc); }
+
+                    bool used_cuda{};
+                    if(opt.cuda_enable) { used_cuda = cuda_eval_u64_cones(opt.cuda_device_mask, descs.data(), descs.size(), masks.data()); }
+                    if(!used_cuda)
+                    {
+                        for(std::size_t k{}; k < descs.size(); ++k) { masks[k] = eval_u64_cone_cpu(descs[k]); }
+                    }
+
+                    for(std::size_t k{}; k < u64_jobs.size(); ++k)
+                    {
+                        auto& j = batch[u64_jobs[k].idx];
+                        auto const var_count = j.leaves.size();
+                        auto const U = static_cast<::std::size_t>(1u << var_count);
+                        auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
+                        auto mask = masks[k] & all_mask;
+                        j.on.reserve(U);
+                        for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(U); ++m)
+                        {
+                            if((mask >> m) & 1ull) { j.on.push_back(m); }
+                        }
+                    }
+                }
+
+                if(!tt_jobs.empty())
+                {
+                    ::std::unordered_map<::std::uint32_t, ::std::vector<std::size_t>> by_blocks{};
+                    by_blocks.reserve(16);
+                    for(std::size_t i{}; i < tt_jobs.size(); ++i) { by_blocks[tt_jobs[i].blocks].push_back(i); }
+
+                    for(auto& kv: by_blocks)
+                    {
+                        auto const blocks = kv.first;
+                        auto const& idxs = kv.second;
+                        if(idxs.empty() || blocks == 0u) { continue; }
+
+                        ::std::vector<cuda_tt_cone_desc> descs{};
+                        descs.reserve(idxs.size());
+                        for(auto const ii: idxs) { descs.push_back(tt_jobs[ii].desc); }
+
+                        ::std::vector<::std::uint64_t> tt{};
+                        tt.assign(idxs.size() * static_cast<std::size_t>(blocks), 0ull);
+
+                        bool used_cuda{};
+                        if(opt.cuda_enable) { used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, descs.data(), descs.size(), blocks, tt.data()); }
+                        if(!used_cuda)
+                        {
+                            for(std::size_t i{}; i < descs.size(); ++i)
+                            {
+                                eval_tt_cone_cpu(descs[i], blocks, tt.data() + i * static_cast<std::size_t>(blocks));
+                            }
+                        }
+
+                        for(std::size_t i{}; i < idxs.size(); ++i)
+                        {
+                            auto& j = batch[tt_jobs[idxs[i]].idx];
+                            auto const var_count = j.leaves.size();
+                            auto const U = static_cast<::std::size_t>(1u << var_count);
+                            j.on.reserve(U);
+                            auto const* words = tt.data() + i * static_cast<std::size_t>(blocks);
+                            for(::std::uint32_t bi{}; bi < blocks; ++bi)
+                            {
+                                auto w = words[bi];
+                                while(w)
+                                {
+                                    auto const b = static_cast<::std::uint32_t>(__builtin_ctzll(w));
+                                    auto const m = static_cast<::std::size_t>(bi * 64u + b);
+                                    if(m < U) { j.on.push_back(static_cast<::std::uint16_t>(m)); }
+                                    w &= (w - 1ull);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for(auto const idx: fallback)
+                {
+                    if(idx >= batch.size()) { continue; }
+                    auto& j = batch[idx];
+                    if(!eval_binary_cone_on_dc(j.root, j.leaves, j.on, j.dc))
+                    {
+                        bool ok{true};
+                        j.on.reserve(1u << j.leaves.size());
+                        for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << j.leaves.size()); ++m)
+                        {
+                            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
+                            leaf_val.reserve(j.leaves.size() * 2u);
+                            for(std::size_t i{}; i < j.leaves.size(); ++i)
+                            {
+                                auto const bit = ((m >> i) & 1u) != 0;
+                                leaf_val.emplace(j.leaves[i],
+                                                 bit ? ::phy_engine::model::digital_node_statement_t::true_state
+                                                     : ::phy_engine::model::digital_node_statement_t::false_state);
+                            }
+                            ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
+                            memo.reserve(j.to_delete.size() * 2u + 8u);
+                            ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                            visiting.reserve(j.to_delete.size() * 2u + 8u);
+                            auto const r = eval_gate(eval_gate, j.root, leaf_val, memo, visiting);
+                            if(r == ::phy_engine::model::digital_node_statement_t::true_state) { j.on.push_back(m); }
+                            else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { }
+                            else
+                            {
+                                if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { j.dc.push_back(m); }
+                                else { ok = false; break; }
+                            }
+                        }
+                        if(!ok) { j.valid = false; }
+                    }
+                }
+            };
+
+            auto flush_jobs = [&]() noexcept
+            {
+                if(jobs.empty()) { return; }
+                eval_jobs_batched(jobs);
+                for(auto& j: jobs) { process_job(j); }
+                jobs.clear();
+            };
+
+            constexpr std::size_t eval_superbatch = 2048u;
+
             for(auto* root: roots)
             {
                 if(root == nullptr) { continue; }
@@ -13032,18 +14437,18 @@ namespace phy_engine::verilog::digital
                     if(mb == nullptr || mb->type != ::phy_engine::model::model_type::normal || mb->ptr == nullptr) { continue; }
                     auto const nm = model_name_u8(*mb);
                     if((g.k == gkind::not_gate && nm != u8"NOT") || (g.k == gkind::and_gate && nm != u8"AND") || (g.k == gkind::or_gate && nm != u8"OR") ||
-                       (g.k == gkind::xor_gate && nm != u8"XOR") || (g.k == gkind::xnor_gate && nm != u8"XNOR") ||
-                       (g.k == gkind::nand_gate && nm != u8"NAND") || (g.k == gkind::nor_gate && nm != u8"NOR") || (g.k == gkind::imp_gate && nm != u8"IMP") ||
-                       (g.k == gkind::nimp_gate && nm != u8"NIMP"))
+                       (g.k == gkind::xor_gate && nm != u8"XOR") || (g.k == gkind::xnor_gate && nm != u8"XNOR") || (g.k == gkind::nand_gate && nm != u8"NAND") ||
+                       (g.k == gkind::nor_gate && nm != u8"NOR") || (g.k == gkind::imp_gate && nm != u8"IMP") || (g.k == gkind::nimp_gate && nm != u8"NIMP"))
                     {
                         continue;
                     }
                 }
 
-                ::std::vector<::phy_engine::netlist::model_pos> to_delete{};
-                to_delete.reserve(max_gates);
-                ::std::vector<::phy_engine::model::node_t*> leaves{};
-                leaves.reserve(max_vars);
+                // Collect a cone job; we will batch truth-table evaluation across jobs to reduce CUDA launch overhead.
+                qm_job job{};
+                job.root = root;
+                job.to_delete.reserve(max_gates);
+                job.leaves.reserve(max_vars);
                 ::std::unordered_map<::phy_engine::model::node_t*, std::size_t> leaf_index{};
                 leaf_index.reserve(max_vars * 2u);
 
@@ -13063,13 +14468,13 @@ namespace phy_engine::verilog::digital
                         if(const_val.contains(n)) { return; }
                         if(!leaf_index.contains(n))
                         {
-                            if(leaves.size() >= max_vars)
+                            if(job.leaves.size() >= max_vars)
                             {
                                 ok = false;
                                 return;
                             }
-                            leaf_index.emplace(n, leaves.size());
-                            leaves.push_back(n);
+                            leaf_index.emplace(n, job.leaves.size());
+                            job.leaves.push_back(n);
                         }
                         return;
                     }
@@ -13096,12 +14501,12 @@ namespace phy_engine::verilog::digital
                         }
                     }
 
-                    if(to_delete.size() >= max_gates)
+                    if(job.to_delete.size() >= max_gates)
                     {
                         ok = false;
                         return;
                     }
-                    to_delete.push_back(g.pos);
+                    job.to_delete.push_back(g.pos);
 
                     self(self, g.in0);
                     if(g.k != gkind::not_gate) { self(self, g.in1); }
@@ -13109,236 +14514,15 @@ namespace phy_engine::verilog::digital
 
                 dfs(dfs, root);
                 if(!ok) { continue; }
-                if(leaves.empty()) { continue; }
-                auto const odc_conditions = build_odc_conditions(root, leaf_index);
+                if(job.leaves.empty()) { continue; }
 
-                // Build ON/DC sets by truth-table enumeration on leaf vars (binary only).
-                ::std::vector<::std::uint16_t> on{};
-                ::std::vector<::std::uint16_t> dc{};
-                if(!eval_binary_cone_on_dc(root, leaves, on, dc))
-                {
-                    // Slow fallback: per-minterm evaluation with 4-valued semantics (preserves X/Z -> DC inference).
-                    on.reserve(1u << leaves.size());
-                    for(::std::uint16_t m{}; m < static_cast<::std::uint16_t>(1u << leaves.size()); ++m)
-                    {
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> leaf_val{};
-                        leaf_val.reserve(leaves.size() * 2u);
-                        for(std::size_t i{}; i < leaves.size(); ++i)
-                        {
-                            auto const bit = ((m >> i) & 1u) != 0;
-                            leaf_val.emplace(leaves[i],
-                                             bit ? ::phy_engine::model::digital_node_statement_t::true_state
-                                                 : ::phy_engine::model::digital_node_statement_t::false_state);
-                        }
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::phy_engine::model::digital_node_statement_t> memo{};
-                        memo.reserve(to_delete.size() * 2u + 8u);
-                        ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
-                        visiting.reserve(to_delete.size() * 2u + 8u);
-                        auto const r = eval_gate(eval_gate, root, leaf_val, memo, visiting);
-                        if(r == ::phy_engine::model::digital_node_statement_t::true_state) { on.push_back(m); }
-                        else if(r == ::phy_engine::model::digital_node_statement_t::false_state) { /* off */ }
-                        else
-                        {
-                            if(opt.assume_binary_inputs && opt.infer_dc_from_xz) { dc.push_back(m); }
-                            else
-                            {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if(!ok) { continue; }
-                }
+                job.odc_conditions = build_odc_conditions(root, leaf_index);
 
-                if(opt.infer_dc_from_fsm)
-                {
-                    auto const views = build_dc_group_views(leaves);
-                    if(!views.empty()) { apply_dc_constraints(dc, on, leaves.size(), views); }
-                }
-                if(!odc_conditions.empty()) { apply_odc_conditions(on, dc, leaves.size(), odc_conditions); }
-
-                auto const primes = qm_prime_implicants(on, dc, leaves.size());
-                if(primes.size() > max_primes) { continue; }
-                qm_solution qm_sol{};
-                if(leaves.size() <= exact_vars) { qm_sol = qm_exact_minimum_cover(primes, on, leaves.size(), opt); }
-                else
-                {
-                    qm_sol = qm_greedy_cover(primes, on, leaves.size(), opt);
-                    if(primes.size() <= 64u && on.size() <= 64u)
-                    {
-                        auto const pet = qm_petrick_minimum_cover(primes, on, leaves.size(), opt);
-                        if(pet.cost != static_cast<std::size_t>(-1) && (qm_sol.cost == static_cast<std::size_t>(-1) || pet.cost < qm_sol.cost))
-                        {
-                            qm_sol = pet;
-                        }
-                    }
-                }
-                if(qm_sol.cost == static_cast<std::size_t>(-1)) { continue; }
-
-                enum class best_kind : std::uint8_t
-                {
-                    qm,
-                    espresso,
-                };
-                best_kind best{best_kind::qm};
-                std::size_t best_cost{qm_sol.cost};
-                espresso_solution esp{};
-
-                // Espresso-style heuristic (still bounded by enumeration). Skip tiny cases where QM exact cover is already optimal.
-                if(leaves.size() > exact_vars)
-                {
-                    esp = espresso_two_level_minimize(on, dc, leaves.size(), opt);
-                    if(esp.cost != static_cast<std::size_t>(-1) && esp.cost < best_cost)
-                    {
-                        best = best_kind::espresso;
-                        best_cost = esp.cost;
-                    }
-                }
-
-                // Normalize deletion list and only apply if we estimate a gate-count win.
-                ::std::sort(to_delete.begin(),
-                            to_delete.end(),
-                            [](auto const& a, auto const& b) noexcept
-                            {
-                                if(a.chunk_pos != b.chunk_pos) { return a.chunk_pos > b.chunk_pos; }
-                                return a.vec_pos > b.vec_pos;
-                            });
-                to_delete.erase(::std::unique(to_delete.begin(),
-                                              to_delete.end(),
-                                              [](auto const& a, auto const& b) noexcept { return a.chunk_pos == b.chunk_pos && a.vec_pos == b.vec_pos; }),
-                                to_delete.end());
-
-                if(best_cost >= to_delete.size()) { continue; }
-
-                // Delete old cone (descending order).
-                for(auto const& mp: to_delete) { (void)::phy_engine::netlist::delete_model(nl, mp); }
-
-                // Rebuild minimized SOP.
-                auto* const0 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::false_state);
-                auto* const1 = find_or_make_const_node(nl, ::phy_engine::model::digital_node_statement_t::true_state);
-                if(const0 == nullptr || const1 == nullptr) { continue; }
-
-                if(on.empty())
-                {
-                    (void)make_yes(const0, root);
-                    changed = true;
-                    continue;
-                }
-                if(on.size() == (1u << leaves.size()))
-                {
-                    (void)make_yes(const1, root);
-                    changed = true;
-                    continue;
-                }
-
-                // Cache negations used.
-                ::std::vector<::phy_engine::model::node_t*> neg{};
-                neg.assign(leaves.size(), nullptr);
-                auto ensure_neg_for = [&](qm_implicant const& imp) noexcept
-                {
-                    for(std::size_t v{}; v < leaves.size(); ++v)
-                    {
-                        if((imp.mask >> v) & 1u) { continue; }
-                        bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
-                        if(bit_is_1) { continue; }
-                        if(neg[v] == nullptr) { neg[v] = make_not(leaves[v]); }
-                    }
-                };
-                if(best == best_kind::qm)
-                {
-                    for(auto const pi: qm_sol.pick)
-                    {
-                        if(pi >= primes.size()) { continue; }
-                        ensure_neg_for(primes[pi]);
-                    }
-                }
-                else
-                {
-                    for(auto const& imp: esp.cover) { ensure_neg_for(imp); }
-                }
-
-                ::std::vector<::phy_engine::model::node_t*> terms{};
-                terms.reserve(best == best_kind::qm ? qm_sol.pick.size() : esp.cover.size());
-                auto add_term_from = [&](qm_implicant const& imp) noexcept -> void
-                {
-                    ::phy_engine::model::node_t* term = nullptr;
-                    std::size_t lits{};
-                    for(std::size_t v{}; v < leaves.size(); ++v)
-                    {
-                        if((imp.mask >> v) & 1u) { continue; }
-                        bool const bit_is_1 = ((imp.value >> v) & 1u) != 0;
-                        auto* lit = bit_is_1 ? leaves[v] : neg[v];
-                        if(lit == nullptr)
-                        {
-                            ok = false;
-                            break;
-                        }
-                        ++lits;
-                        if(term == nullptr) { term = lit; }
-                        else
-                        {
-                            term = make_and(term, lit);
-                        }
-                    }
-                    if(!ok) { return; }
-                    if(lits == 0) { term = const1; }  // covers all
-                    if(term != nullptr) { terms.push_back(term); }
-                };
-                if(best == best_kind::qm)
-                {
-                    for(auto const pi: qm_sol.pick)
-                    {
-                        if(pi >= primes.size()) { continue; }
-                        add_term_from(primes[pi]);
-                        if(!ok) { break; }
-                    }
-                }
-                else
-                {
-                    for(auto const& imp: esp.cover)
-                    {
-                        add_term_from(imp);
-                        if(!ok) { break; }
-                    }
-                }
-                if(!ok || terms.empty()) { continue; }
-
-                ::phy_engine::model::node_t* out = terms[0];
-                for(std::size_t i{1}; i < terms.size(); ++i)
-                {
-                    out = make_or(out, terms[i]);
-                    if(out == nullptr)
-                    {
-                        ok = false;
-                        break;
-                    }
-                }
-                if(!ok || out == nullptr) { continue; }
-
-                if(best == best_kind::espresso && esp.complemented)
-                {
-                    auto* inv = make_not(out);
-                    if(inv == nullptr) { continue; }
-                    out = inv;
-                }
-
-                if(out == root)
-                {
-                    changed = true;
-                    continue;
-                }
-
-                // Keep protected port nodes intact: use YES buffer if output is not directly driven by a newly created gate.
-                // Otherwise, connect final output by a YES to ensure root has a driver.
-                if(is_protected(root)) { (void)make_yes(out, root); }
-                else
-                {
-                    // If root is not protected, alias by moving consumers to `out`.
-                    (void)rewire_consumers(root, out);
-                }
-
-                changed = true;
+                jobs.push_back(::std::move(job));
+                if(jobs.size() >= eval_superbatch) { flush_jobs(); }
             }
+
+            flush_jobs();
 
             return changed;
         }
@@ -16038,6 +17222,8 @@ namespace phy_engine::verilog::digital
                 if(need_rollback) { snap.emplace(net); }
 
                 auto const before = details::count_logic_gates(net);
+                using pass_clock = ::std::chrono::steady_clock;
+                auto const t0 = (rep_run != nullptr) ? pass_clock::now() : pass_clock::time_point{};
 
                 fn();
 
@@ -16057,7 +17243,9 @@ namespace phy_engine::verilog::digital
                 if(rep_run != nullptr)
                 {
                     auto const after = details::count_logic_gates(net);
-                    rep_run->passes.push_back(pe_synth_pass_stat{.pass = name, .before = before, .after = after});
+                    auto const elapsed_us = static_cast<std::size_t>(
+                        ::std::chrono::duration_cast<::std::chrono::microseconds>(pass_clock::now() - t0).count());
+                    rep_run->passes.push_back(pe_synth_pass_stat{.pass = name, .before = before, .after = after, .elapsed_us = elapsed_us});
                 }
             };
 
