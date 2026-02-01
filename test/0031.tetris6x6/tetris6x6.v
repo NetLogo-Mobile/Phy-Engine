@@ -1,6 +1,6 @@
-module snake6x6 (
+module tetris6x6 (
     input  clk,
-    input  rst_n,
+    input  rst,
     input  left,
     input  right,
     input  rotate,
@@ -30,6 +30,12 @@ module snake6x6 (
     reg [2:0] px;
     reg [2:0] py;
     reg [1:0] next_type;
+
+    // For pe_synth's internal $random lowering: provide an active-low reset signal name.
+    wire rst_n;
+    assign rst_n = ~rst;
+    wire [1:0] rand2;
+    assign rand2 = $random;
 
     // FSM: 0=PLAY, 1=CLEAR, 2=SPAWN
     reg [1:0] state;
@@ -96,25 +102,38 @@ module snake6x6 (
     assign s2 = ({2'b00, sh2} << px);
     assign s3 = ({2'b00, sh3} << px);
 
-    reg [5:0] ar0, ar1, ar2, ar3, ar4, ar5;
-    always @(*) begin
-        ar0 = 6'd0; ar1 = 6'd0; ar2 = 6'd0; ar3 = 6'd0; ar4 = 6'd0; ar5 = 6'd0;
-        if (active_en) begin
-            if (py == 3'd0) begin
-                ar0 = s0; ar1 = s1; ar2 = s2; ar3 = s3;
-            end else if (py == 3'd1) begin
-                ar1 = s0; ar2 = s1; ar3 = s2; ar4 = s3;
-            end else if (py == 3'd2) begin
-                ar2 = s0; ar3 = s1; ar4 = s2; ar5 = s3;
-            end else if (py == 3'd3) begin
-                ar3 = s0; ar4 = s1; ar5 = s2;
-            end else if (py == 3'd4) begin
-                ar4 = s0; ar5 = s1;
-            end else begin
-                ar5 = s0;
-            end
-        end
-    end
+    wire [5:0] ar0, ar1, ar2, ar3, ar4, ar5;
+    assign ar0 = active_en ? ((py == 3'd0) ? s0 :
+                             (py == 3'd1) ? 6'd0 :
+                             (py == 3'd2) ? 6'd0 :
+                             (py == 3'd3) ? 6'd0 :
+                             (py == 3'd4) ? 6'd0 : 6'd0) : 6'd0;
+    assign ar1 = active_en ? ((py == 3'd0) ? s1 :
+                             (py == 3'd1) ? s0 :
+                             (py == 3'd2) ? 6'd0 :
+                             (py == 3'd3) ? 6'd0 :
+                             (py == 3'd4) ? 6'd0 : 6'd0) : 6'd0;
+    assign ar2 = active_en ? ((py == 3'd0) ? s2 :
+                             (py == 3'd1) ? s1 :
+                             (py == 3'd2) ? s0 :
+                             (py == 3'd3) ? 6'd0 :
+                             (py == 3'd4) ? 6'd0 : 6'd0) : 6'd0;
+    assign ar3 = active_en ? ((py == 3'd0) ? s3 :
+                             (py == 3'd1) ? s2 :
+                             (py == 3'd2) ? s1 :
+                             (py == 3'd3) ? s0 :
+                             (py == 3'd4) ? 6'd0 : 6'd0) : 6'd0;
+    assign ar4 = active_en ? ((py == 3'd0) ? 6'd0 :
+                             (py == 3'd1) ? s3 :
+                             (py == 3'd2) ? s2 :
+                             (py == 3'd3) ? s1 :
+                             (py == 3'd4) ? s0 : 6'd0) : 6'd0;
+    assign ar5 = active_en ? ((py == 3'd0) ? 6'd0 :
+                             (py == 3'd1) ? 6'd0 :
+                             (py == 3'd2) ? s3 :
+                             (py == 3'd3) ? s2 :
+                             (py == 3'd4) ? s1 :
+                             (py == 3'd5) ? s0 : 6'd0) : 6'd0;
 
     // ============================
     // collision helpers
@@ -203,23 +222,38 @@ module snake6x6 (
     assign rs2 = ({2'b00, rsh2} << px_rot);
     assign rs3 = ({2'b00, rsh3} << px_rot);
 
-    reg [5:0] rr0, rr1, rr2, rr3, rr4, rr5;
-    always @(*) begin
-        rr0 = 6'd0; rr1 = 6'd0; rr2 = 6'd0; rr3 = 6'd0; rr4 = 6'd0; rr5 = 6'd0;
-        if (py == 3'd0) begin
-            rr0 = rs0; rr1 = rs1; rr2 = rs2; rr3 = rs3;
-        end else if (py == 3'd1) begin
-            rr1 = rs0; rr2 = rs1; rr3 = rs2; rr4 = rs3;
-        end else if (py == 3'd2) begin
-            rr2 = rs0; rr3 = rs1; rr4 = rs2; rr5 = rs3;
-        end else if (py == 3'd3) begin
-            rr3 = rs0; rr4 = rs1; rr5 = rs2;
-        end else if (py == 3'd4) begin
-            rr4 = rs0; rr5 = rs1;
-        end else begin
-            rr5 = rs0;
-        end
-    end
+    wire [5:0] rr0, rr1, rr2, rr3, rr4, rr5;
+    assign rr0 = (py == 3'd0) ? rs0 :
+                 (py == 3'd1) ? 6'd0 :
+                 (py == 3'd2) ? 6'd0 :
+                 (py == 3'd3) ? 6'd0 :
+                 (py == 3'd4) ? 6'd0 : 6'd0;
+    assign rr1 = (py == 3'd0) ? rs1 :
+                 (py == 3'd1) ? rs0 :
+                 (py == 3'd2) ? 6'd0 :
+                 (py == 3'd3) ? 6'd0 :
+                 (py == 3'd4) ? 6'd0 : 6'd0;
+    assign rr2 = (py == 3'd0) ? rs2 :
+                 (py == 3'd1) ? rs1 :
+                 (py == 3'd2) ? rs0 :
+                 (py == 3'd3) ? 6'd0 :
+                 (py == 3'd4) ? 6'd0 : 6'd0;
+    assign rr3 = (py == 3'd0) ? rs3 :
+                 (py == 3'd1) ? rs2 :
+                 (py == 3'd2) ? rs1 :
+                 (py == 3'd3) ? rs0 :
+                 (py == 3'd4) ? 6'd0 : 6'd0;
+    assign rr4 = (py == 3'd0) ? 6'd0 :
+                 (py == 3'd1) ? rs3 :
+                 (py == 3'd2) ? rs2 :
+                 (py == 3'd3) ? rs1 :
+                 (py == 3'd4) ? rs0 : 6'd0;
+    assign rr5 = (py == 3'd0) ? 6'd0 :
+                 (py == 3'd1) ? 6'd0 :
+                 (py == 3'd2) ? rs3 :
+                 (py == 3'd3) ? rs2 :
+                 (py == 3'd4) ? rs1 :
+                 (py == 3'd5) ? rs0 : 6'd0;
 
     wire rotate_in_bounds;
     assign rotate_in_bounds = (py + rsh_h) <= 3'd6;
@@ -232,7 +266,7 @@ module snake6x6 (
     assign can_rotate = active_en & rotate_in_bounds & (~rotate_collide);
 
     // ============================
-    // spawn (deterministic first piece, then $random)
+    // spawn (fixed center)
     // ============================
     reg [2:0] spx;
     always @(*) begin
@@ -255,8 +289,8 @@ module snake6x6 (
     // ============================
     // main sequential
     // ============================
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
             b0 <= 0; b1 <= 0; b2 <= 0; b3 <= 0; b4 <= 0; b5 <= 0;
             ptype <= 2'd0;
             prot <= 2'd0;
@@ -299,7 +333,7 @@ module snake6x6 (
                     prot <= 2'd0;
                     px <= spx;
                     py <= 3'd0;
-                    next_type <= $random;
+                    next_type <= rand2;
                     state <= 2'd0;  // PLAY
                 end
             end
