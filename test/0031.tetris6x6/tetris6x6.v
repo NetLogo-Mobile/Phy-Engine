@@ -34,8 +34,11 @@ module tetris6x6 (
     // For pe_synth's internal $random lowering: provide an active-low reset signal name.
     wire rst_n;
     assign rst_n = ~rst;
-    wire [1:0] rand2;
-    assign rand2 = $random;
+    reg [1:0] rand2;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) rand2 <= 2'd0;
+        else        rand2 <= $random;
+    end
 
     // FSM: 0=PLAY, 1=CLEAR, 2=SPAWN
     reg [1:0] state;

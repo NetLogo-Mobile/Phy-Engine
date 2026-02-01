@@ -177,6 +177,21 @@ int main()
         throw std::runtime_error("pe_synth failed: " + std::string(reinterpret_cast<char const*>(err.message.data()), err.message.size()));
     }
 
+    // Ensure `$random` lowered to a PE RNG macro (otherwise it may constant-fold and always spawn I).
+    {
+        bool has_rng{};
+        for(auto& blk : nl.models)
+        {
+            for(auto* m = blk.begin; m != blk.curr; ++m)
+            {
+                if(m->type != ::phy_engine::model::model_type::normal) { continue; }
+                if(m->ptr == nullptr) { continue; }
+                if(m->ptr->get_model_name() == ::fast_io::u8string_view{u8"RANDOM_GENERATOR4"}) { has_rng = true; }
+            }
+        }
+        if(!has_rng) { return 12; }
+    }
+
     if(!c.analyze()) { return 12; }
 
     auto* in_clk = input_by_name.at("clk");
@@ -244,7 +259,17 @@ int main()
         if(read_row(y) != 0) { return 15; }
     }
 
-    // 2) Rotate should rotate the first I piece in-place (no fall due to priority).
+    // 2) Move right once, then rotate to place a vertical obstacle column at x=2.
+    set_in(in_right, true);
+    set_in(in_clk, false);
+    c.digital_clk();
+    tick();
+    set_in(in_right, false);
+    set_in(in_clk, false);
+    c.digital_clk();
+    if(read_port_bit(*game_over_port)) { return 16; }
+    if(read_row(0) != 0b111100) { return 17; }  // I moved right (px=2)
+
     set_in(in_rotate, true);
     set_in(in_clk, false);
     c.digital_clk();
@@ -252,13 +277,52 @@ int main()
     set_in(in_rotate, false);
     set_in(in_clk, false);
     c.digital_clk();
-    if(read_port_bit(*game_over_port)) { return 16; }
-    if(read_row(0) != 0b000010) { return 17; }
-    if(read_row(1) != 0b000010) { return 18; }
-    if(read_row(2) != 0b000010) { return 19; }
-    if(read_row(3) != 0b000010) { return 20; }
+    if(read_port_bit(*game_over_port)) { return 18; }
+    if(read_row(0) != 0b000100) { return 19; }
+    if(read_row(1) != 0b000100) { return 20; }
+    if(read_row(2) != 0b000100) { return 21; }
+    if(read_row(3) != 0b000100) { return 22; }
 
-    // 3) Run until game_over and check the "X" overlay.
+    // 3) Let the vertical I fall and lock at the bottom (obstacle at rows2..5, x=2).
+    set_in(in_left, false);
+    set_in(in_right, false);
+    set_in(in_rotate, false);
+    tick();  // py=1
+    tick();  // py=2
+    tick();  // lock -> CLEAR
+
+    if(read_row(0) != 0) { return 23; }
+    if(read_row(1) != 0) { return 24; }
+    if(read_row(2) != 0b000100) { return 25; }
+    if(read_row(3) != 0b000100) { return 26; }
+    if(read_row(4) != 0b000100) { return 27; }
+    if(read_row(5) != 0b000100) { return 28; }
+
+    // 4) Spawn one more piece and ensure it does not overlap ("phase") into the obstacle column.
+    // (All pieces overlap bit2 at spawn, so collide_down should stop them above row2.)
+    {
+        bool saw_spawn{};
+        for(std::size_t i{}; i < 256; ++i)
+        {
+            tick();
+            if(read_port_bit(*game_over_port)) { return 29; }
+            if(read_row(0) != 0)
+            {
+                saw_spawn = true;
+                break;
+            }
+        }
+        if(!saw_spawn) { return 30; }
+
+        tick();  // py=1
+        tick();  // collide_down -> lock
+        if(read_row(2) != 0b000100) { return 31; }
+        if(read_row(3) != 0b000100) { return 32; }
+        if(read_row(4) != 0b000100) { return 33; }
+        if(read_row(5) != 0b000100) { return 34; }
+    }
+
+    // 5) Run until game_over and check the "X" overlay.
     set_in(in_left, false);
     set_in(in_rotate, false);
     set_in(in_right, true);  // bias towards a quick loss
@@ -273,14 +337,14 @@ int main()
             break;
         }
     }
-    if(!saw_game_over) { return 21; }
+    if(!saw_game_over) { return 36; }
 
-    if(read_row(0) != 0b100001) { return 22; }
-    if(read_row(1) != 0b010010) { return 23; }
-    if(read_row(2) != 0b001100) { return 24; }
-    if(read_row(3) != 0b001100) { return 25; }
-    if(read_row(4) != 0b010010) { return 26; }
-    if(read_row(5) != 0b100001) { return 27; }
+    if(read_row(0) != 0b100001) { return 37; }
+    if(read_row(1) != 0b010010) { return 38; }
+    if(read_row(2) != 0b001100) { return 39; }
+    if(read_row(3) != 0b001100) { return 40; }
+    if(read_row(4) != 0b010010) { return 41; }
+    if(read_row(5) != 0b100001) { return 42; }
 
     // 4) Gate count check (after passing the sim checks), under O4 optimization.
     {
