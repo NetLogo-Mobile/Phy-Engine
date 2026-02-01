@@ -51,18 +51,22 @@ namespace phy_engine::verilog::digital::details
 
             auto const c = cones[tid];
             auto const vc = static_cast<unsigned>(c.var_count);
-            if(vc > 6u) { out_masks[tid] = 0ull; return; }
+            if(vc > 6u)
+            {
+                out_masks[tid] = 0ull;
+                return;
+            }
 
             auto const U = (vc >= 6u) ? 64u : (1u << vc);
             auto const all_mask = (U == 64u) ? ~0ull : ((1ull << U) - 1ull);
 
             std::uint64_t val[6u + 64u];
-            #pragma unroll
+#pragma unroll
             for(unsigned i = 0u; i < 6u; ++i) { val[i] = 0ull; }
-            #pragma unroll
+#pragma unroll
             for(unsigned i = 0u; i < 64u; ++i) { val[6u + i] = 0ull; }
 
-            #pragma unroll
+#pragma unroll
             for(unsigned i = 0u; i < 6u; ++i)
             {
                 if(i < vc) { val[i] = leaf_pattern(i) & all_mask; }
@@ -77,7 +81,11 @@ namespace phy_engine::verilog::digital::details
             };
 
             auto const gc = static_cast<unsigned>(c.gate_count);
-            if(gc == 0u || gc > 64u) { out_masks[tid] = 0ull; return; }
+            if(gc == 0u || gc > 64u)
+            {
+                out_masks[tid] = 0ull;
+                return;
+            }
 
             for(unsigned gi = 0u; gi < gc; ++gi)
             {
@@ -86,15 +94,15 @@ namespace phy_engine::verilog::digital::details
                 std::uint64_t r{};
                 switch(c.kind[gi])
                 {
-                    case 0u: r = ~a; break;            // NOT
-                    case 1u: r = a & b; break;         // AND
-                    case 2u: r = a | b; break;         // OR
-                    case 3u: r = a ^ b; break;         // XOR
-                    case 4u: r = ~(a ^ b); break;      // XNOR
-                    case 5u: r = ~(a & b); break;      // NAND
-                    case 6u: r = ~(a | b); break;      // NOR
-                    case 7u: r = (~a) | b; break;      // IMP
-                    case 8u: r = a & (~b); break;      // NIMP
+                    case 0u: r = ~a; break;        // NOT
+                    case 1u: r = a & b; break;     // AND
+                    case 2u: r = a | b; break;     // OR
+                    case 3u: r = a ^ b; break;     // XOR
+                    case 4u: r = ~(a ^ b); break;  // XNOR
+                    case 5u: r = ~(a & b); break;  // NAND
+                    case 6u: r = ~(a | b); break;  // NOR
+                    case 7u: r = (~a) | b; break;  // IMP
+                    case 8u: r = a & (~b); break;  // NIMP
                     default: r = 0ull; break;
                 }
                 val[6u + gi] = r & all_mask;
@@ -103,10 +111,8 @@ namespace phy_engine::verilog::digital::details
             out_masks[tid] = val[6u + (gc - 1u)] & all_mask;
         }
 
-        __global__ void eval_tt_cones_kernel(cuda_tt_cone_desc const* cones,
-                                             std::size_t cone_count,
-                                             std::uint32_t stride_blocks,
-                                             std::uint64_t* out_blocks) noexcept
+        __global__ void
+            eval_tt_cones_kernel(cuda_tt_cone_desc const* cones, std::size_t cone_count, std::uint32_t stride_blocks, std::uint64_t* out_blocks) noexcept
         {
             auto const cone_idx = static_cast<std::size_t>(blockIdx.x);
             auto const word_idx = static_cast<unsigned>(blockIdx.y) * static_cast<unsigned>(blockDim.x) + static_cast<unsigned>(threadIdx.x);
@@ -139,7 +145,7 @@ namespace phy_engine::verilog::digital::details
             auto const word_mask = (word_idx + 1u == blocks) ? last_mask : ~0ull;
 
             std::uint64_t val[16u + 256u];
-            #pragma unroll
+#pragma unroll
             for(unsigned i = 0u; i < 16u + 256u; ++i) { val[i] = 0ull; }
 
             for(unsigned i = 0u; i < vc; ++i) { val[i] = leaf_word16(i, word_idx) & word_mask; }
@@ -166,15 +172,15 @@ namespace phy_engine::verilog::digital::details
                 std::uint64_t r{};
                 switch(c.kind[gi])
                 {
-                    case 0u: r = ~a; break;            // NOT
-                    case 1u: r = a & b; break;         // AND
-                    case 2u: r = a | b; break;         // OR
-                    case 3u: r = a ^ b; break;         // XOR
-                    case 4u: r = ~(a ^ b); break;      // XNOR
-                    case 5u: r = ~(a & b); break;      // NAND
-                    case 6u: r = ~(a | b); break;      // NOR
-                    case 7u: r = (~a) | b; break;      // IMP
-                    case 8u: r = a & (~b); break;      // NIMP
+                    case 0u: r = ~a; break;        // NOT
+                    case 1u: r = a & b; break;     // AND
+                    case 2u: r = a | b; break;     // OR
+                    case 3u: r = a ^ b; break;     // XOR
+                    case 4u: r = ~(a ^ b); break;  // XNOR
+                    case 5u: r = ~(a & b); break;  // NAND
+                    case 6u: r = ~(a | b); break;  // NOR
+                    case 7u: r = (~a) | b; break;  // IMP
+                    case 8u: r = a & (~b); break;  // NIMP
                     default: r = 0ull; break;
                 }
                 val[16u + gi] = r & word_mask;
@@ -194,8 +200,7 @@ namespace phy_engine::verilog::digital::details
             auto const row = static_cast<std::size_t>(blockIdx.x);
             if(row >= row_count) { return; }
 
-            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
-                           static_cast<std::uint32_t>(threadIdx.x);
+            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) + static_cast<std::uint32_t>(threadIdx.x);
             std::uint32_t v{};
             if(w < stride_words)
             {
@@ -228,8 +233,7 @@ namespace phy_engine::verilog::digital::details
             if(row >= row_count) { return; }
             if(active != nullptr && active[row] == 0u) { return; }
 
-            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
-                           static_cast<std::uint32_t>(threadIdx.x);
+            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) + static_cast<std::uint32_t>(threadIdx.x);
             std::uint32_t v{};
             if(w < stride_words)
             {
@@ -294,7 +298,10 @@ namespace phy_engine::verilog::digital::details
                 std::int32_t s{};
                 if(s64 > static_cast<long long>(INT32_MAX)) { s = INT32_MAX; }
                 else if(s64 < static_cast<long long>(INT32_MIN)) { s = INT32_MIN; }
-                else { s = static_cast<std::int32_t>(s64); }
+                else
+                {
+                    s = static_cast<std::int32_t>(s64);
+                }
 
                 best_item cand{};
                 cand.score = s;
@@ -390,8 +397,7 @@ namespace phy_engine::verilog::digital::details
 
             if(threadIdx.x == 0u)
             {
-                out_rows[row * static_cast<std::size_t>(stride_words) + w] =
-                    static_cast<std::uint64_t>(sh_low) | (static_cast<std::uint64_t>(sh_high) << 32u);
+                out_rows[row * static_cast<std::size_t>(stride_words) + w] = static_cast<std::uint64_t>(sh_low) | (static_cast<std::uint64_t>(sh_high) << 32u);
             }
         }
 
@@ -404,8 +410,7 @@ namespace phy_engine::verilog::digital::details
             auto const row = static_cast<std::size_t>(blockIdx.x);
             if(row >= row_count) { return; }
 
-            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
-                           static_cast<std::uint32_t>(threadIdx.x);
+            auto const w = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) + static_cast<std::uint32_t>(threadIdx.x);
             std::uint8_t v{};
             if(w < stride_words)
             {
@@ -428,8 +433,7 @@ namespace phy_engine::verilog::digital::details
 
         __global__ void bitset_mask_andnot_kernel(std::uint64_t* mask, std::uint64_t const* row, std::uint32_t stride_words) noexcept
         {
-            auto const i = static_cast<std::uint32_t>(blockIdx.x) * static_cast<std::uint32_t>(blockDim.x) +
-                           static_cast<std::uint32_t>(threadIdx.x);
+            auto const i = static_cast<std::uint32_t>(blockIdx.x) * static_cast<std::uint32_t>(blockDim.x) + static_cast<std::uint32_t>(threadIdx.x);
             if(i >= stride_words) { return; }
             mask[i] &= ~row[i];
         }
@@ -442,8 +446,7 @@ namespace phy_engine::verilog::digital::details
                                                       std::uint32_t* out_hits) noexcept
         {
             auto const cube_idx = static_cast<std::size_t>(blockIdx.x);
-            auto const word_idx = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) +
-                                  static_cast<std::uint32_t>(threadIdx.x);
+            auto const word_idx = static_cast<std::uint32_t>(blockIdx.y) * static_cast<std::uint32_t>(blockDim.x) + static_cast<std::uint32_t>(threadIdx.x);
             if(cube_idx >= cube_count) { return; }
             if(word_idx >= off_words) { return; }
             if(var_count == 0u || var_count > 16u) { return; }
@@ -453,7 +456,7 @@ namespace phy_engine::verilog::digital::details
 
             auto const c = cubes[cube_idx];
             std::uint64_t cov = ~0ull;
-            #pragma unroll
+#pragma unroll
             for(unsigned v = 0u; v < 16u; ++v)
             {
                 if(v >= var_count) { break; }
@@ -466,10 +469,8 @@ namespace phy_engine::verilog::digital::details
             if((cov & offw) != 0ull) { atomicOr(out_hits + cube_idx, 1u); }
         }
 
-        __device__ __forceinline__ bool cube_hits_off_warp(cuda_cube_desc c,
-                                                           std::uint32_t var_count,
-                                                           std::uint64_t const* off_blocks,
-                                                           std::uint32_t off_words) noexcept
+        __device__ __forceinline__ bool
+            cube_hits_off_warp(cuda_cube_desc c, std::uint32_t var_count, std::uint64_t const* off_blocks, std::uint32_t off_words) noexcept
         {
             // Use one warp to scan the OFF bitset words. var_count<=16 and off_words<=1024.
             auto const lane = static_cast<unsigned>(threadIdx.x) & 31u;
@@ -484,7 +485,7 @@ namespace phy_engine::verilog::digital::details
                     if(offw != 0ull)
                     {
                         std::uint64_t cov = ~0ull;
-                        #pragma unroll
+#pragma unroll
                         for(unsigned v = 0u; v < 16u; ++v)
                         {
                             if(v >= var_count) { break; }
@@ -510,8 +511,8 @@ namespace phy_engine::verilog::digital::details
                                                             std::uint32_t* out_hits) noexcept
         {
             constexpr unsigned warps_per_block = 4u;
-            auto const warp = static_cast<unsigned>(threadIdx.x) >> 5u;   // 0..3
-            auto const lane = static_cast<unsigned>(threadIdx.x) & 31u;   // 0..31
+            auto const warp = static_cast<unsigned>(threadIdx.x) >> 5u;  // 0..3
+            auto const lane = static_cast<unsigned>(threadIdx.x) & 31u;  // 0..31
             if(warp >= warps_per_block) { return; }
             auto const cube_idx = static_cast<std::size_t>(blockIdx.x) * warps_per_block + static_cast<std::size_t>(warp);
             if(cube_idx >= cube_count) { return; }
@@ -532,7 +533,7 @@ namespace phy_engine::verilog::digital::details
                     if(offw != 0ull)
                     {
                         std::uint64_t cov = ~0ull;
-                        #pragma unroll
+#pragma unroll
                         for(unsigned v = 0u; v < 16u; ++v)
                         {
                             if(v >= var_count) { break; }
@@ -545,7 +546,11 @@ namespace phy_engine::verilog::digital::details
                         lane_hit = ((cov & offw) != 0ull);
                     }
                 }
-                if(__any_sync(full, lane_hit)) { hit = true; break; }
+                if(__any_sync(full, lane_hit))
+                {
+                    hit = true;
+                    break;
+                }
             }
 
             if(lane == 0u) { out_hits[cube_idx] = hit ? 1u : 0u; }
@@ -681,6 +686,8 @@ namespace phy_engine::verilog::digital::details
             cuda_u64_cone_desc* d_cones{};
             std::uint64_t* d_out{};
             std::size_t cap_cones{};
+            int occ_block_size{};  // cached from cudaOccupancyMaxPotentialBlockSize (0 = unknown)
+            int occ_min_grid_size{};
             // Optional pinned host staging to keep H2D/D2H asynchronous and reduce driver overhead.
             cuda_u64_cone_desc* h_cones_pinned{};
             std::uint64_t* h_out_pinned{};
@@ -697,12 +704,60 @@ namespace phy_engine::verilog::digital::details
             std::uint64_t* d_out{};
             std::size_t cap_cones{};
             std::uint32_t cap_stride_blocks{};
+            int occ_block_size{};  // cached from cudaOccupancyMaxPotentialBlockSize (0 = unknown)
+            int occ_min_grid_size{};
             cuda_tt_cone_desc* h_cones_pinned{};
             std::uint64_t* h_out_pinned{};
             std::size_t cap_host_cones{};
             std::uint32_t cap_host_stride_blocks{};
             bool ok{};
         };
+
+        [[nodiscard]] inline unsigned clamp_block_size(int block_size, unsigned fallback) noexcept
+        {
+            if(block_size <= 0) { return fallback; }
+            unsigned bs = static_cast<unsigned>(block_size);
+            if(bs > 1024u) { bs = 1024u; }
+            // Keep it warp-aligned; avoids partial warp waste and is required by some reduction patterns elsewhere.
+            bs &= ~31u;
+            if(bs == 0u) { bs = fallback; }
+            if(bs < 32u) { bs = 32u; }
+            return bs;
+        }
+
+        [[nodiscard]] inline unsigned eval_u64_pick_threads(eval_u64_ctx& ctx) noexcept
+        {
+            // ctx.mu is held by the caller; cache per-device for the life of the process.
+            if(ctx.occ_block_size != 0) { return clamp_block_size(ctx.occ_block_size, 256u); }
+            int min_grid{};
+            int block{};
+            cudaError_t const err = cudaOccupancyMaxPotentialBlockSize(&min_grid, &block, eval_u64_cones_kernel, 0u, 0);
+            if(err != cudaSuccess)
+            {
+                block = 256;
+                min_grid = 0;
+            }
+            ctx.occ_block_size = block;
+            ctx.occ_min_grid_size = min_grid;
+            return clamp_block_size(block, 256u);
+        }
+
+        [[nodiscard]] inline unsigned eval_tt_pick_threads(eval_tt_ctx& ctx) noexcept
+        {
+            // ctx.mu is held by the caller; cache per-device for the life of the process.
+            if(ctx.occ_block_size != 0) { return clamp_block_size(ctx.occ_block_size, 128u); }
+            int min_grid{};
+            int block{};
+            cudaError_t const err = cudaOccupancyMaxPotentialBlockSize(&min_grid, &block, eval_tt_cones_kernel, 0u, 0);
+            if(err != cudaSuccess)
+            {
+                block = 128;
+                min_grid = 0;
+            }
+            ctx.occ_block_size = block;
+            ctx.occ_min_grid_size = min_grid;
+            return clamp_block_size(block, 128u);
+        }
 
         [[nodiscard]] inline eval_u64_ctx& get_u64_ctx(int device) noexcept
         {
@@ -749,10 +804,26 @@ namespace phy_engine::verilog::digital::details
                 return true;
             }
             // Grow (free+malloc). Keep it simple and deterministic.
-            if(ctx.d_out != nullptr) { (void)cudaFree(ctx.d_out); ctx.d_out = nullptr; }
-            if(ctx.d_cones != nullptr) { (void)cudaFree(ctx.d_cones); ctx.d_cones = nullptr; }
-            if(ctx.h_out_pinned != nullptr) { (void)cudaFreeHost(ctx.h_out_pinned); ctx.h_out_pinned = nullptr; }
-            if(ctx.h_cones_pinned != nullptr) { (void)cudaFreeHost(ctx.h_cones_pinned); ctx.h_cones_pinned = nullptr; }
+            if(ctx.d_out != nullptr)
+            {
+                (void)cudaFree(ctx.d_out);
+                ctx.d_out = nullptr;
+            }
+            if(ctx.d_cones != nullptr)
+            {
+                (void)cudaFree(ctx.d_cones);
+                ctx.d_cones = nullptr;
+            }
+            if(ctx.h_out_pinned != nullptr)
+            {
+                (void)cudaFreeHost(ctx.h_out_pinned);
+                ctx.h_out_pinned = nullptr;
+            }
+            if(ctx.h_cones_pinned != nullptr)
+            {
+                (void)cudaFreeHost(ctx.h_cones_pinned);
+                ctx.h_cones_pinned = nullptr;
+            }
             ctx.cap_cones = 0u;
             ctx.cap_host_cones = 0u;
 
@@ -768,8 +839,16 @@ namespace phy_engine::verilog::digital::details
             }
             else
             {
-                if(ctx.h_out_pinned != nullptr) { (void)cudaFreeHost(ctx.h_out_pinned); ctx.h_out_pinned = nullptr; }
-                if(ctx.h_cones_pinned != nullptr) { (void)cudaFreeHost(ctx.h_cones_pinned); ctx.h_cones_pinned = nullptr; }
+                if(ctx.h_out_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(ctx.h_out_pinned);
+                    ctx.h_out_pinned = nullptr;
+                }
+                if(ctx.h_cones_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(ctx.h_cones_pinned);
+                    ctx.h_cones_pinned = nullptr;
+                }
                 ctx.cap_host_cones = 0u;
             }
             ctx.ok = true;
@@ -790,10 +869,26 @@ namespace phy_engine::verilog::digital::details
                 ctx.ok = true;
                 return true;
             }
-            if(ctx.d_out != nullptr) { (void)cudaFree(ctx.d_out); ctx.d_out = nullptr; }
-            if(ctx.d_cones != nullptr) { (void)cudaFree(ctx.d_cones); ctx.d_cones = nullptr; }
-            if(ctx.h_out_pinned != nullptr) { (void)cudaFreeHost(ctx.h_out_pinned); ctx.h_out_pinned = nullptr; }
-            if(ctx.h_cones_pinned != nullptr) { (void)cudaFreeHost(ctx.h_cones_pinned); ctx.h_cones_pinned = nullptr; }
+            if(ctx.d_out != nullptr)
+            {
+                (void)cudaFree(ctx.d_out);
+                ctx.d_out = nullptr;
+            }
+            if(ctx.d_cones != nullptr)
+            {
+                (void)cudaFree(ctx.d_cones);
+                ctx.d_cones = nullptr;
+            }
+            if(ctx.h_out_pinned != nullptr)
+            {
+                (void)cudaFreeHost(ctx.h_out_pinned);
+                ctx.h_out_pinned = nullptr;
+            }
+            if(ctx.h_cones_pinned != nullptr)
+            {
+                (void)cudaFreeHost(ctx.h_cones_pinned);
+                ctx.h_cones_pinned = nullptr;
+            }
             ctx.cap_cones = 0u;
             ctx.cap_stride_blocks = 0u;
             ctx.cap_host_cones = 0u;
@@ -813,8 +908,16 @@ namespace phy_engine::verilog::digital::details
             }
             else
             {
-                if(ctx.h_out_pinned != nullptr) { (void)cudaFreeHost(ctx.h_out_pinned); ctx.h_out_pinned = nullptr; }
-                if(ctx.h_cones_pinned != nullptr) { (void)cudaFreeHost(ctx.h_cones_pinned); ctx.h_cones_pinned = nullptr; }
+                if(ctx.h_out_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(ctx.h_out_pinned);
+                    ctx.h_out_pinned = nullptr;
+                }
+                if(ctx.h_cones_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(ctx.h_cones_pinned);
+                    ctx.h_cones_pinned = nullptr;
+                }
                 ctx.cap_host_cones = 0u;
                 ctx.cap_host_stride_blocks = 0u;
             }
@@ -836,13 +939,13 @@ namespace phy_engine::verilog::digital::details
 
             std::uint64_t* d_rows{};
             std::uint64_t* d_mask{};
-            std::uint64_t* d_row_tmp{};    // temp row buffer (stride_words u64) for resident-mask updates
+            std::uint64_t* d_row_tmp{};  // temp row buffer (stride_words u64) for resident-mask updates
             std::uint32_t* d_popc{};
             std::uint32_t* d_any{};
-            std::uint32_t* d_cost{};       // optional row cost (u32 per row), for greedy argmax
-            std::uint8_t* d_active{};      // optional row active flags (u8 per row), 1=active 0=disabled
-            best_item* d_best_parts{};     // temporary reduction buffer
-            best_item* d_best_one{};       // final best item (size 1)
+            std::uint32_t* d_cost{};    // optional row cost (u32 per row), for greedy argmax
+            std::uint8_t* d_active{};   // optional row active flags (u8 per row), 1=active 0=disabled
+            best_item* d_best_parts{};  // temporary reduction buffer
+            best_item* d_best_one{};    // final best item (size 1)
             std::uint32_t cap_best_parts{};
             // Temporary buffers for GPU-built cover matrices (QM greedy cover).
             cuda_cube_desc* d_cubes_tmp{};
@@ -858,30 +961,13 @@ namespace phy_engine::verilog::digital::details
 
             bitset_matrix_device() noexcept = default;
             bitset_matrix_device(bitset_matrix_device const&) = delete;
-            bitset_matrix_device& operator=(bitset_matrix_device const&) = delete;
+            bitset_matrix_device& operator= (bitset_matrix_device const&) = delete;
+
             bitset_matrix_device(bitset_matrix_device&& o) noexcept :
-                device(o.device),
-                begin(o.begin),
-                end(o.end),
-                stride_words(o.stride_words),
-                stream(o.stream),
-                d_rows(o.d_rows),
-                d_mask(o.d_mask),
-                d_row_tmp(o.d_row_tmp),
-                d_popc(o.d_popc),
-                d_any(o.d_any),
-                d_cost(o.d_cost),
-                d_active(o.d_active),
-                d_best_parts(o.d_best_parts),
-                d_best_one(o.d_best_one),
-                cap_best_parts(o.cap_best_parts),
-                d_cubes_tmp(o.d_cubes_tmp),
-                d_on_tmp(o.d_on_tmp),
-                cap_cubes_tmp(o.cap_cubes_tmp),
-                cap_on_tmp(o.cap_on_tmp),
-                h_tmp(std::move(o.h_tmp)),
-                h_best(o.h_best),
-                ok(o.ok)
+                device(o.device), begin(o.begin), end(o.end), stride_words(o.stride_words), stream(o.stream), d_rows(o.d_rows), d_mask(o.d_mask),
+                d_row_tmp(o.d_row_tmp), d_popc(o.d_popc), d_any(o.d_any), d_cost(o.d_cost), d_active(o.d_active), d_best_parts(o.d_best_parts),
+                d_best_one(o.d_best_one), cap_best_parts(o.cap_best_parts), d_cubes_tmp(o.d_cubes_tmp), d_on_tmp(o.d_on_tmp), cap_cubes_tmp(o.cap_cubes_tmp),
+                cap_on_tmp(o.cap_on_tmp), h_tmp(std::move(o.h_tmp)), h_best(o.h_best), ok(o.ok)
             {
                 o.device = 0;
                 o.begin = 0;
@@ -904,7 +990,8 @@ namespace phy_engine::verilog::digital::details
                 o.cap_on_tmp = 0u;
                 o.ok = false;
             }
-            bitset_matrix_device& operator=(bitset_matrix_device&& o) noexcept
+
+            bitset_matrix_device& operator= (bitset_matrix_device&& o) noexcept
             {
                 if(this == &o) { return *this; }
                 // Must be destroyed/reset by the owner before move-assigning in.
@@ -1011,11 +1098,31 @@ namespace phy_engine::verilog::digital::details
                 return true;
             }
 
-            if(ctx.d_hits != nullptr) { (void)cudaFree(ctx.d_hits); ctx.d_hits = nullptr; }
-            if(ctx.d_off != nullptr) { (void)cudaFree(ctx.d_off); ctx.d_off = nullptr; }
-            if(ctx.d_cubes != nullptr) { (void)cudaFree(ctx.d_cubes); ctx.d_cubes = nullptr; }
-            if(ctx.h_hits_pinned != nullptr) { (void)cudaFreeHost(ctx.h_hits_pinned); ctx.h_hits_pinned = nullptr; }
-            if(ctx.h_cubes_pinned != nullptr) { (void)cudaFreeHost(ctx.h_cubes_pinned); ctx.h_cubes_pinned = nullptr; }
+            if(ctx.d_hits != nullptr)
+            {
+                (void)cudaFree(ctx.d_hits);
+                ctx.d_hits = nullptr;
+            }
+            if(ctx.d_off != nullptr)
+            {
+                (void)cudaFree(ctx.d_off);
+                ctx.d_off = nullptr;
+            }
+            if(ctx.d_cubes != nullptr)
+            {
+                (void)cudaFree(ctx.d_cubes);
+                ctx.d_cubes = nullptr;
+            }
+            if(ctx.h_hits_pinned != nullptr)
+            {
+                (void)cudaFreeHost(ctx.h_hits_pinned);
+                ctx.h_hits_pinned = nullptr;
+            }
+            if(ctx.h_cubes_pinned != nullptr)
+            {
+                (void)cudaFreeHost(ctx.h_cubes_pinned);
+                ctx.h_cubes_pinned = nullptr;
+            }
             ctx.cap_cubes = 0u;
             ctx.cap_words = 0u;
             ctx.cap_host_cubes = 0u;
@@ -1036,8 +1143,16 @@ namespace phy_engine::verilog::digital::details
             }
             else
             {
-                if(ctx.h_hits_pinned != nullptr) { (void)cudaFreeHost(ctx.h_hits_pinned); ctx.h_hits_pinned = nullptr; }
-                if(ctx.h_cubes_pinned != nullptr) { (void)cudaFreeHost(ctx.h_cubes_pinned); ctx.h_cubes_pinned = nullptr; }
+                if(ctx.h_hits_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(ctx.h_hits_pinned);
+                    ctx.h_hits_pinned = nullptr;
+                }
+                if(ctx.h_cubes_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(ctx.h_cubes_pinned);
+                    ctx.h_cubes_pinned = nullptr;
+                }
                 ctx.cap_host_cubes = 0u;
             }
 
@@ -1061,7 +1176,11 @@ namespace phy_engine::verilog::digital::details
             auto& ctx = get_espresso_ctx(device);
             std::scoped_lock lk(ctx.mu);
             bool ok = ensure_espresso_ctx_ready(ctx, n, off_words);
-            if(!ok) { ctx.ok = false; return false; }
+            if(!ok)
+            {
+                ctx.ok = false;
+                return false;
+            }
 
             auto const cubes_bytes = n * sizeof(cuda_cube_desc);
             auto const off_bytes = static_cast<std::size_t>(off_words) * sizeof(std::uint64_t);
@@ -1080,7 +1199,7 @@ namespace phy_engine::verilog::digital::details
 
             if(ok)
             {
-                constexpr unsigned threads = 128u; // 4 warps per block, 4 cubes per block
+                constexpr unsigned threads = 128u;  // 4 warps per block, 4 cubes per block
                 auto const blocks_x = static_cast<unsigned>((n + 4u - 1u) / 4u);
                 espresso_cube_hits_off_warp4_kernel<<<blocks_x, threads, 0u, ctx.stream>>>(ctx.d_cubes, n, var_count, ctx.d_off, off_words, ctx.d_hits);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
@@ -1127,21 +1246,12 @@ namespace phy_engine::verilog::digital::details
 
             espresso_off_device() noexcept = default;
             espresso_off_device(espresso_off_device const&) = delete;
-            espresso_off_device& operator=(espresso_off_device const&) = delete;
+            espresso_off_device& operator= (espresso_off_device const&) = delete;
+
             espresso_off_device(espresso_off_device&& o) noexcept :
-                device(o.device),
-                stream(o.stream),
-                d_off(o.d_off),
-                cap_off_words(o.cap_off_words),
-                d_cubes(o.d_cubes),
-                d_hits(o.d_hits),
-                d_vars(o.d_vars),
-                cap_cubes(o.cap_cubes),
-                h_cubes_pinned(o.h_cubes_pinned),
-                h_hits_pinned(o.h_hits_pinned),
-                h_cubes(std::move(o.h_cubes)),
-                h_hits(std::move(o.h_hits)),
-                ok(o.ok)
+                device(o.device), stream(o.stream), d_off(o.d_off), cap_off_words(o.cap_off_words), d_cubes(o.d_cubes), d_hits(o.d_hits), d_vars(o.d_vars),
+                cap_cubes(o.cap_cubes), h_cubes_pinned(o.h_cubes_pinned), h_hits_pinned(o.h_hits_pinned), h_cubes(std::move(o.h_cubes)),
+                h_hits(std::move(o.h_hits)), ok(o.ok)
             {
                 o.device = -1;
                 o.stream = nullptr;
@@ -1155,7 +1265,8 @@ namespace phy_engine::verilog::digital::details
                 o.h_hits_pinned = nullptr;
                 o.ok = false;
             }
-            espresso_off_device& operator=(espresso_off_device&& o) noexcept
+
+            espresso_off_device& operator= (espresso_off_device&& o) noexcept
             {
                 if(this == &o) { return *this; }
                 // Must be destroyed/reset by the owner before move-assigning in.
@@ -1234,7 +1345,11 @@ namespace phy_engine::verilog::digital::details
             auto const off_bytes = static_cast<std::size_t>(off_words) * sizeof(std::uint64_t);
             if(d.d_off == nullptr || d.cap_off_words < off_words)
             {
-                if(d.d_off != nullptr) { (void)cudaFree(d.d_off); d.d_off = nullptr; }
+                if(d.d_off != nullptr)
+                {
+                    (void)cudaFree(d.d_off);
+                    d.d_off = nullptr;
+                }
                 d.cap_off_words = 0u;
                 if(cudaMalloc(reinterpret_cast<void**>(&d.d_off), off_bytes) != cudaSuccess) { return false; }
                 d.cap_off_words = off_words;
@@ -1291,21 +1406,51 @@ namespace phy_engine::verilog::digital::details
         {
             if(n <= d.cap_cubes) { return true; }
             if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
-            if(d.d_hits != nullptr) { (void)cudaFree(d.d_hits); d.d_hits = nullptr; }
-            if(d.d_cubes != nullptr) { (void)cudaFree(d.d_cubes); d.d_cubes = nullptr; }
-            if(d.h_hits_pinned != nullptr) { (void)cudaFreeHost(d.h_hits_pinned); d.h_hits_pinned = nullptr; }
-            if(d.h_cubes_pinned != nullptr) { (void)cudaFreeHost(d.h_cubes_pinned); d.h_cubes_pinned = nullptr; }
+            if(d.d_hits != nullptr)
+            {
+                (void)cudaFree(d.d_hits);
+                d.d_hits = nullptr;
+            }
+            if(d.d_cubes != nullptr)
+            {
+                (void)cudaFree(d.d_cubes);
+                d.d_cubes = nullptr;
+            }
+            if(d.h_hits_pinned != nullptr)
+            {
+                (void)cudaFreeHost(d.h_hits_pinned);
+                d.h_hits_pinned = nullptr;
+            }
+            if(d.h_cubes_pinned != nullptr)
+            {
+                (void)cudaFreeHost(d.h_cubes_pinned);
+                d.h_cubes_pinned = nullptr;
+            }
             d.cap_cubes = 0u;
             if(cudaMalloc(reinterpret_cast<void**>(&d.d_cubes), n * sizeof(cuda_cube_desc)) != cudaSuccess) { return false; }
             if(cudaMalloc(reinterpret_cast<void**>(&d.d_hits), n * sizeof(std::uint32_t)) != cudaSuccess) { return false; }
             // Try pinned staging; if it fails, fall back to normal host vectors.
             bool pinned_ok = true;
-            if(cudaHostAlloc(reinterpret_cast<void**>(&d.h_cubes_pinned), n * sizeof(cuda_cube_desc), cudaHostAllocPortable) != cudaSuccess) { pinned_ok = false; }
-            if(pinned_ok && cudaHostAlloc(reinterpret_cast<void**>(&d.h_hits_pinned), n * sizeof(std::uint32_t), cudaHostAllocPortable) != cudaSuccess) { pinned_ok = false; }
+            if(cudaHostAlloc(reinterpret_cast<void**>(&d.h_cubes_pinned), n * sizeof(cuda_cube_desc), cudaHostAllocPortable) != cudaSuccess)
+            {
+                pinned_ok = false;
+            }
+            if(pinned_ok && cudaHostAlloc(reinterpret_cast<void**>(&d.h_hits_pinned), n * sizeof(std::uint32_t), cudaHostAllocPortable) != cudaSuccess)
+            {
+                pinned_ok = false;
+            }
             if(!pinned_ok)
             {
-                if(d.h_hits_pinned != nullptr) { (void)cudaFreeHost(d.h_hits_pinned); d.h_hits_pinned = nullptr; }
-                if(d.h_cubes_pinned != nullptr) { (void)cudaFreeHost(d.h_cubes_pinned); d.h_cubes_pinned = nullptr; }
+                if(d.h_hits_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(d.h_hits_pinned);
+                    d.h_hits_pinned = nullptr;
+                }
+                if(d.h_cubes_pinned != nullptr)
+                {
+                    (void)cudaFreeHost(d.h_cubes_pinned);
+                    d.h_cubes_pinned = nullptr;
+                }
                 d.h_cubes.resize(n);
                 d.h_hits.resize(n);
             }
@@ -1327,7 +1472,11 @@ namespace phy_engine::verilog::digital::details
                                                                       std::uint32_t var_count,
                                                                       std::uint32_t off_words) noexcept
         {
-            if(end <= begin) { d.ok = true; return true; }
+            if(end <= begin)
+            {
+                d.ok = true;
+                return true;
+            }
             if(cubes == nullptr) { return false; }
             auto const n = end - begin;
             if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
@@ -1352,7 +1501,7 @@ namespace phy_engine::verilog::digital::details
 
             if(ok)
             {
-                constexpr unsigned threads = 128u; // 4 warps per block
+                constexpr unsigned threads = 128u;  // 4 warps per block
                 auto const blocks_x = static_cast<unsigned>((n + 4u - 1u) / 4u);
                 espresso_cube_hits_off_warp4_kernel<<<blocks_x, threads, 0u, d.stream>>>(d.d_cubes, n, var_count, d.d_off, off_words, d.d_hits);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
@@ -1384,7 +1533,11 @@ namespace phy_engine::verilog::digital::details
                                                                              std::uint32_t cand_vars_count,
                                                                              std::uint32_t max_rounds) noexcept
         {
-            if(end <= begin) { d.ok = true; return true; }
+            if(end <= begin)
+            {
+                d.ok = true;
+                return true;
+            }
             if(cubes == nullptr || cand_vars == nullptr || cand_vars_count == 0u) { return false; }
             if(cand_vars_count > 16u) { cand_vars_count = 16u; }
             auto const n = end - begin;
@@ -1406,7 +1559,10 @@ namespace phy_engine::verilog::digital::details
                 ::std::memcpy(d.h_cubes.data(), cubes + begin, cubes_bytes);
                 if(cudaMemcpyAsync(d.d_cubes, d.h_cubes.data(), cubes_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
             }
-            if(ok && cudaMemcpyAsync(d.d_vars, cand_vars, cand_vars_count * sizeof(std::uint8_t), cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemcpyAsync(d.d_vars, cand_vars, cand_vars_count * sizeof(std::uint8_t), cudaMemcpyHostToDevice, d.stream) != cudaSuccess)
+            {
+                ok = false;
+            }
 
             if(ok)
             {
@@ -1439,13 +1595,15 @@ namespace phy_engine::verilog::digital::details
             return ok;
         }
 
-        [[nodiscard]] inline bool init_bitset_matrix_device(bitset_matrix_device& d,
-                                                            std::uint64_t const* rows,
-                                                            std::size_t row_count,
-                                                            std::uint32_t stride_words) noexcept
+        [[nodiscard]] inline bool
+            init_bitset_matrix_device(bitset_matrix_device& d, std::uint64_t const* rows, std::size_t row_count, std::uint32_t stride_words) noexcept
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; return true; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                return true;
+            }
 
             if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
             if(cudaStreamCreateWithFlags(&d.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
@@ -1463,11 +1621,8 @@ namespace phy_engine::verilog::digital::details
             if(ok && cudaMalloc(reinterpret_cast<void**>(&d.d_popc), popc_bytes) != cudaSuccess) { ok = false; }
             if(ok && cudaMalloc(reinterpret_cast<void**>(&d.d_any), any_bytes) != cudaSuccess) { ok = false; }
 
-            if(ok && cudaMemcpyAsync(d.d_rows,
-                                     rows + d.begin * static_cast<std::size_t>(stride_words),
-                                     rows_bytes,
-                                     cudaMemcpyHostToDevice,
-                                     d.stream) != cudaSuccess)
+            if(ok &&
+               cudaMemcpyAsync(d.d_rows, rows + d.begin * static_cast<std::size_t>(stride_words), rows_bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess)
             {
                 ok = false;
             }
@@ -1480,7 +1635,11 @@ namespace phy_engine::verilog::digital::details
         [[nodiscard]] inline bool init_bitset_matrix_device_empty(bitset_matrix_device& d, std::uint32_t stride_words) noexcept
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; return true; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                return true;
+            }
 
             if(cudaSetDevice(d.device) != cudaSuccess) { return false; }
             if(cudaStreamCreateWithFlags(&d.stream, cudaStreamNonBlocking) != cudaSuccess) { return false; }
@@ -1568,7 +1727,11 @@ namespace phy_engine::verilog::digital::details
             }
             if(d.d_best_parts == nullptr || d.cap_best_parts < parts)
             {
-                if(d.d_best_parts != nullptr) { (void)cudaFree(d.d_best_parts); d.d_best_parts = nullptr; }
+                if(d.d_best_parts != nullptr)
+                {
+                    (void)cudaFree(d.d_best_parts);
+                    d.d_best_parts = nullptr;
+                }
                 d.cap_best_parts = 0u;
                 if(cudaMalloc(reinterpret_cast<void**>(&d.d_best_parts), static_cast<std::size_t>(parts) * sizeof(best_item)) != cudaSuccess) { return false; }
                 d.cap_best_parts = parts;
@@ -1587,14 +1750,22 @@ namespace phy_engine::verilog::digital::details
 
             if(d.d_cubes_tmp == nullptr || d.cap_cubes_tmp < cube_count)
             {
-                if(d.d_cubes_tmp != nullptr) { (void)cudaFree(d.d_cubes_tmp); d.d_cubes_tmp = nullptr; }
+                if(d.d_cubes_tmp != nullptr)
+                {
+                    (void)cudaFree(d.d_cubes_tmp);
+                    d.d_cubes_tmp = nullptr;
+                }
                 d.cap_cubes_tmp = 0u;
                 if(cudaMalloc(reinterpret_cast<void**>(&d.d_cubes_tmp), cube_count * sizeof(cuda_cube_desc)) != cudaSuccess) { return false; }
                 d.cap_cubes_tmp = cube_count;
             }
             if(d.d_on_tmp == nullptr || d.cap_on_tmp < on_count)
             {
-                if(d.d_on_tmp != nullptr) { (void)cudaFree(d.d_on_tmp); d.d_on_tmp = nullptr; }
+                if(d.d_on_tmp != nullptr)
+                {
+                    (void)cudaFree(d.d_on_tmp);
+                    d.d_on_tmp = nullptr;
+                }
                 d.cap_on_tmp = 0u;
                 if(cudaMalloc(reinterpret_cast<void**>(&d.d_on_tmp), on_count * sizeof(std::uint16_t)) != cudaSuccess) { return false; }
                 d.cap_on_tmp = on_count;
@@ -1608,7 +1779,11 @@ namespace phy_engine::verilog::digital::details
                                                                            std::uint32_t* out_counts) noexcept
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; return true; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                return true;
+            }
             if(mask == nullptr || out_counts == nullptr) { return false; }
             if(mask_words != d.stride_words) { return false; }
 
@@ -1627,8 +1802,7 @@ namespace phy_engine::verilog::digital::details
                 constexpr unsigned threads = 128u;
                 auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
                 dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
-                bitset_row_and_popcount_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(
-                    d.d_rows, n, d.stride_words, d.d_mask, d.d_popc);
+                bitset_row_and_popcount_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(d.d_rows, n, d.stride_words, d.d_mask, d.d_popc);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
 
@@ -1639,13 +1813,15 @@ namespace phy_engine::verilog::digital::details
             return ok;
         }
 
-        [[nodiscard]] inline bool bitset_matrix_row_any_and_on_device(bitset_matrix_device& d,
-                                                                      std::uint64_t const* mask,
-                                                                      std::uint32_t mask_words,
-                                                                      std::uint8_t* out_any) noexcept
+        [[nodiscard]] inline bool
+            bitset_matrix_row_any_and_on_device(bitset_matrix_device& d, std::uint64_t const* mask, std::uint32_t mask_words, std::uint8_t* out_any) noexcept
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; return true; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                return true;
+            }
             if(mask == nullptr || out_any == nullptr) { return false; }
             if(mask_words != d.stride_words) { return false; }
 
@@ -1740,7 +1916,11 @@ namespace phy_engine::verilog::digital::details
         for(auto& c: chunks)
         {
             c.ok = false;
-            if(c.end <= c.begin) { c.ok = true; continue; }
+            if(c.end <= c.begin)
+            {
+                c.ok = true;
+                continue;
+            }
 
             auto const n = c.end - c.begin;
             auto const cones_bytes = n * sizeof(cuda_u64_cone_desc);
@@ -1764,7 +1944,7 @@ namespace phy_engine::verilog::digital::details
             }
             if(ok)
             {
-                constexpr unsigned threads = 256u;
+                unsigned const threads = eval_u64_pick_threads(ctx);
                 auto const blocks = static_cast<unsigned>((n + threads - 1u) / threads);
                 eval_u64_cones_kernel<<<blocks, threads, 0u, ctx.stream>>>(ctx.d_cones, n, ctx.d_out);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
@@ -1861,7 +2041,11 @@ namespace phy_engine::verilog::digital::details
         for(auto& c: chunks)
         {
             c.ok = false;
-            if(c.end <= c.begin) { c.ok = true; continue; }
+            if(c.end <= c.begin)
+            {
+                c.ok = true;
+                continue;
+            }
 
             auto const n = c.end - c.begin;
             auto const cones_bytes = n * sizeof(cuda_tt_cone_desc);
@@ -1886,7 +2070,7 @@ namespace phy_engine::verilog::digital::details
             }
             if(ok)
             {
-                constexpr unsigned threads = 128u;
+                unsigned const threads = eval_tt_pick_threads(ctx);
                 auto const grid_y = static_cast<unsigned>((stride_blocks + threads - 1u) / threads);
                 dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
                 eval_tt_cones_kernel<<<grid, threads, 0u, ctx.stream>>>(ctx.d_cones, n, stride_blocks, ctx.d_out);
@@ -1900,7 +2084,11 @@ namespace phy_engine::verilog::digital::details
                 }
                 else
                 {
-                    if(cudaMemcpyAsync(out_blocks + c.begin * static_cast<std::size_t>(stride_blocks), ctx.d_out, out_bytes, cudaMemcpyDeviceToHost, ctx.stream) != cudaSuccess)
+                    if(cudaMemcpyAsync(out_blocks + c.begin * static_cast<std::size_t>(stride_blocks),
+                                       ctx.d_out,
+                                       out_bytes,
+                                       cudaMemcpyDeviceToHost,
+                                       ctx.stream) != cudaSuccess)
                     {
                         ok = false;
                     }
@@ -2003,9 +2191,7 @@ namespace phy_engine::verilog::digital::details
         return reinterpret_cast<void*>(h);
     }
 
-    extern "C" void* phy_engine_pe_synth_cuda_bitset_matrix_create_empty(std::uint32_t device_mask,
-                                                                         std::size_t row_count,
-                                                                         std::uint32_t stride_words) noexcept
+    extern "C" void* phy_engine_pe_synth_cuda_bitset_matrix_create_empty(std::uint32_t device_mask, std::size_t row_count, std::uint32_t stride_words) noexcept
     {
         if(row_count == 0u || stride_words == 0u) { return nullptr; }
 
@@ -2091,8 +2277,16 @@ namespace phy_engine::verilog::digital::details
         for(auto& d: h->devs)
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
 
             auto const n = d.end - d.begin;
             auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
@@ -2106,8 +2300,7 @@ namespace phy_engine::verilog::digital::details
                 constexpr unsigned threads = 128u;
                 auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
                 dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
-                bitset_row_and_popcount_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(
-                    d.d_rows, n, d.stride_words, d.d_mask, d.d_popc);
+                bitset_row_and_popcount_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(d.d_rows, n, d.stride_words, d.d_mask, d.d_popc);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
             if(ok && cudaMemcpyAsync(out_counts + d.begin, d.d_popc, popc_bytes, cudaMemcpyDeviceToHost, d.stream) != cudaSuccess) { ok = false; }
@@ -2123,10 +2316,8 @@ namespace phy_engine::verilog::digital::details
         return true;
     }
 
-    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(void* handle,
-                                                                       std::uint64_t const* mask,
-                                                                       std::uint32_t mask_words,
-                                                                       std::uint8_t* out_any) noexcept
+    extern "C" bool
+        phy_engine_pe_synth_cuda_bitset_matrix_row_any_and(void* handle, std::uint64_t const* mask, std::uint32_t mask_words, std::uint8_t* out_any) noexcept
     {
         if(handle == nullptr || mask == nullptr || out_any == nullptr) { return false; }
         auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
@@ -2138,8 +2329,16 @@ namespace phy_engine::verilog::digital::details
         for(auto& d: h->devs)
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
 
             auto const n = d.end - d.begin;
             auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
@@ -2200,36 +2399,51 @@ namespace phy_engine::verilog::digital::details
         for(auto& d: h->devs)
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
             auto const n = d.end - d.begin;
-            if(!ensure_bitset_matrix_fill_buffers(d, n, on_count)) { d.ok = false; continue; }
+            if(!ensure_bitset_matrix_fill_buffers(d, n, on_count))
+            {
+                d.ok = false;
+                continue;
+            }
 
             bool ok = true;
-            if(ok && cudaMemcpyAsync(d.d_cubes_tmp, cubes + d.begin, n * sizeof(cuda_cube_desc), cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
-            if(ok && cudaMemcpyAsync(d.d_on_tmp, on_minterms, on_count * sizeof(std::uint16_t), cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
+            if(ok && cudaMemcpyAsync(d.d_cubes_tmp, cubes + d.begin, n * sizeof(cuda_cube_desc), cudaMemcpyHostToDevice, d.stream) != cudaSuccess)
+            {
+                ok = false;
+            }
+            if(ok && cudaMemcpyAsync(d.d_on_tmp, on_minterms, on_count * sizeof(std::uint16_t), cudaMemcpyHostToDevice, d.stream) != cudaSuccess)
+            {
+                ok = false;
+            }
 
             if(ok)
             {
                 dim3 grid(static_cast<unsigned>(n), static_cast<unsigned>(stride_words), 1u);
                 qm_cov_fill_kernel<<<grid, 64u, 0u, d.stream>>>(d.d_cubes_tmp,
-                                                               static_cast<std::uint32_t>(n),
-                                                               d.d_on_tmp,
-                                                               static_cast<std::uint32_t>(on_count),
-                                                               var_mask,
-                                                               stride_words,
-                                                               d.d_rows);
+                                                                static_cast<std::uint32_t>(n),
+                                                                d.d_on_tmp,
+                                                                static_cast<std::uint32_t>(on_count),
+                                                                var_mask,
+                                                                stride_words,
+                                                                d.d_rows);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
 
             if(ok && out_rows_host != nullptr)
             {
                 auto const bytes = n * static_cast<std::size_t>(stride_words) * sizeof(std::uint64_t);
-                if(cudaMemcpyAsync(out_rows_host + d.begin * static_cast<std::size_t>(stride_words),
-                                   d.d_rows,
-                                   bytes,
-                                   cudaMemcpyDeviceToHost,
-                                   d.stream) != cudaSuccess)
+                if(cudaMemcpyAsync(out_rows_host + d.begin * static_cast<std::size_t>(stride_words), d.d_rows, bytes, cudaMemcpyDeviceToHost, d.stream) !=
+                   cudaSuccess)
                 {
                     ok = false;
                 }
@@ -2249,9 +2463,7 @@ namespace phy_engine::verilog::digital::details
         return true;
     }
 
-    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_set_row_cost_u32(void* handle,
-                                                                            std::uint32_t const* costs,
-                                                                            std::size_t cost_count) noexcept
+    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_set_row_cost_u32(void* handle, std::uint32_t const* costs, std::size_t cost_count) noexcept
     {
         if(handle == nullptr || costs == nullptr || cost_count == 0u) { return false; }
         auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
@@ -2261,20 +2473,40 @@ namespace phy_engine::verilog::digital::details
         for(auto& d: h->devs)
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
-            if(!ensure_bitset_matrix_best_buffers(d)) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
+            if(!ensure_bitset_matrix_best_buffers(d))
+            {
+                d.ok = false;
+                continue;
+            }
 
             auto const n = d.end - d.begin;
             auto const bytes = n * sizeof(std::uint32_t);
             if(d.d_cost == nullptr)
             {
-                if(cudaMalloc(reinterpret_cast<void**>(&d.d_cost), bytes) != cudaSuccess) { d.ok = false; continue; }
+                if(cudaMalloc(reinterpret_cast<void**>(&d.d_cost), bytes) != cudaSuccess)
+                {
+                    d.ok = false;
+                    continue;
+                }
             }
             // Reset active mask (new cone / new search).
             if(d.d_active != nullptr)
             {
-                if(cudaMemsetAsync(d.d_active, 1, static_cast<std::size_t>(n) * sizeof(std::uint8_t), d.stream) != cudaSuccess) { d.ok = false; continue; }
+                if(cudaMemsetAsync(d.d_active, 1, static_cast<std::size_t>(n) * sizeof(std::uint8_t), d.stream) != cudaSuccess)
+                {
+                    d.ok = false;
+                    continue;
+                }
             }
             bool ok = true;
             if(cudaMemcpyAsync(d.d_cost, costs + d.begin, bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
@@ -2327,9 +2559,21 @@ namespace phy_engine::verilog::digital::details
         {
             d.ok = false;
             d.h_best = best_item{INT32_MIN, 0u, 0u, 0xFFFFFFFFu};
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
-            if(!ensure_bitset_matrix_best_buffers(d)) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
+            if(!ensure_bitset_matrix_best_buffers(d))
+            {
+                d.ok = false;
+                continue;
+            }
 
             auto const n = static_cast<std::uint32_t>(d.end - d.begin);
             auto const mask_bytes = static_cast<std::size_t>(d.stride_words) * sizeof(std::uint64_t);
@@ -2344,8 +2588,12 @@ namespace phy_engine::verilog::digital::details
                 constexpr unsigned threads = 128u;
                 auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
                 dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
-                bitset_row_and_popcount_active_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(
-                    d.d_rows, n, d.stride_words, d.d_mask, d.d_popc, d.d_active);
+                bitset_row_and_popcount_active_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(d.d_rows,
+                                                                                                                    n,
+                                                                                                                    d.stride_words,
+                                                                                                                    d.d_mask,
+                                                                                                                    d.d_popc,
+                                                                                                                    d.d_active);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
 
@@ -2354,8 +2602,7 @@ namespace phy_engine::verilog::digital::details
                 constexpr unsigned reduce_threads = 256u;
                 constexpr std::uint32_t items_per_block = 1024u;
                 auto const parts = (n + items_per_block - 1u) / items_per_block;
-                bitset_best_stage1_kernel<<<parts, reduce_threads, 0u, d.stream>>>(
-                    d.d_popc, d.d_cost, n, static_cast<std::uint32_t>(d.begin), d.d_best_parts);
+                bitset_best_stage1_kernel<<<parts, reduce_threads, 0u, d.stream>>>(d.d_popc, d.d_cost, n, static_cast<std::uint32_t>(d.begin), d.d_best_parts);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
                 if(ok)
                 {
@@ -2398,9 +2645,7 @@ namespace phy_engine::verilog::digital::details
         return true;
     }
 
-    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_set_mask(void* handle,
-                                                                    std::uint64_t const* mask,
-                                                                    std::uint32_t mask_words) noexcept
+    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_set_mask(void* handle, std::uint64_t const* mask, std::uint32_t mask_words) noexcept
     {
         if(handle == nullptr || mask == nullptr) { return false; }
         auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
@@ -2411,10 +2656,22 @@ namespace phy_engine::verilog::digital::details
         for(auto& d: h->devs)
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
             // Ensure stream exists (best-effort); doesn't allocate any extra buffers besides active/best.
-            if(!ensure_bitset_matrix_best_buffers(d)) { d.ok = false; continue; }
+            if(!ensure_bitset_matrix_best_buffers(d))
+            {
+                d.ok = false;
+                continue;
+            }
             bool ok = true;
             if(cudaMemcpyAsync(d.d_mask, mask, bytes, cudaMemcpyHostToDevice, d.stream) != cudaSuccess) { ok = false; }
             d.ok = ok;
@@ -2429,9 +2686,7 @@ namespace phy_engine::verilog::digital::details
         return true;
     }
 
-    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_get_mask(void* handle,
-                                                                    std::uint32_t mask_words,
-                                                                    std::uint64_t* out_mask) noexcept
+    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_get_mask(void* handle, std::uint32_t mask_words, std::uint64_t* out_mask) noexcept
     {
         if(handle == nullptr || out_mask == nullptr) { return false; }
         auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
@@ -2463,9 +2718,21 @@ namespace phy_engine::verilog::digital::details
         {
             d.ok = false;
             d.h_best = best_item{INT32_MIN, 0u, 0u, 0xFFFFFFFFu};
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
-            if(!ensure_bitset_matrix_best_buffers(d)) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
+            if(!ensure_bitset_matrix_best_buffers(d))
+            {
+                d.ok = false;
+                continue;
+            }
 
             auto const n = static_cast<std::uint32_t>(d.end - d.begin);
             auto const popc_bytes = static_cast<std::size_t>(n) * sizeof(std::uint32_t);
@@ -2478,8 +2745,12 @@ namespace phy_engine::verilog::digital::details
                 constexpr unsigned threads = 128u;
                 auto const grid_y = static_cast<unsigned>((d.stride_words + threads - 1u) / threads);
                 dim3 grid(static_cast<unsigned>(n), grid_y, 1u);
-                bitset_row_and_popcount_active_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(
-                    d.d_rows, n, d.stride_words, d.d_mask, d.d_popc, d.d_active);
+                bitset_row_and_popcount_active_kernel<<<grid, threads, threads * sizeof(std::uint32_t), d.stream>>>(d.d_rows,
+                                                                                                                    n,
+                                                                                                                    d.stride_words,
+                                                                                                                    d.d_mask,
+                                                                                                                    d.d_popc,
+                                                                                                                    d.d_active);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
             }
 
@@ -2488,8 +2759,7 @@ namespace phy_engine::verilog::digital::details
                 constexpr unsigned reduce_threads = 256u;
                 constexpr std::uint32_t items_per_block = 1024u;
                 auto const parts = (n + items_per_block - 1u) / items_per_block;
-                bitset_best_stage1_kernel<<<parts, reduce_threads, 0u, d.stream>>>(
-                    d.d_popc, d.d_cost, n, static_cast<std::uint32_t>(d.begin), d.d_best_parts);
+                bitset_best_stage1_kernel<<<parts, reduce_threads, 0u, d.stream>>>(d.d_popc, d.d_cost, n, static_cast<std::uint32_t>(d.begin), d.d_best_parts);
                 if(cudaGetLastError() != cudaSuccess) { ok = false; }
                 if(ok)
                 {
@@ -2578,12 +2848,28 @@ namespace phy_engine::verilog::digital::details
         for(auto& d: h->devs)
         {
             d.ok = false;
-            if(d.end <= d.begin) { d.ok = true; continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { d.ok = false; continue; }
-            if(!ensure_bitset_matrix_best_buffers(d)) { d.ok = false; continue; }
+            if(d.end <= d.begin)
+            {
+                d.ok = true;
+                continue;
+            }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                d.ok = false;
+                continue;
+            }
+            if(!ensure_bitset_matrix_best_buffers(d))
+            {
+                d.ok = false;
+                continue;
+            }
             if(d.d_row_tmp == nullptr)
             {
-                if(cudaMalloc(reinterpret_cast<void**>(&d.d_row_tmp), bytes) != cudaSuccess) { d.ok = false; continue; }
+                if(cudaMalloc(reinterpret_cast<void**>(&d.d_row_tmp), bytes) != cudaSuccess)
+                {
+                    d.ok = false;
+                    continue;
+                }
             }
 
             bool ok = true;
@@ -2608,10 +2894,7 @@ namespace phy_engine::verilog::digital::details
         return true;
     }
 
-    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_get_row(void* handle,
-                                                                   std::size_t row_idx,
-                                                                   std::uint32_t row_words,
-                                                                   std::uint64_t* out_row) noexcept
+    extern "C" bool phy_engine_pe_synth_cuda_bitset_matrix_get_row(void* handle, std::size_t row_idx, std::uint32_t row_words, std::uint64_t* out_row) noexcept
     {
         if(handle == nullptr || out_row == nullptr) { return false; }
         auto* h = reinterpret_cast<bitset_matrix_handle*>(handle);
@@ -2640,10 +2923,8 @@ namespace phy_engine::verilog::digital::details
                                                                   std::uint64_t const* off_blocks,
                                                                   std::uint32_t off_words) noexcept;
     extern "C" void phy_engine_pe_synth_cuda_espresso_off_destroy(void* handle) noexcept;
-    extern "C" bool phy_engine_pe_synth_cuda_espresso_off_hits(void* handle,
-                                                               cuda_cube_desc const* cubes,
-                                                               std::size_t cube_count,
-                                                               std::uint8_t* out_hits) noexcept;
+    extern "C" bool
+        phy_engine_pe_synth_cuda_espresso_off_hits(void* handle, cuda_cube_desc const* cubes, std::size_t cube_count, std::uint8_t* out_hits) noexcept;
     extern "C" bool phy_engine_pe_synth_cuda_espresso_off_expand_best(void* handle,
                                                                       cuda_cube_desc* cubes,
                                                                       std::size_t cube_count,
@@ -2702,7 +2983,7 @@ namespace phy_engine::verilog::digital::details
         h->devs.reserve(devices.size());
 
         bool ok = true;
-        for(auto const dev : devices)
+        for(auto const dev: devices)
         {
             espresso_off_device d = take_espresso_off_device_from_pool(dev);
             if(!init_espresso_off_device(d, dev, var_count, off_blocks, off_words))
@@ -2733,10 +3014,8 @@ namespace phy_engine::verilog::digital::details
         delete h;
     }
 
-    extern "C" bool phy_engine_pe_synth_cuda_espresso_off_hits(void* handle,
-                                                               cuda_cube_desc const* cubes,
-                                                               std::size_t cube_count,
-                                                               std::uint8_t* out_hits) noexcept
+    extern "C" bool
+        phy_engine_pe_synth_cuda_espresso_off_hits(void* handle, cuda_cube_desc const* cubes, std::size_t cube_count, std::uint8_t* out_hits) noexcept
     {
         if(handle == nullptr || cubes == nullptr || out_hits == nullptr) { return false; }
         if(cube_count == 0u) { return false; }
@@ -2781,11 +3060,25 @@ namespace phy_engine::verilog::digital::details
         {
             auto const dev_idx = (k == 1u) ? first_dev_idx : i;
             auto& d = h->devs[dev_idx];
-            if(!d.ok) { ok = false; continue; }
+            if(!d.ok)
+            {
+                ok = false;
+                continue;
+            }
             if(chunks[i].end <= chunks[i].begin) { continue; }
             auto const n = chunks[i].end - chunks[i].begin;
-            if(cudaSetDevice(d.device) != cudaSuccess) { ok = false; d.ok = false; continue; }
-            if(cudaStreamSynchronize(d.stream) != cudaSuccess) { ok = false; d.ok = false; continue; }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                ok = false;
+                d.ok = false;
+                continue;
+            }
+            if(cudaStreamSynchronize(d.stream) != cudaSuccess)
+            {
+                ok = false;
+                d.ok = false;
+                continue;
+            }
             for(std::size_t j{}; j < n; ++j)
             {
                 auto const* src = (d.h_hits_pinned != nullptr) ? d.h_hits_pinned : d.h_hits.data();
@@ -2850,15 +3143,7 @@ namespace phy_engine::verilog::digital::details
             chunks.push_back(chunk{begin, end});
             auto const dev_idx = (k == 1u) ? first_dev_idx : i;
             auto& d = h->devs[dev_idx];
-            if(!enqueue_espresso_off_expand_best_on_device(d,
-                                                          begin,
-                                                          end,
-                                                          cubes,
-                                                          h->var_count,
-                                                          h->off_words,
-                                                          cand_vars,
-                                                          cand_vars_count,
-                                                          max_rounds))
+            if(!enqueue_espresso_off_expand_best_on_device(d, begin, end, cubes, h->var_count, h->off_words, cand_vars, cand_vars_count, max_rounds))
             {
                 ok = false;
             }
@@ -2868,15 +3153,32 @@ namespace phy_engine::verilog::digital::details
         {
             auto const dev_idx = (k == 1u) ? first_dev_idx : i;
             auto& d = h->devs[dev_idx];
-            if(!d.ok) { ok = false; continue; }
+            if(!d.ok)
+            {
+                ok = false;
+                continue;
+            }
             if(chunks[i].end <= chunks[i].begin) { continue; }
-            if(cudaSetDevice(d.device) != cudaSuccess) { ok = false; d.ok = false; continue; }
-            if(cudaStreamSynchronize(d.stream) != cudaSuccess) { ok = false; d.ok = false; continue; }
+            if(cudaSetDevice(d.device) != cudaSuccess)
+            {
+                ok = false;
+                d.ok = false;
+                continue;
+            }
+            if(cudaStreamSynchronize(d.stream) != cudaSuccess)
+            {
+                ok = false;
+                d.ok = false;
+                continue;
+            }
             // Scatter expanded cubes back to caller memory.
             auto const n = chunks[i].end - chunks[i].begin;
             auto const bytes = n * sizeof(cuda_cube_desc);
             if(d.h_cubes_pinned != nullptr) { ::std::memcpy(cubes + chunks[i].begin, d.h_cubes_pinned, bytes); }
-            else { ::std::memcpy(cubes + chunks[i].begin, d.h_cubes.data(), bytes); }
+            else
+            {
+                ::std::memcpy(cubes + chunks[i].begin, d.h_cubes.data(), bytes);
+            }
         }
 
         if(k == 1u)
