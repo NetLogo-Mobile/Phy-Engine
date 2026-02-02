@@ -177,21 +177,6 @@ int main()
         throw std::runtime_error("pe_synth failed: " + std::string(reinterpret_cast<char const*>(err.message.data()), err.message.size()));
     }
 
-    // Ensure `$random` lowered to a PE RNG macro (otherwise it may constant-fold and always spawn I).
-    {
-        bool has_rng{};
-        for(auto& blk : nl.models)
-        {
-            for(auto* m = blk.begin; m != blk.curr; ++m)
-            {
-                if(m->type != ::phy_engine::model::model_type::normal) { continue; }
-                if(m->ptr == nullptr) { continue; }
-                if(m->ptr->get_model_name() == ::fast_io::u8string_view{u8"RANDOM_GENERATOR4"}) { has_rng = true; }
-            }
-        }
-        if(!has_rng) { return 12; }
-    }
-
     if(!c.analyze()) { return 12; }
 
     auto* in_clk = input_by_name.at("clk");
@@ -298,28 +283,45 @@ int main()
     if(read_row(4) != 0b000100) { return 27; }
     if(read_row(5) != 0b000100) { return 28; }
 
-    // 4) Spawn one more piece and ensure it does not overlap ("phase") into the obstacle column.
-    // (All pieces overlap bit2 at spawn, so collide_down should stop them above row2.)
+    // 4) Spawn at least one piece; ensure RNG isn't stuck (see a non-I at least once),
+    // and ensure no overlap ("phase") into the obstacle column.
     {
-        bool saw_spawn{};
-        for(std::size_t i{}; i < 256; ++i)
+        bool saw_non_i{};
+        bool checked_overlap{};
+        for(std::size_t si{}; si < 8; ++si)
         {
-            tick();
-            if(read_port_bit(*game_over_port)) { return 29; }
-            if(read_row(0) != 0)
+            bool saw_spawn{};
+            std::uint8_t top{};
+            for(std::size_t i{}; i < 256; ++i)
             {
-                saw_spawn = true;
-                break;
+                tick();
+                if(read_port_bit(*game_over_port)) { return 29; }
+                top = read_row(0);
+                if(top != 0)
+                {
+                    saw_spawn = true;
+                    break;
+                }
             }
-        }
-        if(!saw_spawn) { return 30; }
+            if(!saw_spawn) { return 30; }
+            if(top != 0b011110) { saw_non_i = true; }
 
-        tick();  // py=1
-        tick();  // collide_down -> lock
-        if(read_row(2) != 0b000100) { return 31; }
-        if(read_row(3) != 0b000100) { return 32; }
-        if(read_row(4) != 0b000100) { return 33; }
-        if(read_row(5) != 0b000100) { return 34; }
+            tick();  // py=1
+            tick();  // collide_down -> lock
+
+            if(!checked_overlap)
+            {
+                checked_overlap = true;
+                if(read_row(2) != 0b000100) { return 31; }
+                if(read_row(3) != 0b000100) { return 32; }
+                if(read_row(4) != 0b000100) { return 33; }
+                if(read_row(5) != 0b000100) { return 34; }
+            }
+
+            if(saw_non_i) { break; }
+        }
+        if(!checked_overlap) { return 35; }
+        if(!saw_non_i) { return 36; }
     }
 
     // 5) Run until game_over and check the "X" overlay.
@@ -337,14 +339,14 @@ int main()
             break;
         }
     }
-    if(!saw_game_over) { return 36; }
+    if(!saw_game_over) { return 37; }
 
-    if(read_row(0) != 0b100001) { return 37; }
-    if(read_row(1) != 0b010010) { return 38; }
-    if(read_row(2) != 0b001100) { return 39; }
-    if(read_row(3) != 0b001100) { return 40; }
-    if(read_row(4) != 0b010010) { return 41; }
-    if(read_row(5) != 0b100001) { return 42; }
+    if(read_row(0) != 0b100001) { return 38; }
+    if(read_row(1) != 0b010010) { return 39; }
+    if(read_row(2) != 0b001100) { return 40; }
+    if(read_row(3) != 0b001100) { return 41; }
+    if(read_row(4) != 0b010010) { return 42; }
+    if(read_row(5) != 0b100001) { return 43; }
 
     // 4) Gate count check (after passing the sim checks), under O4 optimization.
     {

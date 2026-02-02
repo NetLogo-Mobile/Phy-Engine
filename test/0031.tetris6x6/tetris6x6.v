@@ -31,14 +31,14 @@ module tetris6x6 (
     reg [2:0] py;
     reg [1:0] next_type;
 
-    // For pe_synth's internal $random lowering: provide an active-low reset signal name.
-    wire rst_n;
-    assign rst_n = ~rst;
-    reg [1:0] rand2;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) rand2 <= 2'd0;
-        else        rand2 <= $random;
-    end
+    // Pseudo-random (synth-friendly): 8-bit LFSR
+    reg [7:0] rng;
+    wire [7:0] rng_next;
+    assign rng_next = {rng[6:0], (rng[7] ^ rng[5] ^ rng[4] ^ rng[3])};
+    wire [7:0] rng_step;
+    // LFSR "lock-up" guard: if power-up/reset is not asserted and flops start at 0,
+    // a standard LFSR stays stuck at 0 forever (and you'd always get piece type 0=I).
+    assign rng_step = (rng == 8'h00) ? 8'hA7 : rng_next;
 
     // FSM: 0=PLAY, 1=CLEAR, 2=SPAWN
     reg [1:0] state;
@@ -300,6 +300,7 @@ module tetris6x6 (
             px <= 3'd1;
             py <= 3'd0;
             next_type <= 2'd0;  // deterministic first spawn
+            rng <= 8'hA7;
             game_over <= 1'b0;
             state <= 2'd2;  // SPAWN
             scan <= 3'd5;
@@ -336,7 +337,8 @@ module tetris6x6 (
                     prot <= 2'd0;
                     px <= spx;
                     py <= 3'd0;
-                    next_type <= rand2;
+                    rng <= rng_step;
+                    next_type <= rng_step[1:0];
                     state <= 2'd0;  // PLAY
                 end
             end

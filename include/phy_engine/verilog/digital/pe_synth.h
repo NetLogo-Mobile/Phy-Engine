@@ -12596,22 +12596,26 @@ namespace phy_engine::verilog::digital
             return sol;
         }
 
-        [[nodiscard]] inline bool optimize_qm_two_level_minimize_in_pe_netlist(::phy_engine::netlist::netlist& nl,
-                                                                               ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
-                                                                               pe_synth_options const& opt,
-                                                                               dc_constraints const* dc = nullptr) noexcept
-        {
+	        [[nodiscard]] inline bool optimize_qm_two_level_minimize_in_pe_netlist(::phy_engine::netlist::netlist& nl,
+	                                                                               ::std::vector<::phy_engine::model::node_t*> const& protected_nodes,
+	                                                                               pe_synth_options const& opt,
+	                                                                               dc_constraints const* dc = nullptr) noexcept
+	        {
             // Two-level minimization on small binary cones (exclusive fanout):
             // - Quine–McCluskey prime implicants + exact cover (very small) / greedy cover (moderate)
             // - Espresso-style expand+irredundant heuristic (moderate), choose the best cost
             // Only safe when the cone's internal nets have fanout=1 (exclusive to the cone).
-            if(!opt.assume_binary_inputs) { return false; }
-            if(opt.qm_max_vars == 0u) { return false; }
+	            if(!opt.assume_binary_inputs) { return false; }
+	            if(opt.qm_max_vars == 0u) { return false; }
+	            // Stability guard: under -O4/-Omax without CUDA, the QM/Espresso cone path can be very
+	            // expensive and has historically been a source of crashes on some sequential-heavy designs.
+	            // Prefer leaving the design to the structural O4 passes (strash/techmap/resub/sweep/dce).
+	            if(opt.opt_level >= 4u && !opt.cuda_enable) { return false; }
 
-            constexpr std::size_t exact_vars = 6;
-            std::size_t const max_vars = ::std::min<std::size_t>(16u, (opt.qm_max_vars == 0u) ? 10u : opt.qm_max_vars);
-            std::size_t const max_gates = (opt.qm_max_gates == 0u) ? 64u : opt.qm_max_gates;
-            std::size_t const max_primes = (opt.qm_max_primes == 0u) ? 4096u : opt.qm_max_primes;
+	            constexpr std::size_t exact_vars = 6;
+	            std::size_t const max_vars = ::std::min<std::size_t>(16u, (opt.qm_max_vars == 0u) ? 10u : opt.qm_max_vars);
+	            std::size_t const max_gates = (opt.qm_max_gates == 0u) ? 64u : opt.qm_max_gates;
+	            std::size_t const max_primes = (opt.qm_max_primes == 0u) ? 4096u : opt.qm_max_primes;
 
             ::std::unordered_map<::phy_engine::model::node_t*, bool> protected_map{};
             protected_map.reserve(protected_nodes.size() * 2u + 1u);
@@ -13431,129 +13435,157 @@ namespace phy_engine::verilog::digital
                     tt_jobs.reserve(total);
                     fallback.reserve(64);
 
-                    auto build_u64_desc = [&](::phy_engine::model::node_t* root, cone& cc, cuda_u64_cone_desc& out_desc) noexcept -> bool
-                    {
-                        auto const var_count = cc.leaves.size();
-                        if(var_count == 0u || var_count > 6u) { return false; }
-                        out_desc = cuda_u64_cone_desc{};
-                        out_desc.var_count = static_cast<::std::uint8_t>(var_count);
-                        out_desc.gate_count = 0u;
+	                    auto build_u64_desc = [&](::phy_engine::model::node_t* root, cone& cc, cuda_u64_cone_desc& out_desc) noexcept -> bool
+	                    {
+	                        auto const var_count = cc.leaves.size();
+	                        if(var_count == 0u || var_count > 6u) { return false; }
+	                        out_desc = cuda_u64_cone_desc{};
+	                        out_desc.var_count = static_cast<::std::uint8_t>(var_count);
+	                        out_desc.gate_count = 0u;
 
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> leaf_index{};
-                        leaf_index.reserve(var_count * 2u);
-                        for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(cc.leaves[i], static_cast<::std::uint8_t>(i)); }
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
-                        out_index.reserve(128);
+	                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> leaf_index{};
+	                        leaf_index.reserve(var_count * 2u);
+	                        for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(cc.leaves[i], static_cast<::std::uint8_t>(i)); }
+	                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
+	                        out_index.reserve(128);
+	                        ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+	                        visiting.reserve(128);
 
-                        bool ok2{true};
-                        auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
-                        {
-                            if(!ok2 || n == nullptr)
-                            {
-                                ok2 = false;
-                                return 254u;
-                            }
-                            if(auto itc = const_val.find(n); itc != const_val.end())
-                            {
-                                using dns = ::phy_engine::model::digital_node_statement_t;
-                                if(itc->second == dns::false_state) { return 254u; }
-                                if(itc->second == dns::true_state) { return 255u; }
-                                ok2 = false;
-                                return 254u;
-                            }
-                            if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
-                            if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+	                        bool ok2{true};
+	                        auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
+	                        {
+	                            if(!ok2 || n == nullptr)
+	                            {
+	                                ok2 = false;
+	                                return 254u;
+	                            }
+	                            if(auto itc = const_val.find(n); itc != const_val.end())
+	                            {
+	                                using dns = ::phy_engine::model::digital_node_statement_t;
+	                                if(itc->second == dns::false_state) { return 254u; }
+	                                if(itc->second == dns::true_state) { return 255u; }
+	                                ok2 = false;
+	                                return 254u;
+	                            }
+	                            if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+	                            if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+	                            if(visiting.contains(n))
+	                            {
+	                                ok2 = false;
+	                                return 254u;
+	                            }
 
-                            auto itg = gate_by_out.find(n);
-                            if(itg == gate_by_out.end())
-                            {
-                                ok2 = false;
-                                return 254u;
-                            }
-                            auto const& gg = itg->second;
-                            auto const a = self(self, gg.in0);
-                            auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
-                            if(!ok2) { return 254u; }
+	                            auto itg = gate_by_out.find(n);
+	                            if(itg == gate_by_out.end())
+	                            {
+	                                ok2 = false;
+	                                return 254u;
+	                            }
+	                            visiting.emplace(n, true);
+	                            auto const& gg = itg->second;
+	                            auto const a = self(self, gg.in0);
+	                            auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
+	                            if(!ok2)
+	                            {
+	                                visiting.erase(n);
+	                                return 254u;
+	                            }
 
-                            if(out_desc.gate_count >= 64u)
-                            {
-                                ok2 = false;
-                                return 254u;
-                            }
-                            auto const gi = static_cast<::std::uint8_t>(out_desc.gate_count++);
-                            out_desc.kind[gi] = enc_kind_tt(gg.k);
-                            out_desc.in0[gi] = a;
-                            out_desc.in1[gi] = b;
-                            auto const out = static_cast<::std::uint8_t>(6u + gi);
-                            out_index.emplace(n, out);
-                            return out;
-                        };
+	                            if(out_desc.gate_count >= 64u)
+	                            {
+	                                ok2 = false;
+	                                visiting.erase(n);
+	                                return 254u;
+	                            }
+	                            auto const gi = static_cast<::std::uint8_t>(out_desc.gate_count++);
+	                            out_desc.kind[gi] = enc_kind_tt(gg.k);
+	                            out_desc.in0[gi] = a;
+	                            out_desc.in1[gi] = b;
+	                            auto const out = static_cast<::std::uint8_t>(6u + gi);
+	                            out_index.emplace(n, out);
+	                            visiting.erase(n);
+	                            return out;
+	                        };
 
-                        (void)dfs2(dfs2, root);
-                        return ok2 && out_desc.gate_count != 0u;
-                    };
+	                        (void)dfs2(dfs2, root);
+	                        return ok2 && out_desc.gate_count != 0u;
+	                    };
 
-                    auto build_tt_desc = [&](::phy_engine::model::node_t* root, cone& cc, cuda_tt_cone_desc& out_desc) noexcept -> bool
-                    {
-                        auto const var_count = cc.leaves.size();
-                        if(var_count <= 6u || var_count > 16u) { return false; }
-                        out_desc = cuda_tt_cone_desc{};
-                        out_desc.var_count = static_cast<::std::uint8_t>(var_count);
-                        out_desc.gate_count = 0u;
+	                    auto build_tt_desc = [&](::phy_engine::model::node_t* root, cone& cc, cuda_tt_cone_desc& out_desc) noexcept -> bool
+	                    {
+	                        auto const var_count = cc.leaves.size();
+	                        if(var_count <= 6u || var_count > 16u) { return false; }
+	                        out_desc = cuda_tt_cone_desc{};
+	                        out_desc.var_count = static_cast<::std::uint8_t>(var_count);
+	                        out_desc.gate_count = 0u;
 
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> leaf_index{};
-                        leaf_index.reserve(var_count * 2u);
-                        for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(cc.leaves[i], static_cast<::std::uint16_t>(i)); }
-                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> out_index{};
-                        out_index.reserve(256);
+	                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> leaf_index{};
+	                        leaf_index.reserve(var_count * 2u);
+	                        for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(cc.leaves[i], static_cast<::std::uint16_t>(i)); }
+	                        ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> out_index{};
+	                        out_index.reserve(256);
+	                        ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+	                        visiting.reserve(256);
 
-                        bool ok2{true};
-                        auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
-                        {
-                            if(!ok2 || n == nullptr)
-                            {
-                                ok2 = false;
-                                return 65534u;
-                            }
-                            if(auto itc = const_val.find(n); itc != const_val.end())
-                            {
-                                using dns = ::phy_engine::model::digital_node_statement_t;
-                                if(itc->second == dns::false_state) { return 65534u; }
-                                if(itc->second == dns::true_state) { return 65535u; }
-                                ok2 = false;
-                                return 65534u;
-                            }
-                            if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
-                            if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+	                        bool ok2{true};
+	                        auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
+	                        {
+	                            if(!ok2 || n == nullptr)
+	                            {
+	                                ok2 = false;
+	                                return 65534u;
+	                            }
+	                            if(auto itc = const_val.find(n); itc != const_val.end())
+	                            {
+	                                using dns = ::phy_engine::model::digital_node_statement_t;
+	                                if(itc->second == dns::false_state) { return 65534u; }
+	                                if(itc->second == dns::true_state) { return 65535u; }
+	                                ok2 = false;
+	                                return 65534u;
+	                            }
+	                            if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
+	                            if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+	                            if(visiting.contains(n))
+	                            {
+	                                ok2 = false;
+	                                return 65534u;
+	                            }
 
-                            auto itg = gate_by_out.find(n);
-                            if(itg == gate_by_out.end())
-                            {
-                                ok2 = false;
-                                return 65534u;
-                            }
-                            auto const& gg = itg->second;
-                            auto const a = self(self, gg.in0);
-                            auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
-                            if(!ok2) { return 65534u; }
+	                            auto itg = gate_by_out.find(n);
+	                            if(itg == gate_by_out.end())
+	                            {
+	                                ok2 = false;
+	                                return 65534u;
+	                            }
+	                            visiting.emplace(n, true);
+	                            auto const& gg = itg->second;
+	                            auto const a = self(self, gg.in0);
+	                            auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
+	                            if(!ok2)
+	                            {
+	                                visiting.erase(n);
+	                                return 65534u;
+	                            }
 
-                            if(out_desc.gate_count >= 256u)
-                            {
-                                ok2 = false;
-                                return 65534u;
-                            }
-                            auto const gi = static_cast<::std::uint16_t>(out_desc.gate_count++);
-                            out_desc.kind[gi] = enc_kind_tt(gg.k);
-                            out_desc.in0[gi] = a;
-                            out_desc.in1[gi] = b;
-                            auto const out = static_cast<::std::uint16_t>(16u + gi);
-                            out_index.emplace(n, out);
-                            return out;
-                        };
+	                            if(out_desc.gate_count >= 256u)
+	                            {
+	                                ok2 = false;
+	                                visiting.erase(n);
+	                                return 65534u;
+	                            }
+	                            auto const gi = static_cast<::std::uint16_t>(out_desc.gate_count++);
+	                            out_desc.kind[gi] = enc_kind_tt(gg.k);
+	                            out_desc.in0[gi] = a;
+	                            out_desc.in1[gi] = b;
+	                            auto const out = static_cast<::std::uint16_t>(16u + gi);
+	                            out_index.emplace(n, out);
+	                            visiting.erase(n);
+	                            return out;
+	                        };
 
-                        (void)dfs2(dfs2, root);
-                        return ok2 && out_desc.gate_count != 0u;
-                    };
+	                        (void)dfs2(dfs2, root);
+	                        return ok2 && out_desc.gate_count != 0u;
+	                    };
 
                     for(auto& g: groups)
                     {
@@ -13754,8 +13786,9 @@ namespace phy_engine::verilog::digital
                     return qm_cover;
                 };
 
-                for(auto& grp: groups)
+                for(std::size_t grp_idx{}; grp_idx < groups.size(); ++grp_idx)
                 {
+                    auto& grp = groups[grp_idx];
                     if(grp.cones.size() < 2u) { continue; }
                     auto const var_count = grp.leaves.size();
                     if(var_count == 0 || var_count > max_vars) { continue; }
@@ -14335,6 +14368,8 @@ namespace phy_engine::verilog::digital
                     for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(j.leaves[i], static_cast<::std::uint8_t>(i)); }
                     ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint8_t> out_index{};
                     out_index.reserve(128);
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                    visiting.reserve(128);
 
                     bool ok2{true};
                     auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint8_t
@@ -14354,6 +14389,12 @@ namespace phy_engine::verilog::digital
                         }
                         if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
                         if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+                        if(visiting.contains(n))
+                        {
+                            // Combinational cycle (or inconsistent gate graph): bail out and let the caller fall back.
+                            ok2 = false;
+                            return 254u;
+                        }
 
                         auto itg = gate_by_out.find(n);
                         if(itg == gate_by_out.end())
@@ -14361,14 +14402,20 @@ namespace phy_engine::verilog::digital
                             ok2 = false;
                             return 254u;
                         }
+                        visiting.emplace(n, true);
                         auto const& gg = itg->second;
                         auto const a = self(self, gg.in0);
                         auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint8_t>(254u) : self(self, gg.in1);
-                        if(!ok2) { return 254u; }
+                        if(!ok2)
+                        {
+                            visiting.erase(n);
+                            return 254u;
+                        }
 
                         if(out_desc.gate_count >= 64u)
                         {
                             ok2 = false;
+                            visiting.erase(n);
                             return 254u;
                         }
                         auto const gi = static_cast<::std::uint8_t>(out_desc.gate_count++);
@@ -14377,6 +14424,7 @@ namespace phy_engine::verilog::digital
                         out_desc.in1[gi] = b;
                         auto const out = static_cast<::std::uint8_t>(6u + gi);
                         out_index.emplace(n, out);
+                        visiting.erase(n);
                         return out;
                     };
 
@@ -14397,6 +14445,8 @@ namespace phy_engine::verilog::digital
                     for(std::size_t i{}; i < var_count; ++i) { leaf_index.emplace(j.leaves[i], static_cast<::std::uint16_t>(i)); }
                     ::std::unordered_map<::phy_engine::model::node_t*, ::std::uint16_t> out_index{};
                     out_index.reserve(256);
+                    ::std::unordered_map<::phy_engine::model::node_t*, bool> visiting{};
+                    visiting.reserve(256);
 
                     bool ok2{true};
                     auto dfs2 = [&](auto&& self, ::phy_engine::model::node_t* n) noexcept -> ::std::uint16_t
@@ -14416,6 +14466,11 @@ namespace phy_engine::verilog::digital
                         }
                         if(auto itl = leaf_index.find(n); itl != leaf_index.end()) { return itl->second; }
                         if(auto ito = out_index.find(n); ito != out_index.end()) { return ito->second; }
+                        if(visiting.contains(n))
+                        {
+                            ok2 = false;
+                            return 65534u;
+                        }
 
                         auto itg = gate_by_out.find(n);
                         if(itg == gate_by_out.end())
@@ -14423,14 +14478,20 @@ namespace phy_engine::verilog::digital
                             ok2 = false;
                             return 65534u;
                         }
+                        visiting.emplace(n, true);
                         auto const& gg = itg->second;
                         auto const a = self(self, gg.in0);
                         auto const b = (gg.k == gkind::not_gate) ? static_cast<::std::uint16_t>(65534u) : self(self, gg.in1);
-                        if(!ok2) { return 65534u; }
+                        if(!ok2)
+                        {
+                            visiting.erase(n);
+                            return 65534u;
+                        }
 
                         if(out_desc.gate_count >= 256u)
                         {
                             ok2 = false;
+                            visiting.erase(n);
                             return 65534u;
                         }
                         auto const gi = static_cast<::std::uint16_t>(out_desc.gate_count++);
@@ -14439,6 +14500,7 @@ namespace phy_engine::verilog::digital
                         out_desc.in1[gi] = b;
                         auto const out = static_cast<::std::uint16_t>(16u + gi);
                         out_index.emplace(n, out);
+                        visiting.erase(n);
                         return out;
                     };
 
@@ -14609,14 +14671,18 @@ namespace phy_engine::verilog::digital
             {
                 if(jobs.empty()) { return; }
                 eval_jobs_batched(jobs);
-                for(auto& j: jobs) { process_job(j); }
+                for(std::size_t ji{}; ji < jobs.size(); ++ji)
+                {
+                    process_job(jobs[ji]);
+                }
                 jobs.clear();
             };
 
             constexpr std::size_t eval_superbatch = 2048u;
 
-            for(auto* root: roots)
+            for(std::size_t root_idx{}; root_idx < roots.size(); ++root_idx)
             {
+                auto* root = roots[root_idx];
                 if(root == nullptr) { continue; }
                 auto it_drv = fan.driver_count.find(root);
                 if(it_drv == fan.driver_count.end() || it_drv->second != 1) { continue; }
