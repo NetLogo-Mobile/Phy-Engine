@@ -29,3 +29,13 @@ jobs:
       - name: Test
         run: ctest --test-dir build_test_ci --output-on-failure --build-config Debug
 
+  wasm32-emscripten:
+    name: wasm32-emscripten
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build
+        run: docker build -f src/targets/wasm32-emscripten/Dockerfile -t wasm32-emscripten-pe .
+
