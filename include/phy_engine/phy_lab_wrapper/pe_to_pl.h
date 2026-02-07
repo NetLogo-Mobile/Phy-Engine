@@ -115,7 +115,9 @@ inline pl_model_mapping identity_mapping(std::string mid, std::size_t pin_count,
     return m;
 }
 
-inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const& mb, options const& opt, std::vector<std::string>& warnings)
+inline status_or<pl_model_mapping> map_pe_model_to_pl_ec(::phy_engine::model::model_base const& mb,
+                                                         options const& opt,
+                                                         std::vector<std::string>& warnings) noexcept
 {
     auto const name_u8 = (mb.ptr == nullptr) ? ::fast_io::u8string_view{} : mb.ptr->get_model_name();
     auto const name = u8sv_to_string(name_u8);
@@ -296,7 +298,9 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
     // Explicitly excluded/high-complexity models (not exported as PL circuits).
     if(name == "VERILOG_MODULE" || name == "VERILOG_PORTS")
     {
-        throw std::runtime_error("pe_to_pl: unsupported conversion (excluded model): " + name);
+        auto msg = "pe_to_pl: unsupported conversion (excluded model): " + name;
+        ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+        return status{std::errc::operation_not_supported, std::move(msg)};
     }
 
     if(opt.keep_unknown_as_placeholders)
@@ -306,7 +310,7 @@ inline pl_model_mapping map_pe_model_to_pl(::phy_engine::model::model_base const
         return identity_mapping(std::string(pl_model_id::yes_gate), 2);
     }
 
-    return {};
+    return pl_model_mapping{};
 }
 
 inline void try_set_pl_properties_for_element(experiment& ex,
@@ -315,12 +319,18 @@ inline void try_set_pl_properties_for_element(experiment& ex,
                                               std::vector<std::string>& warnings)
 {
     if(mb.ptr == nullptr) { return; }
+    auto* el = ex.find_element(element_id);
+    if(el == nullptr)
+    {
+        warnings.push_back("pe_to_pl: internal: missing element for id=" + element_id);
+        return;
+    }
     auto const name = u8sv_to_string(mb.ptr->get_model_name());
 
     // Keep PE instance name for downstream layout / debug.
     if(!mb.name.empty())
     {
-        ex.get_element(element_id).data()["Label"] = u8str_to_string(mb.name);
+        el->data()["Label"] = u8str_to_string(mb.name);
     }
 
     if(name == "INPUT")
@@ -335,36 +345,37 @@ inline void try_set_pl_properties_for_element(experiment& ex,
             warnings.push_back("pe_to_pl: Logic Input initial state is X/Z; defaulting to 0");
             sw = 0;
         }
-        ex.get_element(element_id).data()["Properties"]["开关"] = static_cast<double>(sw);
+        el->data()["Properties"]["开关"] = static_cast<double>(sw);
     }
 
     if(name == "Resistance")
     {
         auto v = mb.ptr->get_attribute(0);
         if(v.type != ::phy_engine::model::variant_type::d) { return; }
-        ex.get_element(element_id).data()["Properties"]["电阻"] = v.d;
+        el->data()["Properties"]["电阻"] = v.d;
     }
 
     if(name == "VDC")
     {
         auto v = mb.ptr->get_attribute(0);
         if(v.type != ::phy_engine::model::variant_type::d) { return; }
-        ex.get_element(element_id).data()["Properties"]["电压"] = v.d;
+        el->data()["Properties"]["电压"] = v.d;
     }
 
     if(name == "Comparator")
     {
         auto ll = mb.ptr->get_attribute(0);
         auto hl = mb.ptr->get_attribute(1);
-        if(ll.type == ::phy_engine::model::variant_type::d) { ex.get_element(element_id).data()["Properties"]["低电平"] = ll.d; }
-        if(hl.type == ::phy_engine::model::variant_type::d) { ex.get_element(element_id).data()["Properties"]["高电平"] = hl.d; }
-        ex.get_element(element_id).data()["Properties"]["锁定"] = 1.0;
+        if(ll.type == ::phy_engine::model::variant_type::d) { el->data()["Properties"]["低电平"] = ll.d; }
+        if(hl.type == ::phy_engine::model::variant_type::d) { el->data()["Properties"]["高电平"] = hl.d; }
+        el->data()["Properties"]["锁定"] = 1.0;
     }
 }
 }  // namespace detail
 
-inline result convert(::phy_engine::netlist::netlist const& nl, options const& opt = {})
+inline status_or<result> convert_ec(::phy_engine::netlist::netlist const& nl, options const& opt = {}) noexcept
 {
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
     result out;
     out.ex = experiment::create(experiment_type::circuit);
 
@@ -391,12 +402,16 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
                 if(!(opt.include_linear && dt == ::phy_engine::model::model_device_type::linear)) { continue; }
             }
 
-            auto mapping = detail::map_pe_model_to_pl(*m, opt, out.warnings);
+            auto mapping_r = detail::map_pe_model_to_pl_ec(*m, opt, out.warnings);
+            if(!mapping_r) { return mapping_r.st; }
+            auto mapping = std::move(*mapping_r.value);
             if(mapping.model_id.empty())
             {
                 auto const name_u8 = m->ptr->get_model_name();
                 auto const name = detail::u8sv_to_string(name_u8);
-                throw std::runtime_error("pe_to_pl: unsupported conversion for PE digital model: " + name);
+                auto msg = "pe_to_pl: unsupported conversion for PE digital model: " + name;
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::operation_not_supported, std::move(msg)};
             }
 
             // Optionally drop dangling Logic Inputs (PE INPUT models with no connections).
@@ -428,7 +443,9 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
                 }
             }
 
-            auto id = out.ex.add_circuit_element(mapping.model_id, pos, opt.element_xyz_coords, mapping.is_big_element);
+            auto id_r = out.ex.add_circuit_element_ec(mapping.model_id, pos, opt.element_xyz_coords, mapping.is_big_element);
+            if(!id_r) { return id_r.st; }
+            auto id = std::move(*id_r.value);
             out.element_by_pe_model.emplace(m, id);
             model_map.emplace(m, mapped_element{std::move(id), std::move(mapping.pe_to_pl_pin)});
 
@@ -438,7 +455,10 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
 
     if(opt.include_ground)
     {
-        ground_element_id = out.ex.add_circuit_element(std::string(pl_model_id::ground_component), opt.fixed_pos, opt.element_xyz_coords, false);
+        auto id_r =
+            out.ex.add_circuit_element_ec(std::string(pl_model_id::ground_component), opt.fixed_pos, opt.element_xyz_coords, false);
+        if(!id_r) { return id_r.st; }
+        ground_element_id = std::move(*id_r.value);
     }
 
     // 2) Collect nets (PE node -> list of PL endpoints).
@@ -500,7 +520,8 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
             for(std::size_t i{1}; i < eps.size(); ++i)
             {
                 auto const& e = eps[i];
-                out.ex.connect(root.element_identifier, root.pin, e.element_identifier, e.pin);
+                auto st = out.ex.connect_ec(root.element_identifier, root.pin, e.element_identifier, e.pin);
+                if(!st) { return st; }
             }
         }
 
@@ -508,4 +529,13 @@ inline result convert(::phy_engine::netlist::netlist const& nl, options const& o
     }
     return out;
 }
+
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+inline result convert(::phy_engine::netlist::netlist const& nl, options const& opt = {})
+{
+    auto r = convert_ec(nl, opt);
+    if(!r) { throw std::runtime_error(r.st.message); }
+    return std::move(*r.value);
+}
+#endif
 }  // namespace phy_engine::phy_lab_wrapper::pe_to_pl

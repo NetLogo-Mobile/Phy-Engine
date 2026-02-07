@@ -12,6 +12,7 @@
 
 #include <fast_io/fast_io_driver/timer.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -34,34 +35,29 @@ namespace
         std::filesystem::path base_dir;
     };
 
-    std::string read_file_text(std::filesystem::path const& path)
+    bool read_file_text(std::filesystem::path const& path, std::string& out) noexcept
     {
         std::ifstream ifs(path, std::ios::binary);
-        if(!ifs.is_open()) { throw std::runtime_error("failed to open: " + path.string()); }
-        std::string s;
+        if(!ifs.is_open()) { return false; }
         ifs.seekg(0, std::ios::end);
-        auto const n = static_cast<std::size_t>(ifs.tellg());
+        auto const end = ifs.tellg();
+        if(end == std::streampos(-1)) { return false; }
+        auto const n = static_cast<std::size_t>(end);
         ifs.seekg(0, std::ios::beg);
-        s.resize(n);
-        if(n != 0) { ifs.read(s.data(), static_cast<std::streamsize>(n)); }
-        return s;
+        out.resize(n);
+        if(n != 0 && !ifs.read(out.data(), static_cast<std::streamsize>(n))) { return false; }
+        return true;
     }
 
     bool include_resolver_fs(void* user, u8sv path, ::fast_io::u8string& out_text) noexcept
     {
-        try
-        {
-            auto* ctx = static_cast<include_ctx*>(user);
-            std::string rel(reinterpret_cast<char const*>(path.data()), path.size());
-            auto p = ctx->base_dir / rel;
-            auto s = read_file_text(p);
-            out_text.assign(u8sv{reinterpret_cast<char8_t const*>(s.data()), s.size()});
-            return true;
-        }
-        catch(...)
-        {
-            return false;
-        }
+        auto* ctx = static_cast<include_ctx*>(user);
+        std::string rel(reinterpret_cast<char const*>(path.data()), path.size());
+        auto p = ctx->base_dir / rel;
+        std::string s;
+        if(!read_file_text(p, s)) { return false; }
+        out_text.assign(u8sv{reinterpret_cast<char8_t const*>(s.data()), s.size()});
+        return true;
     }
 
     static void usage(char const* argv0)
@@ -213,17 +209,13 @@ namespace
 
     static std::optional<std::size_t> parse_size(std::string const& s)
     {
-        try
-        {
-            std::size_t idx{};
-            auto v = std::stoull(s, &idx, 10);
-            if(idx != s.size()) { return std::nullopt; }
-            return static_cast<std::size_t>(v);
-        }
-        catch(...)
-        {
-            return std::nullopt;
-        }
+        if(s.empty()) { return std::nullopt; }
+        char* end{};
+        errno = 0;
+        auto v = std::strtoull(s.c_str(), &end, 10);
+        if(end != s.c_str() + s.size()) { return std::nullopt; }
+        if(errno == ERANGE) { return std::nullopt; }
+        return static_cast<std::size_t>(v);
     }
 
     static std::optional<bool> parse_toggle(int argc, char** argv, std::string_view on_flag, std::string_view off_flag)
@@ -341,71 +333,69 @@ int main(int argc, char** argv)
         return (argc < 3) ? 2 : 0;
     }
 
-    try
+    auto out_path = std::filesystem::path(argv[1]);
+    auto in_path = std::filesystem::path(argv[2]);
+
+    auto top_override = arg_after(argc, argv, "--top");
+    auto layout = parse_layout(arg_after(argc, argv, "--layout"));
+    if(!layout)
     {
-        auto out_path = std::filesystem::path(argv[1]);
-        auto in_path = std::filesystem::path(argv[2]);
+        ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout value\n");
+        return 10;
+    }
 
-        auto top_override = arg_after(argc, argv, "--top");
-        auto layout = parse_layout(arg_after(argc, argv, "--layout"));
-        if(!layout)
+    auto mode = parse_mode(arg_after(argc, argv, "--mode"));
+    if(!mode)
+    {
+        ::fast_io::io::perr(::fast_io::err(), "error: invalid --mode value\n");
+        return 11;
+    }
+
+    bool const gen_io = !has_flag(argc, argv, "--no-io");
+    bool const overwrite = has_flag(argc, argv, "--overwrite");
+    bool const synth = has_flag(argc, argv, "--synth") || has_flag(argc, argv, "--synthesize");
+
+    auto const opt_level = parse_opt_level(argc, argv);
+    if(!opt_level)
+    {
+        ::fast_io::io::perr(::fast_io::err(), "error: invalid -O* / --opt-level\n");
+        return 12;
+    }
+
+    bool assume_binary_inputs = false;
+    bool opt_wires = true;
+    bool opt_mul2 = true;
+    bool opt_adders = true;
+    if(auto v = parse_toggle(argc, argv, "--assume-binary-inputs", "--no-assume-binary-inputs")) { assume_binary_inputs = *v; }
+    if(auto v = parse_toggle(argc, argv, "--opt-wires", "--no-opt-wires")) { opt_wires = *v; }
+    if(auto v = parse_toggle(argc, argv, "--opt-mul2", "--no-opt-mul2")) { opt_mul2 = *v; }
+    if(auto v = parse_toggle(argc, argv, "--opt-adders", "--no-opt-adders")) { opt_adders = *v; }
+    bool const show_report = has_flag(argc, argv, "--report");
+
+    // Omax / budget knobs (also affect O3 since they are per-pass/global budgets).
+    std::size_t omax_timeout_ms = 0;
+    if(auto s = arg_after(argc, argv, "--opt-timeout-ms"))
+    {
+        auto v = parse_size(*s);
+        if(!v)
         {
-            ::fast_io::io::perr(::fast_io::err(), "error: invalid --layout value\n");
-            return 10;
-        }
-
-        auto mode = parse_mode(arg_after(argc, argv, "--mode"));
-        if(!mode)
-        {
-            ::fast_io::io::perr(::fast_io::err(), "error: invalid --mode value\n");
-            return 11;
-        }
-
-        bool const gen_io = !has_flag(argc, argv, "--no-io");
-        bool const overwrite = has_flag(argc, argv, "--overwrite");
-        bool const synth = has_flag(argc, argv, "--synth") || has_flag(argc, argv, "--synthesize");
-
-        auto const opt_level = parse_opt_level(argc, argv);
-        if(!opt_level)
-        {
-            ::fast_io::io::perr(::fast_io::err(), "error: invalid -O* / --opt-level\n");
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --opt-timeout-ms\n");
             return 12;
         }
+        omax_timeout_ms = *v;
+    }
 
-        bool assume_binary_inputs = false;
-        bool opt_wires = true;
-        bool opt_mul2 = true;
-        bool opt_adders = true;
-        if(auto v = parse_toggle(argc, argv, "--assume-binary-inputs", "--no-assume-binary-inputs")) { assume_binary_inputs = *v; }
-        if(auto v = parse_toggle(argc, argv, "--opt-wires", "--no-opt-wires")) { opt_wires = *v; }
-        if(auto v = parse_toggle(argc, argv, "--opt-mul2", "--no-opt-mul2")) { opt_mul2 = *v; }
-        if(auto v = parse_toggle(argc, argv, "--opt-adders", "--no-opt-adders")) { opt_adders = *v; }
-        bool const show_report = has_flag(argc, argv, "--report");
-
-        // Omax / budget knobs (also affect O3 since they are per-pass/global budgets).
-        std::size_t omax_timeout_ms = 0;
-        if(auto s = arg_after(argc, argv, "--opt-timeout-ms"))
+    std::size_t omax_max_iter = 32;
+    if(auto s = arg_after(argc, argv, "--opt-max-iter"))
+    {
+        auto v = parse_size(*s);
+        if(!v)
         {
-            auto v = parse_size(*s);
-            if(!v)
-            {
-                ::fast_io::io::perr(::fast_io::err(), "error: invalid --opt-timeout-ms\n");
-                return 12;
-            }
-            omax_timeout_ms = *v;
+            ::fast_io::io::perr(::fast_io::err(), "error: invalid --opt-max-iter\n");
+            return 12;
         }
-
-        std::size_t omax_max_iter = 32;
-        if(auto s = arg_after(argc, argv, "--opt-max-iter"))
-        {
-            auto v = parse_size(*s);
-            if(!v)
-            {
-                ::fast_io::io::perr(::fast_io::err(), "error: invalid --opt-max-iter\n");
-                return 12;
-            }
-            omax_max_iter = *v;
-        }
+        omax_max_iter = *v;
+    }
 
         bool const omax_randomize = has_flag(argc, argv, "--opt-randomize");
         std::uint64_t omax_rand_seed = 1;
@@ -577,11 +567,17 @@ int main(int argc, char** argv)
             return 13;
         }
 
-        using namespace ::phy_engine;
-        using namespace ::phy_engine::verilog::digital;
+    using namespace ::phy_engine;
+    using namespace ::phy_engine::verilog::digital;
 
-        auto const src_s = read_file_text(in_path);
-        auto const src = u8sv{reinterpret_cast<char8_t const*>(src_s.data()), src_s.size()};
+    std::string src_s;
+    if(!read_file_text(in_path, src_s))
+    {
+        auto const in_path_s = in_path.string();
+        ::fast_io::io::perr(::fast_io::err(), "error: failed to open ", ::fast_io::mnp::os_c_str(in_path_s.c_str()), "\n");
+        return 1;
+    }
+    auto const src = u8sv{reinterpret_cast<char8_t const*>(src_s.data()), src_s.size()};
 
         compile_options copt{};
         include_ctx ictx{.base_dir = in_path.parent_path()};
@@ -856,11 +852,5 @@ int main(int argc, char** argv)
             return 20;
         }
 
-        return 0;
-    }
-    catch(std::exception const& e)
-    {
-        ::fast_io::io::perr(::fast_io::err(), "fatal: ", ::fast_io::mnp::os_c_str(e.what()), "\n");
-        return 100;
-    }
+    return 0;
 }

@@ -3,6 +3,7 @@
 #include "physicslab.h"
 
 #include <cstring>
+#include <new>
 #include <string>
 
 // Minimal C API for embedding / wasm bindings.
@@ -13,10 +14,12 @@ namespace phy_engine::phy_lab_wrapper::c_api::detail
 inline thread_local std::string last_error;
 
 inline void set_error(std::string msg) { last_error = std::move(msg); }
+inline void clear_error() noexcept { last_error.clear(); }
 
 inline char* dup_cstr(std::string const& s)
 {
-    auto* out = new char[s.size() + 1];
+    auto* out = new (std::nothrow) char[s.size() + 1];
+    if(out == nullptr) { return nullptr; }
     std::memcpy(out, s.data(), s.size());
     out[s.size()] = '\0';
     return out;
@@ -37,44 +40,39 @@ inline void plw_string_free(char* s) { delete[] s; }
 inline plw_experiment_t plw_experiment_create(int type_value)
 {
     using namespace phy_engine::phy_lab_wrapper;
-    try
+    c_api::detail::clear_error();
+    auto type = static_cast<experiment_type>(type_value);
+    auto* ex = new (std::nothrow) experiment(experiment::create(type));
+    if(ex == nullptr)
     {
-        auto type = static_cast<experiment_type>(type_value);
-        return new experiment(experiment::create(type));
-    }
-    catch (std::exception const& e)
-    {
-        c_api::detail::set_error(e.what());
+        c_api::detail::set_error("out of memory");
         return nullptr;
     }
-    catch (...)
-    {
-        c_api::detail::set_error("unknown error");
-        return nullptr;
-    }
+    return ex;
 }
 
 inline plw_experiment_t plw_experiment_load_from_string(char const* sav_json)
 {
     using namespace phy_engine::phy_lab_wrapper;
-    try
+    c_api::detail::clear_error();
+    if(sav_json == nullptr)
     {
-        if (sav_json == nullptr)
-        {
-            throw std::invalid_argument("sav_json is null");
-        }
-        return new experiment(experiment::load_from_string(sav_json));
-    }
-    catch (std::exception const& e)
-    {
-        c_api::detail::set_error(e.what());
+        c_api::detail::set_error("sav_json is null");
         return nullptr;
     }
-    catch (...)
+    auto r = experiment::load_from_string_ec(sav_json);
+    if(!r)
     {
-        c_api::detail::set_error("unknown error");
+        c_api::detail::set_error(r.st.message);
         return nullptr;
     }
+    auto* ex = new (std::nothrow) experiment(std::move(*r.value));
+    if(ex == nullptr)
+    {
+        c_api::detail::set_error("out of memory");
+        return nullptr;
+    }
+    return ex;
 }
 
 inline void plw_experiment_destroy(plw_experiment_t handle)
@@ -86,25 +84,26 @@ inline void plw_experiment_destroy(plw_experiment_t handle)
 inline char* plw_experiment_dump(plw_experiment_t handle, int indent)
 {
     using namespace phy_engine::phy_lab_wrapper;
-    try
+    c_api::detail::clear_error();
+    auto* ex = static_cast<experiment*>(handle);
+    if(ex == nullptr)
     {
-        auto* ex = static_cast<experiment*>(handle);
-        if (ex == nullptr)
-        {
-            throw std::invalid_argument("experiment handle is null");
-        }
-        return c_api::detail::dup_cstr(ex->dump(indent));
-    }
-    catch (std::exception const& e)
-    {
-        c_api::detail::set_error(e.what());
+        c_api::detail::set_error("experiment handle is null");
         return nullptr;
     }
-    catch (...)
+    auto r = ex->dump_ec(indent);
+    if(!r)
     {
-        c_api::detail::set_error("unknown error");
+        c_api::detail::set_error(r.st.message);
         return nullptr;
     }
+    auto* out = c_api::detail::dup_cstr(*r.value);
+    if(out == nullptr)
+    {
+        c_api::detail::set_error("out of memory");
+        return nullptr;
+    }
+    return out;
 }
 
 inline char* plw_experiment_add_circuit_element(plw_experiment_t handle,
@@ -115,30 +114,31 @@ inline char* plw_experiment_add_circuit_element(plw_experiment_t handle,
                                                 int element_xyz_coords)
 {
     using namespace phy_engine::phy_lab_wrapper;
-    try
+    c_api::detail::clear_error();
+    auto* ex = static_cast<experiment*>(handle);
+    if(ex == nullptr)
     {
-        auto* ex = static_cast<experiment*>(handle);
-        if (ex == nullptr)
-        {
-            throw std::invalid_argument("experiment handle is null");
-        }
-        if (model_id == nullptr)
-        {
-            throw std::invalid_argument("model_id is null");
-        }
-        auto id = ex->add_circuit_element(model_id, position{x, y, z}, element_xyz_coords != 0);
-        return c_api::detail::dup_cstr(id);
-    }
-    catch (std::exception const& e)
-    {
-        c_api::detail::set_error(e.what());
+        c_api::detail::set_error("experiment handle is null");
         return nullptr;
     }
-    catch (...)
+    if(model_id == nullptr)
     {
-        c_api::detail::set_error("unknown error");
+        c_api::detail::set_error("model_id is null");
         return nullptr;
     }
+    auto id_r = ex->add_circuit_element_ec(model_id, position{x, y, z}, element_xyz_coords != 0);
+    if(!id_r)
+    {
+        c_api::detail::set_error(id_r.st.message);
+        return nullptr;
+    }
+    auto* out = c_api::detail::dup_cstr(*id_r.value);
+    if(out == nullptr)
+    {
+        c_api::detail::set_error("out of memory");
+        return nullptr;
+    }
+    return out;
 }
 
 inline int plw_experiment_connect(plw_experiment_t handle,
@@ -149,31 +149,25 @@ inline int plw_experiment_connect(plw_experiment_t handle,
                                  int color_value)
 {
     using namespace phy_engine::phy_lab_wrapper;
-    try
+    c_api::detail::clear_error();
+    auto* ex = static_cast<experiment*>(handle);
+    if(ex == nullptr)
     {
-        auto* ex = static_cast<experiment*>(handle);
-        if (ex == nullptr)
-        {
-            throw std::invalid_argument("experiment handle is null");
-        }
-        if (src_id == nullptr || dst_id == nullptr)
-        {
-            throw std::invalid_argument("src_id/dst_id is null");
-        }
-        ex->connect(src_id, src_pin, dst_id, dst_pin, static_cast<wire_color>(color_value));
-        return 0;
-    }
-    catch (std::exception const& e)
-    {
-        c_api::detail::set_error(e.what());
+        c_api::detail::set_error("experiment handle is null");
         return 1;
     }
-    catch (...)
+    if(src_id == nullptr || dst_id == nullptr)
     {
-        c_api::detail::set_error("unknown error");
+        c_api::detail::set_error("src_id/dst_id is null");
         return 1;
     }
+    auto st = ex->connect_ec(src_id, src_pin, dst_id, dst_pin, static_cast<wire_color>(color_value));
+    if(!st)
+    {
+        c_api::detail::set_error(st.message);
+        return 1;
+    }
+    return 0;
 }
 
 }  // extern "C"
-

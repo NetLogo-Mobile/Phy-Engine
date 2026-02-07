@@ -11,6 +11,7 @@
 
 #include <fast_io/fast_io_driver/timer.h>
 
+#include <cerrno>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -37,34 +38,29 @@ struct include_ctx
     std::filesystem::path base_dir;
 };
 
-std::string read_file_text(std::filesystem::path const& path)
+bool read_file_text(std::filesystem::path const& path, std::string& out) noexcept
 {
     std::ifstream ifs(path, std::ios::binary);
-    if(!ifs.is_open()) { throw std::runtime_error("failed to open: " + path.string()); }
-    std::string s;
+    if(!ifs.is_open()) { return false; }
     ifs.seekg(0, std::ios::end);
-    auto const n = static_cast<std::size_t>(ifs.tellg());
+    auto const end = ifs.tellg();
+    if(end == std::streampos(-1)) { return false; }
+    auto const n = static_cast<std::size_t>(end);
     ifs.seekg(0, std::ios::beg);
-    s.resize(n);
-    if(n != 0) { ifs.read(s.data(), static_cast<std::streamsize>(n)); }
-    return s;
+    out.resize(n);
+    if(n != 0 && !ifs.read(out.data(), static_cast<std::streamsize>(n))) { return false; }
+    return true;
 }
 
 bool include_resolver_fs(void* user, u8sv path, ::fast_io::u8string& out_text) noexcept
 {
-    try
-    {
-        auto* ctx = static_cast<include_ctx*>(user);
-        std::string rel(reinterpret_cast<char const*>(path.data()), path.size());
-        auto p = ctx->base_dir / rel;
-        auto s = read_file_text(p);
-        out_text.assign(u8sv{reinterpret_cast<char8_t const*>(s.data()), s.size()});
-        return true;
-    }
-    catch(...)
-    {
-        return false;
-    }
+    auto* ctx = static_cast<include_ctx*>(user);
+    std::string rel(reinterpret_cast<char const*>(path.data()), path.size());
+    auto p = ctx->base_dir / rel;
+    std::string s;
+    if(!read_file_text(p, s)) { return false; }
+    out_text.assign(u8sv{reinterpret_cast<char8_t const*>(s.data()), s.size()});
+    return true;
 }
 
 std::optional<std::size_t> parse_bit_index(std::string_view s, std::string_view base)
@@ -306,7 +302,10 @@ static void reposition_io_elements(experiment& ex,
             if(auto idx = parse_bit_index(pn, base)) { bit = *idx; }
             auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
 
-            ex.get_element(e.identifier()).set_element_position(position{x, y, 0.0}, false);
+            if(auto* el = ex.find_element(e.identifier()))
+            {
+                el->set_element_position(position{x, y, 0.0}, false);
+            }
             continue;
         }
 
@@ -323,7 +322,10 @@ static void reposition_io_elements(experiment& ex,
         if(auto idx = parse_bit_index(pn, base)) { bit = *idx; }
         auto const x = x_for_bit_lsb_right(bit, width, -extent, extent);
 
-        ex.get_element(e.identifier()).set_element_position(position{x, y, 0.0}, false);
+        if(auto* el = ex.find_element(e.identifier()))
+        {
+            el->set_element_position(position{x, y, 0.0}, false);
+        }
     }
 }
 
@@ -517,33 +519,25 @@ static std::optional<std::uint8_t> parse_opt_level(int argc, char** argv)
 
 static std::optional<double> parse_double(std::string const& s)
 {
-    try
-    {
-        std::size_t idx{};
-        double v = std::stod(s, &idx);
-        if(idx != s.size()) { return std::nullopt; }
-        if(!std::isfinite(v)) { return std::nullopt; }
-        return v;
-    }
-    catch(...)
-    {
-        return std::nullopt;
-    }
+    if(s.empty()) { return std::nullopt; }
+    char* end{};
+    errno = 0;
+    double v = std::strtod(s.c_str(), &end);
+    if(end != s.c_str() + s.size()) { return std::nullopt; }
+    if(errno == ERANGE) { return std::nullopt; }
+    if(!std::isfinite(v)) { return std::nullopt; }
+    return v;
 }
 
 static std::optional<std::size_t> parse_size(std::string const& s)
 {
-    try
-    {
-        std::size_t idx{};
-        auto v = std::stoull(s, &idx, 10);
-        if(idx != s.size()) { return std::nullopt; }
-        return static_cast<std::size_t>(v);
-    }
-    catch(...)
-    {
-        return std::nullopt;
-    }
+    if(s.empty()) { return std::nullopt; }
+    char* end{};
+    errno = 0;
+    auto v = std::strtoull(s.c_str(), &end, 10);
+    if(end != s.c_str() + s.size()) { return std::nullopt; }
+    if(errno == ERANGE) { return std::nullopt; }
+    return static_cast<std::size_t>(v);
 }
 
 static std::optional<phy_engine::phy_lab_wrapper::auto_layout::mode>
@@ -654,8 +648,6 @@ int main(int argc, char** argv)
         return (argc < 3) ? 2 : 0;
     }
 
-    try
-    {
     auto out_path = std::filesystem::path(argv[1]);
     auto in_path = std::filesystem::path(argv[2]);
     auto top_override = arg_after(argc, argv, "--top");
@@ -919,7 +911,13 @@ int main(int argc, char** argv)
     using namespace phy_engine::verilog::digital;
     using namespace phy_engine::phy_lab_wrapper;
 
-    auto const src_s = read_file_text(in_path);
+    std::string src_s;
+    if(!read_file_text(in_path, src_s))
+    {
+        auto const in_path_s = in_path.string();
+        ::fast_io::io::perr(::fast_io::err(), "error: failed to open ", ::fast_io::mnp::os_c_str(in_path_s.c_str()), "\n");
+        return 1;
+    }
     auto const src = u8sv{reinterpret_cast<char8_t const*>(src_s.data()), src_s.size()};
 
     compile_options copt{};
@@ -1211,19 +1209,28 @@ int main(int argc, char** argv)
     };
 
     ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] pe_to_pl convert\n");
-    auto r = [&]()
+    auto r_or = [&]()
     {
-        if(!step_time) { return ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt); }
+        if(!step_time) { return ::phy_engine::phy_lab_wrapper::pe_to_pl::convert_ec(nl, popt); }
         ::fast_io::timer t{u8"[verilog2plsav] time.pe_to_pl.convert"};
-        return ::phy_engine::phy_lab_wrapper::pe_to_pl::convert(nl, popt);
+        return ::phy_engine::phy_lab_wrapper::pe_to_pl::convert_ec(nl, popt);
     }();
+    if(!r_or)
+    {
+        ::fast_io::io::perr(::fast_io::err(), "error: ", ::fast_io::mnp::os_c_str(r_or.st.message.c_str()), "\n");
+        return 99;
+    }
+    auto r = std::move(*r_or.value);
 
     // Keep IO elements fixed for layout.
     for(auto const& e : r.ex.elements())
     {
         if(is_port_io_element(e, inputs, outputs))
         {
-            r.ex.get_element(e.identifier()).set_participate_in_layout(false);
+            if(auto* el = r.ex.find_element(e.identifier()))
+            {
+                el->set_participate_in_layout(false);
+            }
         }
     }
 
@@ -1255,7 +1262,13 @@ int main(int argc, char** argv)
         {
             auto const mid = e.data().value("ModelID", "");
             if(is_port_io_element(e, inputs, outputs)) { continue; }
-            if(!e.participate_in_layout()) { r.ex.get_element(e.identifier()).set_participate_in_layout(true); }
+            if(!e.participate_in_layout())
+            {
+                if(auto* el = r.ex.find_element(e.identifier()))
+                {
+                    el->set_participate_in_layout(true);
+                }
+            }
         }
 
         // Auto-scale extent so the middle-third layout region has enough capacity. Otherwise, skipped elements
@@ -1290,6 +1303,7 @@ int main(int argc, char** argv)
 
             auto const corner0 = position{-extent, layout_y_min, 0.0};
             auto const corner1 = position{extent, layout_y_max, 0.0};
+            ::phy_engine::phy_lab_wrapper::status_or<::phy_engine::phy_lab_wrapper::auto_layout::stats> st_r{};
             if(layout3d)
             {
                 // Keep z stable across retry attempts: retries are internal, not user-visible layout steps.
@@ -1299,26 +1313,32 @@ int main(int argc, char** argv)
                 switch(*layout3d)
                 {
                     case layout3d_kind::xy:
-                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_a_3d(r.ex, corner0, corner1, z_io, aopt);
+                        st_r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_a_3d_ec(r.ex, corner0, corner1, z_io, aopt);
                         break;
                     case layout3d_kind::hier:
-                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_b_3d(r.ex, corner0, corner1, z_base_bc, aopt);
+                        st_r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_b_3d_ec(r.ex, corner0, corner1, z_base_bc, aopt);
                         break;
                     case layout3d_kind::force:
-                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_c_3d(r.ex, corner0, corner1, z_base_bc, aopt);
+                        st_r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_c_3d_ec(r.ex, corner0, corner1, z_base_bc, aopt);
                         break;
                     case layout3d_kind::pack:
-                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout_d_3d(r.ex, corner0, corner1, z_io, aopt);
+                        st_r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_d_3d_ec(r.ex, corner0, corner1, z_io, aopt);
                         break;
                     default:
-                        st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
+                        st_r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_ec(r.ex, corner0, corner1, 0.0, aopt);
                         break;
                 }
             }
             else
             {
-                st = ::phy_engine::phy_lab_wrapper::auto_layout::layout(r.ex, corner0, corner1, 0.0, aopt);
+                st_r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_ec(r.ex, corner0, corner1, 0.0, aopt);
             }
+            if(!st_r)
+            {
+                ::fast_io::io::perr(::fast_io::err(), "error: ", ::fast_io::mnp::os_c_str(st_r.st.message.c_str()), "\n");
+                return 99;
+            }
+            st = std::move(*st_r.value);
 
             // If this mode fell back (e.g., cluster->fast) or there are still skipped elements, try again with smaller steps.
             if(layout3d)
@@ -1361,14 +1381,25 @@ int main(int argc, char** argv)
     if(step_time)
     {
         ::fast_io::timer t{u8"[verilog2plsav] time.save"};
-        r.ex.save(out_path, 2);
+        auto st = r.ex.save_ec(out_path, 2);
+        if(!st)
+        {
+            ::fast_io::io::perr(::fast_io::err(), "error: ", ::fast_io::mnp::os_c_str(st.message.c_str()), "\n");
+            return 99;
+        }
     }
     else
     {
-        r.ex.save(out_path, 2);
+        auto st = r.ex.save_ec(out_path, 2);
+        if(!st)
+        {
+            ::fast_io::io::perr(::fast_io::err(), "error: ", ::fast_io::mnp::os_c_str(st.message.c_str()), "\n");
+            return 99;
+        }
     }
 
-    if(!std::filesystem::exists(out_path))
+    std::error_code exists_ec;
+    if(!std::filesystem::exists(out_path, exists_ec) || exists_ec)
     {
         auto const out_path_s = out_path.string();
         ::fast_io::io::perr(::fast_io::err(), "error: failed to write ", ::fast_io::mnp::os_c_str(out_path_s.c_str()), "\n");
@@ -1379,10 +1410,4 @@ int main(int argc, char** argv)
         ::fast_io::io::perr(::fast_io::err(), "[verilog2plsav] wrote ", ::fast_io::mnp::os_c_str(out_path_s.c_str()), "\n");
     }
     return 0;
-    }
-    catch(std::exception const& e)
-    {
-        ::fast_io::io::perr(::fast_io::err(), "error: ", ::fast_io::mnp::os_c_str(e.what()), "\n");
-        return 99;
-    }
 }

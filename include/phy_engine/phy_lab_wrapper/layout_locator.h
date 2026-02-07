@@ -30,7 +30,7 @@ struct corner_locator
     position x_axis{};  // left->right direction (u axis)
     position y_axis{};  // bottom->top direction (v axis)
 
-    [[nodiscard]] static corner_locator from_experiment(experiment const& ex, corner_markers markers)
+    [[nodiscard]] static status_or<corner_locator> from_experiment_ec(experiment const& ex, corner_markers markers) noexcept
     {
         auto find_first_by_model_id = [&](std::string_view model_id) -> std::optional<position> {
             for(auto const& e : ex.elements())
@@ -53,10 +53,12 @@ struct corner_locator
             auto missing = [&](std::optional<position> const& p, std::string_view name, std::string_view mid) -> std::string {
                 return p ? std::string{} : (std::string(name) + " (" + std::string(mid) + ") ");
             };
-            throw std::runtime_error("corner_locator: missing marker(s): " + missing(lt, "left_top", markers.left_top_model_id) +
-                                     missing(lb, "left_bottom", markers.left_bottom_model_id) +
-                                     missing(rt, "right_top", markers.right_top_model_id) +
-                                     missing(rb, "right_bottom", markers.right_bottom_model_id));
+            auto msg = "corner_locator: missing marker(s): " + missing(lt, "left_top", markers.left_top_model_id) +
+                       missing(lb, "left_bottom", markers.left_bottom_model_id) +
+                       missing(rt, "right_top", markers.right_top_model_id) +
+                       missing(rb, "right_bottom", markers.right_bottom_model_id);
+            ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
 
         corner_locator out{};
@@ -81,11 +83,28 @@ struct corner_locator
         return out;
     }
 
+    [[nodiscard]] static status_or<corner_locator> from_sav_ec(std::filesystem::path const& sav_path, corner_markers markers) noexcept
+    {
+        auto ex_r = experiment::load_ec(sav_path);
+        if(!ex_r) { return ex_r.st; }
+        return from_experiment_ec(*ex_r.value, markers);
+    }
+
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+    [[nodiscard]] static corner_locator from_experiment(experiment const& ex, corner_markers markers)
+    {
+        auto r = from_experiment_ec(ex, markers);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
     [[nodiscard]] static corner_locator from_sav(std::filesystem::path const& sav_path, corner_markers markers)
     {
-        auto ex = experiment::load(sav_path);
-        return from_experiment(ex, markers);
+        auto r = from_sav_ec(sav_path, markers);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
+#endif
 
     // Map a point in the unit square (u,v in [0,1]) into native coordinates.
     // u: left->right, v: bottom->top.

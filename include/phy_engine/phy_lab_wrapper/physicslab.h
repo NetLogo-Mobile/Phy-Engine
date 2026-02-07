@@ -1,6 +1,18 @@
 ﻿#pragma once
 
+#include <phy_engine/utils/exceptions.h>
+
+#if !PHY_ENGINE_ENABLE_EXCEPTIONS
+    // Ensure nlohmann/json is compiled in no-exception mode when Phy-Engine
+    // error-code APIs are selected (even if the compiler supports exceptions).
+    #ifndef JSON_NOEXCEPTION
+        #define JSON_NOEXCEPTION
+    #endif
+#endif
+
 #include "utility/json.hpp"
+#include "error.h"
+#include "status.h"
 
 #include <algorithm>
 #include <chrono>
@@ -11,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -133,7 +146,8 @@ inline double round6(double v)
 {
     if (!std::isfinite(v))
     {
-        throw std::invalid_argument("position/rotation must be finite");
+        set_last_error("position/rotation must be finite");
+        return 0.0;
     }
     return std::round(v * 1'000'000.0) / 1'000'000.0;
 }
@@ -142,11 +156,13 @@ inline double round_n(double v, int decimals)
 {
     if (!std::isfinite(v))
     {
-        throw std::invalid_argument("position/rotation must be finite");
+        set_last_error("position/rotation must be finite");
+        return 0.0;
     }
     if (decimals < 0 || decimals > 12)
     {
-        throw std::invalid_argument("position/rotation precision out of range");
+        set_last_error("position/rotation precision out of range");
+        return 0.0;
     }
     double scale{1.0};
     for (int i = 0; i < decimals; ++i)
@@ -210,25 +226,39 @@ inline std::string pack_xyz(position p, int decimals)
     return python_float(p.x, decimals) + "," + python_float(p.z, decimals) + "," + python_float(p.y, decimals);
 }
 
-inline position parse_xyz(std::string_view s)
+inline std::optional<position> parse_xyz(std::string_view s) noexcept
 {
     auto c1 = s.find(',');
-    if (c1 == std::string_view::npos) throw std::runtime_error("invalid xyz string");
+    if (c1 == std::string_view::npos)
+    {
+        set_last_error("invalid xyz string");
+        return std::nullopt;
+    }
     auto c2 = s.find(',', c1 + 1);
-    if (c2 == std::string_view::npos) throw std::runtime_error("invalid xyz string");
+    if (c2 == std::string_view::npos)
+    {
+        set_last_error("invalid xyz string");
+        return std::nullopt;
+    }
 
-    auto to_double = [](std::string_view sv) -> double {
+    auto to_double = [](std::string_view sv) noexcept -> std::optional<double> {
         std::string tmp(sv);
-        std::size_t idx{};
-        double v = std::stod(tmp, &idx);
-        if (idx != tmp.size()) throw std::runtime_error("invalid number in xyz string");
+        char* end{};
+        double v = std::strtod(tmp.c_str(), &end);
+        if(end == tmp.c_str() || end != tmp.c_str() + tmp.size()) { return std::nullopt; }
+        if(!std::isfinite(v)) { return std::nullopt; }
         return v;
     };
 
-    double x = to_double(s.substr(0, c1));
-    double z = to_double(s.substr(c1 + 1, c2 - (c1 + 1)));
-    double y = to_double(s.substr(c2 + 1));
-    return {x, y, z};
+    auto x = to_double(s.substr(0, c1));
+    auto z = to_double(s.substr(c1 + 1, c2 - (c1 + 1)));
+    auto y = to_double(s.substr(c2 + 1));
+    if(!x || !y || !z)
+    {
+        set_last_error("invalid number in xyz string");
+        return std::nullopt;
+    }
+    return position{*x, *y, *z};
 }
 
 inline std::string rand_string(std::size_t len)
@@ -267,13 +297,23 @@ inline std::filesystem::path default_sav_dir()
     return std::filesystem::current_path() / "physicsLabSav";
 }
 
-inline void ensure_directory(std::filesystem::path const& p)
+inline status ensure_directory_ec(std::filesystem::path const& p) noexcept
 {
     std::error_code ec;
     std::filesystem::create_directories(p, ec);
-    if (ec)
+    if(ec) { return {std::errc::io_error, "failed to create directory: " + p.string()}; }
+    return {};
+}
+
+inline void ensure_directory(std::filesystem::path const& p)
+{
+    auto st = ensure_directory_ec(p);
+    if(!st)
     {
-        throw std::runtime_error("failed to create directory: " + p.string());
+        set_last_error(st.message);
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+        throw std::runtime_error(st.message);
+#endif
     }
 }
 
@@ -503,7 +543,14 @@ inline json default_plsav_template(experiment_type type)
                 {"Bookmarks", json::object()},
                 {"Interfaces", {{"Play-Expanded", false}, {"Chart-Expanded", false}}}};
             break;
-        default: throw std::runtime_error("unsupported experiment type");
+        default:
+            set_last_error("unsupported experiment type");
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+            throw std::runtime_error("unsupported experiment type");
+#else
+            tpl = json::object();
+#endif
+            break;
     }
     return tpl;
 }
@@ -610,7 +657,7 @@ public:
     {
         element e;
         e.data_ = std::move(data);
-        if (!e.data_.contains("Identifier"))
+        if(!e.data_.contains("Identifier") || !e.data_["Identifier"].is_string())
         {
             e.data_["Identifier"] = detail::rand_string(33);
         }
@@ -621,14 +668,31 @@ public:
         return e;
     }
 
-    [[nodiscard]] std::string identifier() const
+    [[nodiscard]] status_or<std::string> identifier_ec() const noexcept
     {
+        detail::clear_last_error();
         auto it = data_.find("Identifier");
-        if (it == data_.end() || !it->is_string())
+        if(it == data_.end() || !it->is_string())
         {
-            throw std::runtime_error("element missing string Identifier");
+            std::string msg = "element missing string Identifier";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
         return it->get<std::string>();
+    }
+
+    [[nodiscard]] std::string identifier() const
+    {
+        auto r = identifier_ec();
+        if(!r)
+        {
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+            throw std::runtime_error(r.st.message);
+#else
+            return {};
+#endif
+        }
+        return std::move(*r.value);
     }
 
     [[nodiscard]] bool is_element_xyz() const noexcept { return is_element_xyz_; }
@@ -742,52 +806,113 @@ public:
         return ex;
     }
 
-    static experiment load(std::filesystem::path const& path)
+    static status_or<experiment> load_ec(std::filesystem::path const& path) noexcept
     {
+        detail::clear_last_error();
         std::ifstream ifs(path, std::ios::binary);
-        if (!ifs.is_open())
+        if(!ifs.is_open())
         {
-            throw std::runtime_error("failed to open sav: " + path.string());
+            auto msg = "failed to open sav: " + path.string();
+            detail::set_last_error(msg);
+            return status{std::errc::no_such_file_or_directory, std::move(msg)};
         }
 
         std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-        return load_from_string(content);
+        return load_from_string_ec(content);
     }
 
-    static experiment load(std::string const& path) { return load(std::filesystem::path(path)); }
+    static status_or<experiment> load_ec(std::string const& path) noexcept { return load_ec(std::filesystem::path(path)); }
 
-    static experiment load_from_string(std::string_view content)
+    static status_or<experiment> load_from_string_ec(std::string_view content) noexcept
     {
-        json root = json::parse(content.begin(), content.end(), nullptr, true, true);
-        return load_from_json(std::move(root));
+        detail::clear_last_error();
+        json root = json::parse(content.begin(), content.end(), nullptr, false, true);
+        if(root.is_discarded())
+        {
+            std::string msg = "invalid sav json: parse failed";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
+        return load_from_json_ec(std::move(root));
     }
 
-    static experiment load_from_json(json root)
+    static status_or<experiment> load_from_json_ec(json root) noexcept
     {
-        experiment ex;
+        detail::clear_last_error();
+        if(!root.is_object())
+        {
+            std::string msg = "invalid sav json: expected object";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
+
+        experiment ex{};
 
         // Full .sav contains {Type, Experiment, Summary, ...}; exported .sav may contain only the "Experiment" object.
-        if (root.is_object() && root.contains("Experiment"))
+        if(auto it_exp = root.find("Experiment"); it_exp != root.end())
         {
+            if(!it_exp->is_object())
+            {
+                std::string msg = "invalid sav json: Experiment must be object";
+                detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
             ex.plsav_ = std::move(root);
-            ex.type_ = static_cast<experiment_type>(ex.plsav_.at("Type").get<int>());
+            auto it_type = ex.plsav_.find("Type");
+            if(it_type == ex.plsav_.end() || !(it_type->is_number_integer() || it_type->is_number_unsigned()))
+            {
+                std::string msg = "invalid sav json: missing/invalid Type";
+                detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
+            ex.type_ = static_cast<experiment_type>(it_type->get<int>());
         }
-        else if (root.is_object() && root.contains("Type"))
+        else if(auto it_type = root.find("Type"); it_type != root.end())
         {
-            ex.type_ = static_cast<experiment_type>(root.at("Type").get<int>());
+            if(!(it_type->is_number_integer() || it_type->is_number_unsigned()))
+            {
+                std::string msg = "invalid sav json: missing/invalid Type";
+                detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
+            ex.type_ = static_cast<experiment_type>(it_type->get<int>());
             ex.plsav_ = detail::default_plsav_template(ex.type_);
             ex.plsav_["Experiment"] = std::move(root);
         }
         else
         {
-            throw std::runtime_error("invalid sav json: expected object");
+            std::string msg = "invalid sav json: expected object";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
 
-        auto const& exp = ex.plsav_.at("Experiment");
-        if (exp.contains("CameraSave") && exp["CameraSave"].is_string())
+        auto it_exp = ex.plsav_.find("Experiment");
+        if(it_exp == ex.plsav_.end() || !it_exp->is_object())
         {
-            auto const& cs = exp["CameraSave"].get_ref<const std::string&>();
-            ex.camera_save_ = cs.empty() ? json::object() : json::parse(cs, nullptr, true, true);
+            std::string msg = "invalid sav json: missing Experiment";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
+        auto const& exp = *it_exp;
+
+        if(auto it = exp.find("CameraSave"); it != exp.end() && it->is_string())
+        {
+            auto const& cs = it->get_ref<const std::string&>();
+            if(cs.empty())
+            {
+                ex.camera_save_ = json::object();
+            }
+            else
+            {
+                json cam = json::parse(cs, nullptr, false, true);
+                if(cam.is_discarded())
+                {
+                    std::string msg = "invalid sav json: CameraSave parse failed";
+                    detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
+                ex.camera_save_ = cam.is_object() ? std::move(cam) : json::object();
+            }
         }
         else
         {
@@ -795,25 +920,41 @@ public:
         }
         if (ex.camera_save_.contains("VisionCenter") && ex.camera_save_["VisionCenter"].is_string())
         {
-            ex.vision_center_ = detail::parse_xyz(ex.camera_save_["VisionCenter"].get_ref<const std::string&>());
+            if(auto p = detail::parse_xyz(ex.camera_save_["VisionCenter"].get_ref<const std::string&>()))
+            {
+                ex.vision_center_ = *p;
+            }
         }
         if (ex.camera_save_.contains("TargetRotation") && ex.camera_save_["TargetRotation"].is_string())
         {
-            ex.target_rotation_ = detail::parse_xyz(ex.camera_save_["TargetRotation"].get_ref<const std::string&>());
+            if(auto p = detail::parse_xyz(ex.camera_save_["TargetRotation"].get_ref<const std::string&>()))
+            {
+                ex.target_rotation_ = *p;
+            }
         }
 
         json status_save = json::object();
-        if (exp.contains("StatusSave") && exp["StatusSave"].is_string())
+        if(auto it = exp.find("StatusSave"); it != exp.end() && it->is_string())
         {
-            auto const& ss = exp["StatusSave"].get_ref<const std::string&>();
-            status_save = ss.empty() ? json::object() : json::parse(ss, nullptr, true, true);
+            auto const& ss = it->get_ref<const std::string&>();
+            if(!ss.empty())
+            {
+                json st = json::parse(ss, nullptr, false, true);
+                if(st.is_discarded())
+                {
+                    std::string msg = "invalid sav json: StatusSave parse failed";
+                    detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
+                status_save = st.is_object() ? std::move(st) : json::object();
+            }
         }
 
         if (ex.type_ == experiment_type::circuit || ex.type_ == experiment_type::electromagnetism)
         {
-            if (status_save.contains("Elements") && status_save["Elements"].is_array())
+            if(auto it = status_save.find("Elements"); it != status_save.end() && it->is_array())
             {
-                for (auto const& el : status_save["Elements"])
+                for (auto const& el : *it)
                 {
                     if (!el.is_object()) continue;
                     element e = element::generic(el, {0, 0, 0}, false, false);
@@ -821,36 +962,41 @@ public:
                     {
                         e.set_element_position(*p, false);
                     }
-                    static_cast<void>(ex.add_element(std::move(e)));
+                    auto added = ex.add_element_ec(std::move(e));
+                    if(!added) { return added.st; }
                 }
             }
-            if (ex.type_ == experiment_type::circuit && status_save.contains("Wires") && status_save["Wires"].is_array())
+            if(ex.type_ == experiment_type::circuit)
             {
-                for (auto const& wj : status_save["Wires"])
+                if(auto it_w = status_save.find("Wires"); it_w != status_save.end() && it_w->is_array())
                 {
-                    if (!wj.is_object()) continue;
-                    wire w;
-                    w.source.element_identifier = wj.value("Source", "");
-                    w.source.pin = wj.value("SourcePin", 0);
-                    w.target.element_identifier = wj.value("Target", "");
-                    w.target.pin = wj.value("TargetPin", 0);
-                    if (auto it = wj.find("ColorName"); it != wj.end() && it->is_string())
+                    for (auto const& wj : *it_w)
                     {
-                        w.color = parse_wire_color_name(it->get_ref<const std::string&>());
+                        if (!wj.is_object()) continue;
+                        wire w;
+                        w.source.element_identifier = wj.value("Source", "");
+                        w.source.pin = wj.value("SourcePin", 0);
+                        w.target.element_identifier = wj.value("Target", "");
+                        w.target.pin = wj.value("TargetPin", 0);
+                        if (auto it_color = wj.find("ColorName"); it_color != wj.end() && it_color->is_string())
+                        {
+                            w.color = parse_wire_color_name(it_color->get_ref<const std::string&>());
+                        }
+                        ex.wires_.push_back(std::move(w));
                     }
-                    ex.wires_.push_back(std::move(w));
                 }
             }
         }
         else if (ex.type_ == experiment_type::celestial)
         {
-            if (status_save.contains("Elements") && status_save["Elements"].is_object())
+            if(auto it = status_save.find("Elements"); it != status_save.end() && it->is_object())
             {
-                for (auto const& [id, el] : status_save["Elements"].items())
+                for (auto const& [id, el] : it->items())
                 {
                     if (!el.is_object()) continue;
                     element e = element::generic(el, {0, 0, 0}, false, false);
-                    static_cast<void>(ex.add_element(std::move(e)));
+                    auto added = ex.add_element_ec(std::move(e));
+                    if(!added) { return added.st; }
                     (void)id;
                 }
             }
@@ -858,6 +1004,31 @@ public:
 
         return ex;
     }
+
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+    static experiment load(std::filesystem::path const& path)
+    {
+        auto r = load_ec(path);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
+    static experiment load(std::string const& path) { return load(std::filesystem::path(path)); }
+
+    static experiment load_from_string(std::string_view content)
+    {
+        auto r = load_from_string_ec(content);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
+    static experiment load_from_json(json root)
+    {
+        auto r = load_from_json_ec(std::move(root));
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+#endif
 
     [[nodiscard]] experiment_type type() const noexcept { return type_; }
 
@@ -886,16 +1057,103 @@ public:
         target_rotation_ = target_rotation_native;
     }
 
-    [[nodiscard]] std::string add_element(element e)
+    [[nodiscard]] status_or<std::string> add_element_ec(element e) noexcept
     {
-        auto id = e.identifier();
-        if (id_to_index_.contains(id))
+        detail::clear_last_error();
+        auto id_r = e.identifier_ec();
+        if(!id_r) { return id_r.st; }
+        auto id = std::move(*id_r.value);
+        if(id_to_index_.contains(id))
         {
-            throw std::runtime_error("duplicate element identifier: " + id);
+            auto msg = "duplicate element identifier: " + id;
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
         id_to_index_.emplace(id, elements_.size());
         elements_.push_back(std::move(e));
         return id;
+    }
+
+    [[nodiscard]] status_or<std::string> add_circuit_element_ec(std::string model_id,
+                                                                position pos,
+                                                                std::optional<bool> element_xyz_coords = std::nullopt,
+                                                                bool is_big_element = false,
+                                                                bool participate_in_layout = true) noexcept
+    {
+        detail::clear_last_error();
+        if(type_ != experiment_type::circuit)
+        {
+            std::string msg = "add_circuit_element only valid for circuit experiments";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
+        bool is_element_xyz_coords = element_xyz_coords.value_or(element_xyz_enabled_);
+        element e = element::circuit(std::move(model_id), pos, is_element_xyz_coords, is_big_element, participate_in_layout);
+        return add_element_ec(std::move(e));
+    }
+
+    [[nodiscard]] element* find_element(std::string const& identifier) noexcept
+    {
+        auto it = id_to_index_.find(identifier);
+        if(it == id_to_index_.end()) { return nullptr; }
+        return std::addressof(elements_[it->second]);
+    }
+
+    [[nodiscard]] element const* find_element(std::string const& identifier) const noexcept
+    {
+        auto it = id_to_index_.find(identifier);
+        if(it == id_to_index_.end()) { return nullptr; }
+        return std::addressof(elements_[it->second]);
+    }
+
+    [[nodiscard]] status connect_ec(std::string const& src_id,
+                                   int src_pin,
+                                   std::string const& dst_id,
+                                   int dst_pin,
+                                   wire_color color = wire_color::blue) noexcept
+    {
+        detail::clear_last_error();
+        if(type_ != experiment_type::circuit)
+        {
+            std::string msg = "wires only supported for circuit experiments";
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
+        }
+        if(!id_to_index_.contains(src_id))
+        {
+            auto msg = "unknown source element: " + src_id;
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
+        }
+        if(!id_to_index_.contains(dst_id))
+        {
+            auto msg = "unknown target element: " + dst_id;
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
+        }
+        wires_.push_back(wire{{src_id, src_pin}, {dst_id, dst_pin}, color});
+        return {};
+    }
+
+    [[nodiscard]] status clear_wires_ec() noexcept
+    {
+        detail::clear_last_error();
+        if(type_ != experiment_type::circuit)
+        {
+            std::string msg = "wires only supported for circuit experiments";
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
+        }
+        wires_.clear();
+        return {};
+    }
+
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+    [[nodiscard]] std::string add_element(element e)
+    {
+        auto r = add_element_ec(std::move(e));
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
 
     [[nodiscard]] std::string add_circuit_element(std::string model_id,
@@ -904,75 +1162,63 @@ public:
                                                   bool is_big_element = false,
                                                   bool participate_in_layout = true)
     {
-        if (type_ != experiment_type::circuit)
-        {
-            throw std::runtime_error("add_circuit_element only valid for circuit experiments");
-        }
-        bool is_element_xyz_coords = element_xyz_coords.value_or(element_xyz_enabled_);
-        element e = element::circuit(std::move(model_id), pos, is_element_xyz_coords, is_big_element, participate_in_layout);
-        return add_element(std::move(e));
+        auto r = add_circuit_element_ec(std::move(model_id), pos, element_xyz_coords, is_big_element, participate_in_layout);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
 
     [[nodiscard]] element& get_element(std::string const& identifier)
     {
-        auto it = id_to_index_.find(identifier);
-        if (it == id_to_index_.end())
-        {
-            throw std::runtime_error("unknown element identifier: " + identifier);
-        }
-        return elements_.at(it->second);
+        auto* e = find_element(identifier);
+        if(e == nullptr) { throw std::runtime_error("unknown element identifier: " + identifier); }
+        return *e;
     }
 
     [[nodiscard]] element const& get_element(std::string const& identifier) const
     {
-        auto it = id_to_index_.find(identifier);
-        if (it == id_to_index_.end())
-        {
-            throw std::runtime_error("unknown element identifier: " + identifier);
-        }
-        return elements_.at(it->second);
+        auto* e = find_element(identifier);
+        if(e == nullptr) { throw std::runtime_error("unknown element identifier: " + identifier); }
+        return *e;
     }
 
     void connect(std::string const& src_id, int src_pin, std::string const& dst_id, int dst_pin, wire_color color = wire_color::blue)
     {
-        if (type_ != experiment_type::circuit)
-        {
-            throw std::runtime_error("wires only supported for circuit experiments");
-        }
-        if (!id_to_index_.contains(src_id)) throw std::runtime_error("unknown source element: " + src_id);
-        if (!id_to_index_.contains(dst_id)) throw std::runtime_error("unknown target element: " + dst_id);
-        wires_.push_back(wire{{src_id, src_pin}, {dst_id, dst_pin}, color});
+        auto st = connect_ec(src_id, src_pin, dst_id, dst_pin, color);
+        if(!st) { throw std::runtime_error(st.message); }
     }
 
     void clear_wires()
     {
-        if (type_ != experiment_type::circuit)
-        {
-            throw std::runtime_error("wires only supported for circuit experiments");
-        }
-        wires_.clear();
+        auto st = clear_wires_ec();
+        if(!st) { throw std::runtime_error(st.message); }
     }
+#endif
 
     [[nodiscard]] std::vector<element> const& elements() const noexcept { return elements_; }
     [[nodiscard]] std::vector<wire> const& wires() const noexcept { return wires_; }
 
     // Controls how many decimal digits are kept when serializing positions/rotations into the .sav.
     // This only affects `dump()/save()` output size, not the in-memory layout math.
-    void set_xyz_precision(int decimals)
+    [[nodiscard]] status set_xyz_precision_ec(int decimals) noexcept
     {
-        if (decimals < 0 || decimals > 12)
+        detail::clear_last_error();
+        if(decimals < 0 || decimals > 12)
         {
-            throw std::invalid_argument("xyz precision out of range");
+            std::string msg = "xyz precision out of range";
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
         }
         xyz_precision_ = decimals;
+        return {};
     }
 
-    [[nodiscard]] json to_plsav_json() const
+    [[nodiscard]] status_or<json> to_plsav_json_ec() const
     {
+        detail::clear_last_error();
         json out = plsav_;
 
         json status_save;
-        if (type_ == experiment_type::circuit)
+        if(type_ == experiment_type::circuit)
         {
             status_save = json{
                 {"SimulationSpeed", 1.0},
@@ -993,7 +1239,7 @@ public:
                 status_save["Wires"].push_back(w.to_json());
             }
         }
-        else if (type_ == experiment_type::electromagnetism)
+        else if(type_ == experiment_type::electromagnetism)
         {
             status_save = json{
                 {"SimulationSpeed", 1.0},
@@ -1007,7 +1253,7 @@ public:
                 status_save["Elements"].push_back(std::move(el));
             }
         }
-        else if (type_ == experiment_type::celestial)
+        else if(type_ == experiment_type::celestial)
         {
             status_save = json{
                 {"MainIdentifier", nullptr},
@@ -1022,12 +1268,16 @@ public:
             };
             for (auto const& e : elements_)
             {
-                status_save["Elements"][e.identifier()] = e.data();
+                auto id_r = e.identifier_ec();
+                if(!id_r) { return id_r.st; }
+                status_save["Elements"][*id_r.value] = e.data();
             }
         }
         else
         {
-            throw std::runtime_error("unsupported experiment type");
+            std::string msg = "unsupported experiment type";
+            detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
 
         auto creation_ms = detail::now_ms();
@@ -1045,69 +1295,112 @@ public:
         return out;
     }
 
-    [[nodiscard]] std::string dump(int indent = 2) const
+    [[nodiscard]] status_or<std::string> dump_ec(int indent = 2) const
     {
-        return to_plsav_json().dump(indent, ' ', false);
+        auto j = to_plsav_json_ec();
+        if(!j) { return j.st; }
+        return j.value->dump(indent, ' ', false);
     }
 
-    void save(std::filesystem::path const& path, int indent = 2) const
+    [[nodiscard]] status save_ec(std::filesystem::path const& path, int indent = 2) const noexcept
     {
+        detail::clear_last_error();
         std::ofstream ofs(path, std::ios::binary);
-        if (!ofs.is_open())
+        if(!ofs.is_open())
         {
-            throw std::runtime_error("failed to open output: " + path.string());
+            auto msg = "failed to open output: " + path.string();
+            detail::set_last_error(msg);
+            return {std::errc::io_error, std::move(msg)};
         }
-        auto txt = dump(indent);
-        ofs.write(txt.data(), static_cast<std::streamsize>(txt.size()));
+        auto txt = dump_ec(indent);
+        if(!txt) { return txt.st; }
+        ofs.write(txt.value->data(), static_cast<std::streamsize>(txt.value->size()));
+        if(!ofs)
+        {
+            auto msg = "failed writing output: " + path.string();
+            detail::set_last_error(msg);
+            return {std::errc::io_error, std::move(msg)};
+        }
+        return {};
     }
 
-    void save(std::string const& path, int indent = 2) const { save(std::filesystem::path(path), indent); }
+    [[nodiscard]] status save_ec(std::string const& path, int indent = 2) const noexcept { return save_ec(std::filesystem::path(path), indent); }
 
-    void save(int indent = 2) const
+    [[nodiscard]] status save_bound_ec(int indent = 2) const noexcept
     {
-        if (!sav_path_)
+        detail::clear_last_error();
+        if(!sav_path_)
         {
-            throw std::runtime_error("experiment has no bound sav_path");
+            std::string msg = "experiment has no bound sav_path";
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
         }
-        if (auto dir = sav_path_->parent_path(); !dir.empty())
+        if(auto dir = sav_path_->parent_path(); !dir.empty())
         {
-            detail::ensure_directory(dir);
+            auto st = detail::ensure_directory_ec(dir);
+            if(!st)
+            {
+                detail::set_last_error(st.message);
+                return st;
+            }
         }
-        save(*sav_path_, indent);
+        return save_ec(*sav_path_, indent);
     }
 
-    static experiment open(open_mode mode,
-                           std::string const& arg,
-                           experiment_type type_for_create = experiment_type::circuit,
-                           bool force_create = false,
-                           std::optional<std::filesystem::path> sav_dir = std::nullopt)
+    static status_or<experiment> open_ec(open_mode mode,
+                                        std::string const& arg,
+                                        experiment_type type_for_create = experiment_type::circuit,
+                                        bool force_create = false,
+                                        std::optional<std::filesystem::path> sav_dir = std::nullopt) noexcept
     {
-        if (mode == open_mode::load_by_filepath)
+        detail::clear_last_error();
+        if(mode == open_mode::load_by_filepath)
         {
-            auto ex = load(std::filesystem::path(arg));
+            auto r = load_ec(std::filesystem::path(arg));
+            if(!r) { return r.st; }
+            auto ex = std::move(*r.value);
             ex.set_sav_path(std::filesystem::path(arg));
             return ex;
         }
-        if (mode == open_mode::load_by_sav_name)
+        if(mode == open_mode::load_by_sav_name)
         {
             auto dir = sav_dir.value_or(detail::default_sav_dir());
-            auto found = find_sav_by_name(dir, arg);
-            if (!found)
+            auto found = find_sav_by_name_ec(dir, arg);
+            if(!found)
             {
-                throw std::runtime_error("no such experiment: " + arg);
+                auto msg = "no such experiment: " + arg;
+                detail::set_last_error(msg);
+                return status{std::errc::no_such_file_or_directory, std::move(msg)};
             }
-            auto ex = load(*found);
-            ex.set_sav_path(*found);
+            auto r = load_ec(*found.value);
+            if(!r) { return r.st; }
+            auto ex = std::move(*r.value);
+            ex.set_sav_path(*found.value);
             return ex;
         }
-        if (mode == open_mode::crt)
+        if(mode == open_mode::crt)
         {
             auto dir = sav_dir.value_or(detail::default_sav_dir());
-            detail::ensure_directory(dir);
-            auto out_path = dir / (arg + ".sav");
-            if (!force_create && std::filesystem::exists(out_path))
+            auto st_dir = detail::ensure_directory_ec(dir);
+            if(!st_dir)
             {
-                throw std::runtime_error("experiment already exists: " + out_path.string());
+                detail::set_last_error(st_dir.message);
+                return st_dir;
+            }
+            auto out_path = dir / (arg + ".sav");
+            std::error_code ec;
+            bool const exists = std::filesystem::exists(out_path, ec);
+            if(ec)
+            {
+                auto msg = "failed checking output path: " + out_path.string();
+                detail::set_last_error(msg);
+                return status{std::errc::io_error, std::move(msg)};
+            }
+            if(!force_create && exists)
+            {
+                auto msg = "experiment already exists: " + out_path.string();
+                detail::set_last_error(msg);
+                return status{std::errc::file_exists, std::move(msg)};
             }
             auto ex = create(type_for_create);
             ex.entitle(arg);
@@ -1115,14 +1408,19 @@ public:
             return ex;
         }
 
-        throw std::runtime_error("open_mode.load_by_plar_app is not implemented in C++ wrapper yet");
+        std::string msg = "open_mode.load_by_plar_app is not implemented in C++ wrapper yet";
+        detail::set_last_error(msg);
+        return status{std::errc::operation_not_supported, std::move(msg)};
     }
 
-    [[nodiscard]] experiment& merge(experiment const& other, position offset = {0.0, 0.0, 0.0})
+    [[nodiscard]] status merge_ec(experiment const& other, position offset = {0.0, 0.0, 0.0}) noexcept
     {
-        if (type_ != other.type_)
+        detail::clear_last_error();
+        if(type_ != other.type_)
         {
-            throw std::runtime_error("cannot merge experiments of different types");
+            std::string msg = "cannot merge experiments of different types";
+            detail::set_last_error(msg);
+            return {std::errc::invalid_argument, std::move(msg)};
         }
 
         std::unordered_map<std::string, std::string> id_map;
@@ -1134,7 +1432,9 @@ public:
             auto old_id = d.value("Identifier", "");
             if (old_id.empty())
             {
-                throw std::runtime_error("merge: element missing Identifier");
+                std::string msg = "merge: element missing Identifier";
+                detail::set_last_error(msg);
+                return {std::errc::invalid_argument, std::move(msg)};
             }
 
             std::string new_id;
@@ -1152,7 +1452,8 @@ public:
 
             element ne = element::generic(std::move(d), pos, e.is_element_xyz(), e.is_big_element());
             ne.set_participate_in_layout(e.participate_in_layout());
-            static_cast<void>(add_element(std::move(ne)));
+            auto added = add_element_ec(std::move(ne));
+            if(!added) { return added.st; }
             id_map.emplace(old_id, new_id);
         }
 
@@ -1170,16 +1471,76 @@ public:
             }
         }
 
-        return *this;
+        return {};
     }
 
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+    void set_xyz_precision(int decimals)
+    {
+        auto st = set_xyz_precision_ec(decimals);
+        if(!st) { throw std::invalid_argument(st.message); }
+    }
+
+    [[nodiscard]] json to_plsav_json() const
+    {
+        auto r = to_plsav_json_ec();
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
+    [[nodiscard]] std::string dump(int indent = 2) const
+    {
+        auto r = dump_ec(indent);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
+    void save(std::filesystem::path const& path, int indent = 2) const
+    {
+        auto st = save_ec(path, indent);
+        if(!st) { throw std::runtime_error(st.message); }
+    }
+
+    void save(std::string const& path, int indent = 2) const
+    {
+        auto st = save_ec(path, indent);
+        if(!st) { throw std::runtime_error(st.message); }
+    }
+
+    void save(int indent = 2) const
+    {
+        auto st = save_bound_ec(indent);
+        if(!st) { throw std::runtime_error(st.message); }
+    }
+
+    static experiment open(open_mode mode,
+                           std::string const& arg,
+                           experiment_type type_for_create = experiment_type::circuit,
+                           bool force_create = false,
+                           std::optional<std::filesystem::path> sav_dir = std::nullopt)
+    {
+        auto r = open_ec(mode, arg, type_for_create, force_create, std::move(sav_dir));
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
+    [[nodiscard]] experiment& merge(experiment const& other, position offset = {0.0, 0.0, 0.0})
+    {
+        auto st = merge_ec(other, offset);
+        if(!st) { throw std::runtime_error(st.message); }
+        return *this;
+    }
+#endif
+
 private:
-    static std::optional<std::filesystem::path> find_sav_by_name(std::filesystem::path const& dir, std::string const& sav_name)
+    static status_or<std::filesystem::path> find_sav_by_name_ec(std::filesystem::path const& dir, std::string const& sav_name) noexcept
     {
         std::error_code ec;
-        if (!std::filesystem::exists(dir, ec))
+        if(!std::filesystem::exists(dir, ec) || ec)
         {
-            return std::nullopt;
+            auto msg = "sav_dir not found: " + dir.string();
+            detail::set_last_error(msg);
+            return status{std::errc::no_such_file_or_directory, std::move(msg)};
         }
 
         // 1) fast path: filename match
@@ -1188,14 +1549,30 @@ private:
         {
             auto with_ext = direct;
             with_ext += ".sav";
-            if (std::filesystem::exists(with_ext, ec))
+            bool const ex = std::filesystem::exists(with_ext, ec);
+            if(ec)
+            {
+                auto msg = "failed checking sav path: " + with_ext.string();
+                detail::set_last_error(msg);
+                return status{std::errc::io_error, std::move(msg)};
+            }
+            if(ex)
             {
                 return with_ext;
             }
         }
-        if (std::filesystem::exists(direct, ec))
         {
-            return direct;
+            bool const ex = std::filesystem::exists(direct, ec);
+            if(ec)
+            {
+                auto msg = "failed checking sav path: " + direct.string();
+                detail::set_last_error(msg);
+                return status{std::errc::io_error, std::move(msg)};
+            }
+            if(ex)
+            {
+                return direct;
+            }
         }
 
         // 2) scan: InternalName match
@@ -1205,7 +1582,8 @@ private:
             {
                 break;
             }
-            if (!entry.is_regular_file())
+            std::error_code ec_file;
+            if (!entry.is_regular_file(ec_file) || ec_file)
             {
                 continue;
             }
@@ -1214,22 +1592,26 @@ private:
                 continue;
             }
 
-            try
+            auto ex_r = load_ec(entry.path());
+            if(!ex_r) { continue; }
+            auto const& ex = *ex_r.value;
+            auto it = ex.plsav_.find("InternalName");
+            if (it != ex.plsav_.end() && it->is_string() && it->get_ref<const std::string&>() == sav_name)
             {
-                auto ex = load(entry.path());
-                auto it = ex.plsav_.find("InternalName");
-                if (it != ex.plsav_.end() && it->is_string() && it->get_ref<const std::string&>() == sav_name)
-                {
-                    return entry.path();
-                }
-            }
-            catch (...)
-            {
-                continue;
+                return entry.path();
             }
         }
 
-        return std::nullopt;
+        if(ec)
+        {
+            auto msg = "failed scanning sav_dir: " + dir.string();
+            detail::set_last_error(msg);
+            return status{std::errc::io_error, std::move(msg)};
+        }
+
+        auto msg = "sav not found: " + sav_name;
+        detail::set_last_error(msg);
+        return status{std::errc::no_such_file_or_directory, std::move(msg)};
     }
 
     experiment_type type_{experiment_type::circuit};

@@ -28,15 +28,19 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
         double max_y{};
     };
 
-    inline bounds2d normalize_bounds(position a, position b, double margin_x = 0.0, double margin_y = 0.0)
+    inline status_or<bounds2d> normalize_bounds_ec(position a, position b, double margin_x = 0.0, double margin_y = 0.0) noexcept
     {
         if(!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) || !std::isfinite(b.y))
         {
-            throw std::invalid_argument("auto_layout: bounds must be finite");
+            std::string msg = "auto_layout: bounds must be finite";
+            ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
         if(!std::isfinite(margin_x) || !std::isfinite(margin_y) || margin_x < 0.0 || margin_y < 0.0)
         {
-            throw std::invalid_argument("auto_layout: margins must be finite and >= 0");
+            std::string msg = "auto_layout: margins must be finite and >= 0";
+            ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
         }
 
         bounds2d out{
@@ -45,9 +49,23 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             .max_x = std::max(a.x, b.x) - margin_x,
             .max_y = std::max(a.y, b.y) - margin_y,
         };
-        if(out.max_x < out.min_x || out.max_y < out.min_y) { throw std::invalid_argument("auto_layout: bounds too small after margins"); }
+        if(out.max_x < out.min_x || out.max_y < out.min_y)
+        {
+            std::string msg = "auto_layout: bounds too small after margins";
+            ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
         return out;
     }
+
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+    inline bounds2d normalize_bounds(position a, position b, double margin_x = 0.0, double margin_y = 0.0)
+    {
+        auto r = normalize_bounds_ec(a, b, margin_x, margin_y);
+        if(!r) { throw std::invalid_argument(r.st.message); }
+        return std::move(*r.value);
+    }
+#endif
 
     enum class backend : int
     {
@@ -193,17 +211,25 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             }
         };
 
-        inline std::size_t grid_w_from(bounds2d const& b, double step_x)
+        inline std::size_t grid_w_from(bounds2d const& b, double step_x) noexcept
         {
             auto const span = b.max_x - b.min_x;
-            if(!(span >= 0.0) || step_x <= 0.0 || !std::isfinite(step_x)) { throw std::invalid_argument("auto_layout: invalid step_x"); }
+            if(!(span >= 0.0) || !(step_x > 0.0) || !std::isfinite(step_x))
+            {
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error("auto_layout: invalid step_x");
+                return 0;
+            }
             return static_cast<std::size_t>(std::floor(span / step_x + 1e-12)) + 1;
         }
 
-        inline std::size_t grid_h_from(bounds2d const& b, double step_y)
+        inline std::size_t grid_h_from(bounds2d const& b, double step_y) noexcept
         {
             auto const span = b.max_y - b.min_y;
-            if(!(span >= 0.0) || step_y <= 0.0 || !std::isfinite(step_y)) { throw std::invalid_argument("auto_layout: invalid step_y"); }
+            if(!(span >= 0.0) || !(step_y > 0.0) || !std::isfinite(step_y))
+            {
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error("auto_layout: invalid step_y");
+                return 0;
+            }
             return static_cast<std::size_t>(std::floor(span / step_y + 1e-12)) + 1;
         }
 
@@ -384,20 +410,51 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             context(experiment& ex_, bounds2d bounds_, std::size_t w_, std::size_t h_) : ex(ex_), bounds(bounds_), w(w_), h(h_), occ(w_, h_) {}
         };
 
-        inline context build_context(experiment& ex, position corner0, position corner1, options const& opt)
+        inline status_or<context> build_context_ec(experiment& ex, position corner0, position corner1, options const& opt) noexcept
         {
-            auto const bounds = normalize_bounds(corner0, corner1, opt.margin_x, opt.margin_y);
+            auto bounds_r = normalize_bounds_ec(corner0, corner1, opt.margin_x, opt.margin_y);
+            if(!bounds_r) { return bounds_r.st; }
+            auto const bounds = *bounds_r.value;
+
+            if(!(opt.step_x > 0.0) || !std::isfinite(opt.step_x))
+            {
+                std::string msg = "auto_layout: invalid step_x";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
+            if(!(opt.step_y > 0.0) || !std::isfinite(opt.step_y))
+            {
+                std::string msg = "auto_layout: invalid step_y";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
+
             auto const w = grid_w_from(bounds, opt.step_x);
             auto const h = grid_h_from(bounds, opt.step_y);
-            if(w == 0 || h == 0) { throw std::runtime_error("auto_layout: empty grid"); }
+            if(w == 0 || h == 0)
+            {
+                std::string msg = "auto_layout: empty grid";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
             constexpr std::size_t kMaxGridCells = 2'000'000;
-            if(w > 0 && h > 0 && w > (kMaxGridCells / h)) { throw std::runtime_error("auto_layout: grid too large (reduce bounds or increase step)"); }
+            if(w > 0 && h > 0 && w > (kMaxGridCells / h))
+            {
+                std::string msg = "auto_layout: grid too large (reduce bounds or increase step)";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
             context ctx(ex, bounds, w, h);
 
             ctx.id_to_index.reserve(ex.elements().size());
-            for(std::size_t i{}; i < ex.elements().size(); ++i) { ctx.id_to_index.emplace(ex.elements()[i].identifier(), i); }
+            for(std::size_t i{}; i < ex.elements().size(); ++i)
+            {
+                auto id_r = ex.elements()[i].identifier_ec();
+                if(!id_r) { return id_r.st; }
+                ctx.id_to_index.emplace(*id_r.value, i);
+            }
 
             ctx.adj = build_adjacency(ex, ctx.id_to_index);
             ctx.placed.assign(ex.elements().size(), std::nullopt);
@@ -419,7 +476,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 // Fixed elements outside the layout bounds should not be treated as obstacles.
                 if(c.x < 0 || c.y < 0) { continue; }
                 auto const fp = element_footprint(e, opt);
-                if(w < fp.w || h < fp.h) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                if(w < fp.w || h < fp.h)
+                {
+                    std::string msg = "auto_layout: bounds too small for element footprint";
+                    ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
                 c.x = std::clamp(c.x, 0, static_cast<int>(w - fp.w));
                 c.y = std::clamp(c.y, 0, static_cast<int>(h - fp.h));
                 if(!ctx.occ.can_place(c, fp)) { continue; }
@@ -430,20 +492,30 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             return ctx;
         }
 
-        inline void apply_placements(experiment& ex,
-                                     bounds2d const& bounds,
-                                     double step_x,
-                                     double step_y,
-                                     double z_fixed,
-                                     std::vector<std::size_t> const& movable,
-                                     std::vector<std::optional<cell>> const& placed)
+        inline status apply_placements_ec(experiment& ex,
+                                         bounds2d const& bounds,
+                                         double step_x,
+                                         double step_y,
+                                         double z_fixed,
+                                         std::vector<std::size_t> const& movable,
+                                         std::vector<std::optional<cell>> const& placed) noexcept
         {
             for(auto idx: movable)
             {
                 if(!placed[idx]) { continue; }
                 auto const native_pos = cell_to_native(bounds, step_x, step_y, *placed[idx], z_fixed);
-                set_element_native_position(ex, ex.get_element(ex.elements()[idx].identifier()), native_pos);
+                auto id_r = ex.elements()[idx].identifier_ec();
+                if(!id_r) { return id_r.st; }
+                auto* el = ex.find_element(*id_r.value);
+                if(el == nullptr)
+                {
+                    auto msg = "auto_layout: unknown element identifier: " + *id_r.value;
+                    ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
+                set_element_native_position(ex, *el, native_pos);
             }
+            return {};
         }
 
         inline std::optional<window> full_window(std::size_t w, std::size_t h, footprint fp) noexcept
@@ -457,11 +529,18 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             };
         }
 
-        inline stats layout_cpu_fast(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        inline status_or<stats> layout_cpu_fast_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt) noexcept
         {
-            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
-            auto ctx = build_context(ex, corner0, corner1, opt);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
 
             auto degree = [&](std::size_t idx) -> std::size_t { return ctx.adj[idx].size(); };
             std::stable_sort(ctx.movable.begin(),
@@ -517,7 +596,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 ++placed_count;
             }
 
-            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            auto st = apply_placements_ec(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            if(!st) { return st; }
 
             return stats{
                 .layout_mode = opt.layout_mode,
@@ -717,11 +797,18 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             return out;
         }
 
-        inline stats layout_cpu_spectral(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        inline status_or<stats> layout_cpu_spectral_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt) noexcept
         {
-            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
-            auto ctx = build_context(ex, corner0, corner1, opt);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
             if(ctx.movable.empty())
             {
                 return stats{
@@ -775,7 +862,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             {
                 auto const fp = element_footprint(ex.elements()[idx], opt);
                 auto const win = full_window(ctx.w, ctx.h, fp);
-                if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                if(!win)
+                {
+                    std::string msg = "auto_layout: bounds too small for element footprint";
+                    ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
 
                 auto const si = to_sub[idx];
                 auto const u = (si >= 0 && static_cast<std::size_t>(si) < emb.x.size()) ? emb.x[static_cast<std::size_t>(si)] : 0.5;
@@ -798,7 +890,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 ++placed_count;
             }
 
-            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            auto st = apply_placements_ec(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            if(!st) { return st; }
 
             return stats{
                 .layout_mode = opt.layout_mode,
@@ -816,11 +909,18 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
 
         inline bool is_output_like(std::string_view model_id) noexcept { return model_id == "Logic Output" || model_id == "8bit Display"; }
 
-        inline stats layout_cpu_hierarchical(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        inline status_or<stats> layout_cpu_hierarchical_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt) noexcept
         {
-            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
-            auto ctx = build_context(ex, corner0, corner1, opt);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
             if(ctx.movable.empty())
             {
                 return stats{
@@ -972,7 +1072,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                     auto const idx = nodes[rank];
                     auto const fp = element_footprint(ex.elements()[idx], opt);
                     auto const win = full_window(ctx.w, ctx.h, fp);
-                    if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                    if(!win)
+                    {
+                        std::string msg = "auto_layout: bounds too small for element footprint";
+                        ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                        return status{std::errc::invalid_argument, std::move(msg)};
+                    }
 
                     int x{};
                     if(max_level == 0) { x = static_cast<int>(ctx.w / 2); }
@@ -1000,7 +1105,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 }
             }
 
-            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            auto st = apply_placements_ec(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            if(!st) { return st; }
 
             return stats{
                 .layout_mode = opt.layout_mode,
@@ -1029,11 +1135,18 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             double w{1.0};
         };
 
-        inline stats layout_cpu_force(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        inline status_or<stats> layout_cpu_force_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt) noexcept
         {
-            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
-            auto ctx = build_context(ex, corner0, corner1, opt);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
             if(ctx.movable.empty())
             {
                 return stats{
@@ -1207,7 +1320,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             {
                 auto const fp = element_footprint(ex.elements()[idx], opt);
                 auto const win = full_window(ctx.w, ctx.h, fp);
-                if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                if(!win)
+                {
+                    std::string msg = "auto_layout: bounds too small for element footprint";
+                    ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
 
                 auto const si = to_sub[idx];
                 auto const u = (si >= 0) ? x[static_cast<std::size_t>(si)] : 0.5;
@@ -1230,7 +1348,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 ++placed_count;
             }
 
-            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            auto st = apply_placements_ec(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            if(!st) { return st; }
 
             return stats{
                 .layout_mode = opt.layout_mode,
@@ -1252,11 +1371,18 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             cell outer_origin{};
         };
 
-        inline stats layout_cpu_cluster(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        inline status_or<stats> layout_cpu_cluster_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt) noexcept
         {
-            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
-            auto ctx = build_context(ex, corner0, corner1, opt);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
             if(ctx.movable.empty())
             {
                 return stats{
@@ -1606,7 +1732,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                     // Fallback: if macro placement fails, degrade to fast global placement.
                     options opt2 = opt;
                     opt2.layout_mode = mode::fast;
-                    return layout_cpu_fast(ex, corner0, corner1, z_fixed, opt2);
+                    return layout_cpu_fast_ec(ex, corner0, corner1, z_fixed, opt2);
                 }
                 occ_macro.occupy(*chosen, blocks[cid].outer, static_cast<int>(cid));
                 placed_cluster[cid] = *chosen;
@@ -1695,7 +1821,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 }
             }
 
-            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            auto st = apply_placements_ec(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            if(!st) { return st; }
 
             return stats{
                 .layout_mode = opt.layout_mode,
@@ -1709,11 +1836,18 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             };
         }
 
-        inline stats layout_cpu_packing(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt)
+        inline status_or<stats> layout_cpu_packing_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt) noexcept
         {
-            if(!std::isfinite(z_fixed)) { throw std::invalid_argument("auto_layout: z_fixed must be finite"); }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
-            auto ctx = build_context(ex, corner0, corner1, opt);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
 
             auto degree = [&](std::size_t idx) -> std::size_t { return ctx.adj[idx].size(); };
             std::stable_sort(ctx.movable.begin(),
@@ -1736,7 +1870,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             {
                 auto const fp = element_footprint(ex.elements()[idx], opt);
                 auto const win = full_window(ctx.w, ctx.h, fp);
-                if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                if(!win)
+                {
+                    std::string msg = "auto_layout: bounds too small for element footprint";
+                    ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
 
                 std::optional<cell> chosen{};
                 for(int y = win->min_y; y <= win->max_y && !chosen; ++y)
@@ -1761,7 +1900,8 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 ++placed_count;
             }
 
-            apply_placements(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            auto st = apply_placements_ec(ex, ctx.bounds, opt.step_x, opt.step_y, z_fixed, ctx.movable, ctx.placed);
+            if(!st) { return st; }
 
             return stats{
                 .layout_mode = opt.layout_mode,
@@ -1783,7 +1923,7 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             double z_native{};
         };
 
-        inline std::vector<fixed_anchor> collect_fixed_anchors(experiment const& ex, context& ctx, options const& opt)
+        inline status_or<std::vector<fixed_anchor>> collect_fixed_anchors_ec(experiment const& ex, context& ctx, options const& opt) noexcept
         {
             std::vector<fixed_anchor> out{};
             out.reserve(ex.elements().size());
@@ -1800,7 +1940,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 if(c.x < 0 || c.y < 0) { continue; }
 
                 auto const fp = element_footprint(e, opt);
-                if(ctx.w < fp.w || ctx.h < fp.h) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                if(ctx.w < fp.w || ctx.h < fp.h)
+                {
+                    std::string msg = "auto_layout: bounds too small for element footprint";
+                    ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                    return status{std::errc::invalid_argument, std::move(msg)};
+                }
                 c.x = std::clamp(c.x, 0, static_cast<int>(ctx.w - fp.w));
                 c.y = std::clamp(c.y, 0, static_cast<int>(ctx.h - fp.h));
 
@@ -1821,16 +1966,25 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             return std::fabs(a - b) <= (z_step_3d * 0.5 + 1e-12);
         }
 
-        inline stats layout_cpu_b_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt)
+        inline status_or<stats> layout_cpu_b_3d_ec(experiment& ex, position corner0, position corner1, double z_base, options const& opt) noexcept
         {
-            if(!std::isfinite(z_base)) { throw std::invalid_argument("auto_layout: z_base must be finite"); }
+            if(!std::isfinite(z_base))
+            {
+                std::string msg = "auto_layout: z_base must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
             // In 3D, different Z planes are allowed to overlap in (x,y), so we handle per-layer occupancy ourselves.
             auto opt_ctx = opt;
             opt_ctx.respect_fixed_elements = false;
-            auto ctx = build_context(ex, corner0, corner1, opt_ctx);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt_ctx);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
 
-            auto const fixed = collect_fixed_anchors(ex, ctx, opt);
+            auto fixed_r = collect_fixed_anchors_ec(ex, ctx, opt);
+            if(!fixed_r) { return fixed_r.st; }
+            auto fixed = std::move(*fixed_r.value);
 
             if(ctx.movable.empty())
             {
@@ -1943,7 +2097,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                     auto const idx = nodes[rank];
                     auto const fp = element_footprint(ex.elements()[idx], opt);
                     auto const win = full_window(ctx.w, ctx.h, fp);
-                    if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                    if(!win)
+                    {
+                        std::string msg = "auto_layout: bounds too small for element footprint";
+                        ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                        return status{std::errc::invalid_argument, std::move(msg)};
+                    }
 
                     int const rank_y = static_cast<int>(std::llround(((static_cast<double>(rank) + 0.5) / static_cast<double>(k)) * static_cast<double>(ctx.h - 1)));
 
@@ -1995,7 +2154,16 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                     ++placed_count;
 
                     auto const native_pos = cell_to_native(ctx.bounds, opt.step_x, opt.step_y, *chosen, z_layer);
-                    set_element_native_position(ex, ex.get_element(ex.elements()[idx].identifier()), native_pos);
+                    auto id_r = ex.elements()[idx].identifier_ec();
+                    if(!id_r) { return id_r.st; }
+                    auto* el = ex.find_element(*id_r.value);
+                    if(el == nullptr)
+                    {
+                        auto msg = "auto_layout: unknown element identifier: " + *id_r.value;
+                        ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                        return status{std::errc::invalid_argument, std::move(msg)};
+                    }
+                    set_element_native_position(ex, *el, native_pos);
                 }
             }
 
@@ -2011,15 +2179,24 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
             };
         }
 
-        inline stats layout_cpu_c_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt)
+        inline status_or<stats> layout_cpu_c_3d_ec(experiment& ex, position corner0, position corner1, double z_base, options const& opt) noexcept
         {
-            if(!std::isfinite(z_base)) { throw std::invalid_argument("auto_layout: z_base must be finite"); }
+            if(!std::isfinite(z_base))
+            {
+                std::string msg = "auto_layout: z_base must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
 
             auto opt_ctx = opt;
             opt_ctx.respect_fixed_elements = false;
-            auto ctx = build_context(ex, corner0, corner1, opt_ctx);
+            auto ctx_r = build_context_ec(ex, corner0, corner1, opt_ctx);
+            if(!ctx_r) { return ctx_r.st; }
+            auto ctx = std::move(*ctx_r.value);
 
-            auto const fixed = collect_fixed_anchors(ex, ctx, opt);
+            auto fixed_r = collect_fixed_anchors_ec(ex, ctx, opt);
+            if(!fixed_r) { return fixed_r.st; }
+            auto fixed = std::move(*fixed_r.value);
 
             if(ctx.movable.empty())
             {
@@ -2265,7 +2442,12 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                 {
                     auto const fp = element_footprint(ex.elements()[idx], opt);
                     auto const win = full_window(ctx.w, ctx.h, fp);
-                    if(!win) { throw std::runtime_error("auto_layout: bounds too small for element footprint"); }
+                    if(!win)
+                    {
+                        std::string msg = "auto_layout: bounds too small for element footprint";
+                        ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                        return status{std::errc::invalid_argument, std::move(msg)};
+                    }
 
                     auto const si = to_sub[idx];
                     auto const u = (si >= 0) ? x[static_cast<std::size_t>(si)] : 0.5;
@@ -2291,7 +2473,16 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
                     ++placed_count;
 
                     auto const native_pos = cell_to_native(ctx.bounds, opt.step_x, opt.step_y, *chosen, z_layer);
-                    set_element_native_position(ex, ex.get_element(ex.elements()[idx].identifier()), native_pos);
+                    auto id_r = ex.elements()[idx].identifier_ec();
+                    if(!id_r) { return id_r.st; }
+                    auto* el = ex.find_element(*id_r.value);
+                    if(el == nullptr)
+                    {
+                        auto msg = "auto_layout: unknown element identifier: " + *id_r.value;
+                        ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                        return status{std::errc::invalid_argument, std::move(msg)};
+                    }
+                    set_element_native_position(ex, *el, native_pos);
                 }
             }
 
@@ -2308,24 +2499,36 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
         }
     }  // namespace detail
 
-    inline stats layout(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt = {})
+    inline status_or<stats> layout_ec(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt = {}) noexcept
     {
         if(opt.backend_kind == backend::cuda)
         {
-            if(!opt.cuda.fn) { throw std::runtime_error("auto_layout: CUDA backend requested but no dispatch function is provided"); }
-            auto const bounds = normalize_bounds(corner0, corner1, opt.margin_x, opt.margin_y);
-            opt.cuda.fn(ex, bounds, z_fixed, opt.cuda.opt_opaque);
+            if(!opt.cuda.fn)
+            {
+                std::string msg = "auto_layout: CUDA backend requested but no dispatch function is provided";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
+            if(!std::isfinite(z_fixed))
+            {
+                std::string msg = "auto_layout: z_fixed must be finite";
+                ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+                return status{std::errc::invalid_argument, std::move(msg)};
+            }
+            auto const bounds_r = normalize_bounds_ec(corner0, corner1, opt.margin_x, opt.margin_y);
+            if(!bounds_r) { return bounds_r.st; }
+            opt.cuda.fn(ex, *bounds_r.value, z_fixed, opt.cuda.opt_opaque);
             return stats{.layout_mode = opt.layout_mode};
         }
 
         switch(opt.layout_mode)
         {
-            case mode::fast: return detail::layout_cpu_fast(ex, corner0, corner1, z_fixed, opt);
-            case mode::cluster: return detail::layout_cpu_cluster(ex, corner0, corner1, z_fixed, opt);
-            case mode::spectral: return detail::layout_cpu_spectral(ex, corner0, corner1, z_fixed, opt);
-            case mode::hierarchical: return detail::layout_cpu_hierarchical(ex, corner0, corner1, z_fixed, opt);
-            case mode::force: return detail::layout_cpu_force(ex, corner0, corner1, z_fixed, opt);
-            default: return detail::layout_cpu_fast(ex, corner0, corner1, z_fixed, opt);
+            case mode::fast: return detail::layout_cpu_fast_ec(ex, corner0, corner1, z_fixed, opt);
+            case mode::cluster: return detail::layout_cpu_cluster_ec(ex, corner0, corner1, z_fixed, opt);
+            case mode::spectral: return detail::layout_cpu_spectral_ec(ex, corner0, corner1, z_fixed, opt);
+            case mode::hierarchical: return detail::layout_cpu_hierarchical_ec(ex, corner0, corner1, z_fixed, opt);
+            case mode::force: return detail::layout_cpu_force_ec(ex, corner0, corner1, z_fixed, opt);
+            default: return detail::layout_cpu_fast_ec(ex, corner0, corner1, z_fixed, opt);
         }
     }
 
@@ -2333,31 +2536,80 @@ namespace phy_engine::phy_lab_wrapper::auto_layout
     // - All 3D layouts use `z_step_3d` spacing in native coordinates.
     // - `layout_a_3d` / `layout_d_3d` advance `z_io` by `z_step_3d` on success.
 
+    inline status_or<stats> layout_a_3d_ec(experiment& ex, position corner0, position corner1, double& z_io, options const& opt = {}) noexcept
+    {
+        if(!std::isfinite(z_io))
+        {
+            std::string msg = "auto_layout: z_io must be finite";
+            ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
+        double const z_next = z_io + z_step_3d;
+        auto st = layout_ec(ex, corner0, corner1, z_next, opt);
+        if(!st) { return st.st; }
+        z_io = z_next;
+        return std::move(*st.value);
+    }
+
+    inline status_or<stats> layout_b_3d_ec(experiment& ex, position corner0, position corner1, double z_base, options const& opt = {}) noexcept
+    {
+        return detail::layout_cpu_b_3d_ec(ex, corner0, corner1, z_base, opt);
+    }
+
+    inline status_or<stats> layout_c_3d_ec(experiment& ex, position corner0, position corner1, double z_base, options const& opt = {}) noexcept
+    {
+        return detail::layout_cpu_c_3d_ec(ex, corner0, corner1, z_base, opt);
+    }
+
+    inline status_or<stats> layout_d_3d_ec(experiment& ex, position corner0, position corner1, double& z_io, options const& opt = {}) noexcept
+    {
+        if(!std::isfinite(z_io))
+        {
+            std::string msg = "auto_layout: z_io must be finite";
+            ::phy_engine::phy_lab_wrapper::detail::set_last_error(msg);
+            return status{std::errc::invalid_argument, std::move(msg)};
+        }
+        double const z_next = z_io + z_step_3d;
+        auto st = detail::layout_cpu_packing_ec(ex, corner0, corner1, z_next, opt);
+        if(!st) { return st.st; }
+        z_io = z_next;
+        return std::move(*st.value);
+    }
+
+#if PHY_ENGINE_ENABLE_EXCEPTIONS
+    inline stats layout(experiment& ex, position corner0, position corner1, double z_fixed, options const& opt = {})
+    {
+        auto r = layout_ec(ex, corner0, corner1, z_fixed, opt);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
     inline stats layout_a_3d(experiment& ex, position corner0, position corner1, double& z_io, options const& opt = {})
     {
-        if(!std::isfinite(z_io)) { throw std::invalid_argument("auto_layout: z_io must be finite"); }
-        double const z_next = z_io + z_step_3d;
-        auto st = layout(ex, corner0, corner1, z_next, opt);
-        z_io = z_next;
-        return st;
+        auto r = layout_a_3d_ec(ex, corner0, corner1, z_io, opt);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
 
     inline stats layout_b_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt = {})
     {
-        return detail::layout_cpu_b_3d(ex, corner0, corner1, z_base, opt);
+        auto r = layout_b_3d_ec(ex, corner0, corner1, z_base, opt);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
 
     inline stats layout_c_3d(experiment& ex, position corner0, position corner1, double z_base, options const& opt = {})
     {
-        return detail::layout_cpu_c_3d(ex, corner0, corner1, z_base, opt);
+        auto r = layout_c_3d_ec(ex, corner0, corner1, z_base, opt);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
 
     inline stats layout_d_3d(experiment& ex, position corner0, position corner1, double& z_io, options const& opt = {})
     {
-        if(!std::isfinite(z_io)) { throw std::invalid_argument("auto_layout: z_io must be finite"); }
-        double const z_next = z_io + z_step_3d;
-        auto st = detail::layout_cpu_packing(ex, corner0, corner1, z_next, opt);
-        z_io = z_next;
-        return st;
+        auto r = layout_d_3d_ec(ex, corner0, corner1, z_io, opt);
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
     }
+#endif
 }  // namespace phy_engine::phy_lab_wrapper::auto_layout
