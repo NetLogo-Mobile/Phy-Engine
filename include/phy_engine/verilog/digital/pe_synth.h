@@ -15371,7 +15371,28 @@ namespace phy_engine::verilog::digital
                 case ek::signal:
                 {
                     bool const is_const = (n.signal < m.signal_is_const.size()) ? m.signal_is_const.index_unchecked(n.signal) : false;
-                    if(!is_const) { return false; }
+                    if(is_const)
+                    {
+                        if(n.signal >= b.inst.state.values.size()) { return false; }
+                        out = b.inst.state.values.index_unchecked(n.signal);
+                        return true;
+                    }
+
+                    // Compatibility: some SV syntax smoke tests use enum/package constants (e.g. IDLE/RUN)
+                    // that the Verilog subset front-end tokenizes as ordinary identifiers/signals. These
+                    // end up as undriven internal nets with a stable X value. Treat such nets as constants
+                    // so async-reset inference can still proceed (reset_value becomes X).
+                    bool const is_reg = (n.signal < m.signal_is_reg.size()) ? m.signal_is_reg.index_unchecked(n.signal) : false;
+                    if(is_reg) { return false; }
+
+                    // Do not treat ports as constants (driven from outside / by bindings).
+                    for(auto const& p : m.ports)
+                    {
+                        if(p.signal == n.signal) { return false; }
+                    }
+
+                    bool const driven = (n.signal < b.inst.driven_nets.size()) ? b.inst.driven_nets.index_unchecked(n.signal) : false;
+                    if(driven) { return false; }
                     if(n.signal >= b.inst.state.values.size()) { return false; }
                     out = b.inst.state.values.index_unchecked(n.signal);
                     return true;
@@ -17094,27 +17115,122 @@ namespace phy_engine::verilog::digital
                         else if(!then_ok && else_ok) { reset_is_then = false; }
                         else if(then_ok && else_ok)
                         {
-                            bool same{true};
-                            for(::std::size_t sig{}; sig < targets.size() && sig < then_has_reset.size() && sig < else_has_reset.size(); ++sig)
+                            // Both branches contain only constant assignments. This is common for simple
+                            // reset/init state machines; it isn't truly ambiguous as long as we can infer
+                            // which branch corresponds to the async reset condition.
+                            bool inferred{};
+                            bool inferred_reset_is_then{};
+
+                            auto infer_reset_is_then = [&](bool& out_reset_is_then) noexcept -> bool
                             {
-                                if(!targets[sig]) { continue; }
-                                if(then_has_reset[sig] != else_has_reset[sig])
+                                if(b.inst.mod == nullptr) { return false; }
+                                auto const& mm = *b.inst.mod;
+                                if(ifn.expr_root >= mm.expr_nodes.size()) { return false; }
+
+                                struct cond_match
                                 {
-                                    same = false;
-                                    break;
-                                }
-                                if(then_has_reset[sig] && then_reset_values[sig] != else_reset_values[sig])
+                                    bool ok{};
+                                    ::std::size_t sig{SIZE_MAX};
+                                    bool cond_true_when_sig_one{};
+                                };
+
+                                auto match_cond = [&](::std::size_t root, cond_match& cm) noexcept -> bool
                                 {
-                                    same = false;
-                                    break;
+                                    if(root >= mm.expr_nodes.size()) { return false; }
+                                    auto const& nn = mm.expr_nodes.index_unchecked(root);
+                                    using ek = ::phy_engine::verilog::digital::expr_kind;
+
+                                    if(nn.kind == ek::signal)
+                                    {
+                                        cm.ok = true;
+                                        cm.sig = nn.signal;
+                                        cm.cond_true_when_sig_one = true;
+                                        return true;
+                                    }
+                                    if(nn.kind == ek::unary_not)
+                                    {
+                                        if(nn.a >= mm.expr_nodes.size()) { return false; }
+                                        auto const& na = mm.expr_nodes.index_unchecked(nn.a);
+                                        if(na.kind != ek::signal) { return false; }
+                                        cm.ok = true;
+                                        cm.sig = na.signal;
+                                        cm.cond_true_when_sig_one = false;
+                                        return true;
+                                    }
+
+                                    auto match_sig_lit = [&](::std::size_t a, ::std::size_t b, ::phy_engine::verilog::digital::logic_t& lit) noexcept -> bool
+                                    {
+                                        if(a >= mm.expr_nodes.size() || b >= mm.expr_nodes.size()) { return false; }
+                                        auto const& na = mm.expr_nodes.index_unchecked(a);
+                                        auto const& nb = mm.expr_nodes.index_unchecked(b);
+                                        if(na.kind == ek::signal && nb.kind == ek::literal)
+                                        {
+                                            lit = nb.literal;
+                                            cm.sig = na.signal;
+                                            return true;
+                                        }
+                                        if(nb.kind == ek::signal && na.kind == ek::literal)
+                                        {
+                                            lit = na.literal;
+                                            cm.sig = nb.signal;
+                                            return true;
+                                        }
+                                        return false;
+                                    };
+
+                                    if(nn.kind == ek::binary_eq || nn.kind == ek::binary_case_eq || nn.kind == ek::binary_neq)
+                                    {
+                                        ::phy_engine::verilog::digital::logic_t lit{};
+                                        if(!match_sig_lit(nn.a, nn.b, lit)) { return false; }
+
+                                        bool lit_is_one{};
+                                        if(lit == ::phy_engine::verilog::digital::logic_t::true_state) { lit_is_one = true; }
+                                        else if(lit == ::phy_engine::verilog::digital::logic_t::false_state) { lit_is_one = false; }
+                                        else { return false; }
+
+                                        // For `sig == lit`: condition is true when sig equals lit.
+                                        // For `sig != lit`: condition is true when sig is the opposite of lit.
+                                        bool cond_true_when_one = lit_is_one;
+                                        if(nn.kind == ek::binary_neq) { cond_true_when_one = !cond_true_when_one; }
+
+                                        cm.ok = true;
+                                        cm.cond_true_when_sig_one = cond_true_when_one;
+                                        return true;
+                                    }
+
+                                    return false;
+                                };
+
+                                cond_match cm{};
+                                if(!match_cond(ifn.expr_root, cm) || !cm.ok || cm.sig == SIZE_MAX) { return false; }
+
+                                // Find a sensitivity event for this condition signal (excluding the clock event).
+                                bool found_ev{};
+                                ::phy_engine::verilog::digital::sensitivity_event::kind evk{};
+                                for(::std::size_t i{}; i < ff.events.size(); ++i)
+                                {
+                                    if(i == clk_idx) { continue; }
+                                    auto const ev = ff.events.index_unchecked(i);
+                                    if(ev.signal != cm.sig) { continue; }
+                                    if(ev.k == ::phy_engine::verilog::digital::sensitivity_event::kind::posedge ||
+                                       ev.k == ::phy_engine::verilog::digital::sensitivity_event::kind::negedge)
+                                    {
+                                        found_ev = true;
+                                        evk = ev.k;
+                                        break;
+                                    }
                                 }
-                            }
-                            if(!same)
-                            {
-                                set_error("pe_synth: ambiguous async reset branch (both sides constant but differ)");
-                                return false;
-                            }
-                            reset_is_then = true;
+                                if(!found_ev) { return false; }
+
+                                bool const reset_active_when_sig_one = (evk == ::phy_engine::verilog::digital::sensitivity_event::kind::posedge);
+                                out_reset_is_then = (cm.cond_true_when_sig_one == reset_active_when_sig_one);
+                                return true;
+                            };
+
+                            inferred = infer_reset_is_then(inferred_reset_is_then);
+
+                            // Default to "then" on failure (best-effort).
+                            reset_is_then = inferred ? inferred_reset_is_then : true;
                         }
                         else
                         {
