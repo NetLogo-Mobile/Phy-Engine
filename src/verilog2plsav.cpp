@@ -26,6 +26,17 @@
 #include <utility>
 #include <vector>
 
+#if defined(__wasi__)
+// wasi-libc (mvp) doesn't ship `__cxa_thread_atexit`, but Clang may emit references to it
+// when any `thread_local` with a destructor exists in the transitive dependency set.
+// Provide a weak fallback that degrades to the normal at-exit path for single-threaded WASI.
+extern "C" [[__gnu__::__weak__]] int __cxa_atexit(void (*)(void*), void*, void*) noexcept;
+extern "C" [[__gnu__::__weak__]] int __cxa_thread_atexit(void (*dtor)(void*), void* obj, void* dso_handle) noexcept
+{
+    return __cxa_atexit(dtor, obj, dso_handle);
+}
+#endif
+
 namespace
 {
 using u8sv = ::fast_io::u8string_view;

@@ -227,16 +227,49 @@ namespace phy_engine::verilog::digital
 
     namespace details
     {
+        // WASI (mvp) toolchains often ship a libc++ configured without thread support.
+        // In that configuration <mutex> exists, but `std::mutex`/`std::scoped_lock` are not defined.
+        // CUDA trace aggregation is best-effort; for single-threaded builds a no-op mutex is fine.
+#if defined(__wasi__) || (defined(_LIBCPP_HAS_THREADS) && !_LIBCPP_HAS_THREADS)
+        struct cuda_trace_mutex
+        {
+            void lock() noexcept {}
+            void unlock() noexcept {}
+            bool try_lock() noexcept { return true; }
+        };
+#else
+        using cuda_trace_mutex = ::std::mutex;
+#endif
+
+        template <typename Mutex>
+        class cuda_trace_scoped_lock
+        {
+            Mutex* mu{};
+
+        public:
+            explicit cuda_trace_scoped_lock(Mutex& m) : mu(&m) { mu->lock(); }
+            cuda_trace_scoped_lock(cuda_trace_scoped_lock const&) = delete;
+            cuda_trace_scoped_lock& operator=(cuda_trace_scoped_lock const&) = delete;
+            ~cuda_trace_scoped_lock() noexcept { mu->unlock(); }
+        };
+
         struct cuda_trace_sink
         {
-            ::std::mutex mu{};
+            cuda_trace_mutex mu{};
             ::std::vector<pe_synth_report::cuda_stat> stats{};
             ::std::unordered_map<::std::uint64_t, ::std::size_t> idx{};
             bool enable{};
         };
 
+        // WASI mvp doesn't provide `__cxa_thread_atexit`, so `thread_local` with potential TLS
+        // teardown breaks linking. For single-threaded targets, plain globals are sufficient.
+#if defined(__wasi__) || (defined(_LIBCPP_HAS_THREADS) && !_LIBCPP_HAS_THREADS)
+        inline cuda_trace_sink* tls_cuda_sink{};
+        inline ::fast_io::u8string_view tls_cuda_pass{};
+#else
         inline thread_local cuda_trace_sink* tls_cuda_sink{};
         inline thread_local ::fast_io::u8string_view tls_cuda_pass{};
+#endif
 
         struct cuda_trace_install_guard
         {
@@ -298,7 +331,7 @@ namespace phy_engine::verilog::digital
             if(sink == nullptr || !sink->enable) { return; }
             auto const pass = tls_cuda_pass;
             auto const key = cuda_trace_key(pass, op);
-            ::std::scoped_lock lk(sink->mu);
+            cuda_trace_scoped_lock<cuda_trace_mutex> lk(sink->mu);
             ::std::size_t idx{};
             if(auto it = sink->idx.find(key); it != sink->idx.end()) { idx = it->second; }
             else
