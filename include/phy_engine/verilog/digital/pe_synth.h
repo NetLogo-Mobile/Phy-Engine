@@ -19,6 +19,7 @@
 #include <fast_io/fast_io_dsal/string.h>
 
 #include "../../netlist/operation.h"
+#include "../../utils/openmp.h"
 
 // Header-only CUDA hygiene:
 // - Normal (non-CUDA) builds must not require CUDA headers.
@@ -6899,6 +6900,7 @@ namespace phy_engine::verilog::digital
 
                     if(!used_cuda)
                     {
+                        PHY_ENGINE_OMP_PARALLEL_FOR(if(cones.size() >= 256u) schedule(static))
                         for(std::size_t i{}; i < cones.size(); ++i) { masks[i] = eval_u64_cone_cpu(cones[i]); }
                     }
                     for(std::size_t i{}; i < mask_tasks.size() && i < masks.size(); ++i) { mask_tasks[i].mask = masks[i]; }
@@ -7610,6 +7612,7 @@ namespace phy_engine::verilog::digital
             }
             if(!used_cuda)
             {
+                PHY_ENGINE_OMP_PARALLEL_FOR(if(descs.size() >= 32u) schedule(static))
                 for(std::size_t i{}; i < descs.size(); ++i)
                 {
                     eval_tt_cone_cpu(descs[i], stride_blocks, tt_words.data() + i * static_cast<std::size_t>(stride_blocks));
@@ -8576,6 +8579,7 @@ namespace phy_engine::verilog::digital
                 }
                 if(!used_cuda)
                 {
+                    PHY_ENGINE_OMP_PARALLEL_FOR(if(cands.size() >= 32u) schedule(static))
                     for(std::size_t i{}; i < cands.size(); ++i)
                     {
                         eval_tt_cone_cpu(cones[i], stride_blocks, tt_words.data() + i * static_cast<std::size_t>(stride_blocks));
@@ -9529,6 +9533,7 @@ namespace phy_engine::verilog::digital
                 }
                 if(!used_cuda)
                 {
+                    PHY_ENGINE_OMP_PARALLEL_FOR(if(cands.size() >= 32u) schedule(static))
                     for(std::size_t i{}; i < cands.size(); ++i)
                     {
                         eval_tt_cone_cpu(cones[i], stride_blocks, tt_words.data() + i * static_cast<std::size_t>(stride_blocks));
@@ -10510,9 +10515,10 @@ namespace phy_engine::verilog::digital
             // Build prime implicants per output.
             ::std::vector<::std::vector<qm_implicant>> primes_by_out{};
             primes_by_out.resize(outputs);
+            PHY_ENGINE_OMP_PARALLEL_FOR(if(outputs >= 2u) schedule(static))
+            for(std::size_t o{}; o < outputs; ++o) { primes_by_out[o] = qm_prime_implicants(on_list[o], dc_list[o], var_count); }
             for(std::size_t o{}; o < outputs; ++o)
             {
-                primes_by_out[o] = qm_prime_implicants(on_list[o], dc_list[o], var_count);
                 if(primes_by_out[o].empty() && !on_list[o].empty()) { return sol; }
             }
 
@@ -10541,6 +10547,7 @@ namespace phy_engine::verilog::digital
             ::std::vector<::std::vector<bool>> is_dc_full{};
             is_on_full.resize(outputs);
             is_dc_full.resize(outputs);
+            PHY_ENGINE_OMP_PARALLEL_FOR(if(outputs >= 2u) schedule(static))
             for(std::size_t o{}; o < outputs; ++o)
             {
                 is_on_full[o].assign(full_U, false);
@@ -11131,6 +11138,7 @@ namespace phy_engine::verilog::digital
                 }
 
                 if(used_cuda) { return; }
+                PHY_ENGINE_OMP_PARALLEL_FOR(if(cubes.size() >= 256u) schedule(static))
                 for(std::size_t i{}; i < cubes.size(); ++i) { out_hits[i] = cube_hits_off_fast(cubes[i]) ? 1u : 0u; }
             };
 
@@ -13672,6 +13680,7 @@ namespace phy_engine::verilog::digital
                         if(opt.cuda_enable) { used_cuda = cuda_eval_u64_cones(opt.cuda_device_mask, descs.data(), descs.size(), masks.data()); }
                         if(!used_cuda)
                         {
+                            PHY_ENGINE_OMP_PARALLEL_FOR(if(descs.size() >= 256u) schedule(static))
                             for(std::size_t i{}; i < descs.size(); ++i) { masks[i] = eval_u64_cone_cpu(descs[i]); }
                         }
 
@@ -13714,6 +13723,7 @@ namespace phy_engine::verilog::digital
                             if(opt.cuda_enable) { used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, descs.data(), descs.size(), blocks, tt.data()); }
                             if(!used_cuda)
                             {
+                                PHY_ENGINE_OMP_PARALLEL_FOR(if(descs.size() >= 32u) schedule(static))
                                 for(std::size_t i{}; i < descs.size(); ++i)
                                 {
                                     eval_tt_cone_cpu(descs[i], blocks, tt.data() + i * static_cast<std::size_t>(blocks));
@@ -14590,6 +14600,7 @@ namespace phy_engine::verilog::digital
                     if(opt.cuda_enable) { used_cuda = cuda_eval_u64_cones(opt.cuda_device_mask, descs.data(), descs.size(), masks.data()); }
                     if(!used_cuda)
                     {
+                        PHY_ENGINE_OMP_PARALLEL_FOR(if(descs.size() >= 256u) schedule(static))
                         for(std::size_t k{}; k < descs.size(); ++k) { masks[k] = eval_u64_cone_cpu(descs[k]); }
                     }
 
@@ -14631,6 +14642,7 @@ namespace phy_engine::verilog::digital
                         if(opt.cuda_enable) { used_cuda = cuda_eval_tt_cones(opt.cuda_device_mask, descs.data(), descs.size(), blocks, tt.data()); }
                         if(!used_cuda)
                         {
+                            PHY_ENGINE_OMP_PARALLEL_FOR(if(descs.size() >= 32u) schedule(static))
                             for(std::size_t i{}; i < descs.size(); ++i)
                             {
                                 eval_tt_cone_cpu(descs[i], blocks, tt.data() + i * static_cast<std::size_t>(blocks));
