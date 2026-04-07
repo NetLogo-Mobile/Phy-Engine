@@ -40,8 +40,18 @@ struct sample
     std::vector<double> branch_current;
     std::vector<std::size_t> branch_current_ord;  // comp_size+1
 
-    std::vector<std::uint8_t> pin_digital;  // 0/1
+    std::vector<std::uint8_t> pin_digital;  // binary (0/1) or 4-state (0=L,1=H,2=X,3=Z), depending on sampler
     std::vector<std::size_t> pin_digital_ord;  // comp_size+1
+};
+
+struct write_back_options
+{
+    // PhysicsLab Logic Output stores a numeric "状态" property.
+    // Default preserves historical behavior: X/Z are treated as high when writing back.
+    double logic_output_low{0.0};
+    double logic_output_high{1.0};
+    double logic_output_x{1.0};
+    double logic_output_z{1.0};
 };
 
 namespace detail
@@ -105,6 +115,27 @@ inline status_or<double> get_required_float_ec(json const& element_data, std::st
     auto r = to_double_ec(*it);
     if(!r) { return r.st; }
     return *r.value;
+}
+
+inline status validate_write_back_options_ec(write_back_options const& opt) noexcept
+{
+    if(!std::isfinite(opt.logic_output_low) || !std::isfinite(opt.logic_output_high) || !std::isfinite(opt.logic_output_x) || !std::isfinite(opt.logic_output_z))
+    {
+        return err(std::errc::invalid_argument, "write_back_options values must be finite");
+    }
+    return {};
+}
+
+inline double map_logic_output_state(std::uint8_t state, write_back_options const& opt) noexcept
+{
+    switch(state)
+    {
+        case PHY_ENGINE_D_L: return opt.logic_output_low;
+        case PHY_ENGINE_D_H: return opt.logic_output_high;
+        case PHY_ENGINE_D_X: return opt.logic_output_x;
+        case PHY_ENGINE_D_Z: return opt.logic_output_z;
+        default: return opt.logic_output_x;
+    }
 }
 
 inline status_or<int> get_required_int01_ec(json const& element_data, std::string_view key) noexcept
@@ -450,6 +481,56 @@ public:
         return s;
     }
 
+    [[nodiscard]] status_or<sample> sample_now_digital_state_ec() const noexcept
+    {
+        ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+        if (circuit_ptr_ == nullptr) { return detail::err(std::errc::invalid_argument, "circuit is closed"); }
+
+        sample s;
+        s.pin_voltage_ord.assign(comp_size_ + 1, 0);
+        s.branch_current_ord.assign(comp_size_ + 1, 0);
+        s.pin_digital_ord.assign(comp_size_ + 1, 0);
+
+        auto* c = static_cast<::phy_engine::circult*>(circuit_ptr_);
+        auto& nl = c->get_netlist();
+
+        std::size_t total_pins{};
+        std::size_t total_branches{};
+        for (std::size_t i{}; i < comp_size_; ++i)
+        {
+            auto* model = ::phy_engine::netlist::get_model(nl, ::phy_engine::netlist::model_pos{vec_pos_[i], chunk_pos_[i]});
+            if (model == nullptr || model->ptr == nullptr)
+            {
+                continue;
+            }
+            total_pins += model->ptr->generate_pin_view().size;
+            total_branches += model->ptr->generate_branch_view().size;
+        }
+
+        s.pin_voltage.assign(total_pins == 0 ? 1 : total_pins, 0.0);
+        s.branch_current.assign(total_branches == 0 ? 1 : total_branches, 0.0);
+        s.pin_digital.assign(total_pins == 0 ? 1 : total_pins, 0);
+
+        if (circuit_sample_digital_state_u8(circuit_ptr_,
+                                            vec_pos_,
+                                            chunk_pos_,
+                                            comp_size_,
+                                            s.pin_voltage.data(),
+                                            s.pin_voltage_ord.data(),
+                                            s.branch_current.data(),
+                                            s.branch_current_ord.data(),
+                                            s.pin_digital.data(),
+                                            s.pin_digital_ord.data()) != 0)
+        {
+            return detail::err(std::errc::io_error, "circuit_sample_digital_state_u8 failed");
+        }
+
+        s.pin_voltage.resize(s.pin_voltage_ord.back());
+        s.branch_current.resize(s.branch_current_ord.back());
+        s.pin_digital.resize(s.pin_digital_ord.back());
+        return s;
+    }
+
     [[nodiscard]] status sync_inputs_from_pl_ec(experiment const& ex) noexcept
     {
         ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
@@ -484,7 +565,7 @@ public:
         return {};
     }
 
-    [[nodiscard]] status write_back_to_pl_ec(experiment& ex, sample const& s) const noexcept
+    [[nodiscard]] status write_back_to_pl_ec(experiment& ex, sample const& s, write_back_options const& opt) const noexcept
     {
         ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
         if (ex.type() != experiment_type::circuit) { return detail::err(std::errc::invalid_argument, "expected circuit experiment"); }
@@ -492,6 +573,8 @@ public:
         {
             return detail::err(std::errc::invalid_argument, "invalid sample ord sizes");
         }
+        auto opt_st = detail::validate_write_back_options_ec(opt);
+        if(!opt_st) { return opt_st; }
 
         for (std::size_t i{}; i < comp_size_; ++i)
         {
@@ -518,9 +601,9 @@ public:
             if (comp_codes_[i] == PHY_ENGINE_E_DIGITAL_OUTPUT)
             {
                 auto d_n = s.pin_digital_ord[i + 1] - s.pin_digital_ord[i];
-                bool bit = (d_n >= 1) ? (s.pin_digital[s.pin_digital_ord[i] + 0] != 0) : false;
+                auto state = (d_n >= 1) ? s.pin_digital[s.pin_digital_ord[i] + 0] : static_cast<std::uint8_t>(PHY_ENGINE_D_L);
                 detail::ensure_object(el, "Properties");
-                el["Properties"]["状态"] = bit ? 1.0 : 0.0;
+                el["Properties"]["状态"] = detail::map_logic_output_state(state, opt);
                 continue;
             }
 
@@ -532,6 +615,23 @@ public:
             st["功率"] = dv * i0;
         }
         return {};
+    }
+
+    [[nodiscard]] status write_back_to_pl_ec(experiment& ex, sample const& s) const noexcept
+    {
+        return write_back_to_pl_ec(ex, s, write_back_options{});
+    }
+
+    [[nodiscard]] status write_back_now_to_pl_ec(experiment& ex, write_back_options const& opt) const noexcept
+    {
+        auto s = sample_now_digital_state_ec();
+        if(!s) { return s.st; }
+        return write_back_to_pl_ec(ex, *s.value, opt);
+    }
+
+    [[nodiscard]] status write_back_now_to_pl_ec(experiment& ex) const noexcept
+    {
+        return write_back_now_to_pl_ec(ex, write_back_options{});
     }
 
 #if PHY_ENGINE_ENABLE_EXCEPTIONS
@@ -579,6 +679,13 @@ public:
         return std::move(*r.value);
     }
 
+    sample sample_now_digital_state() const
+    {
+        auto r = sample_now_digital_state_ec();
+        if(!r) { throw std::runtime_error(r.st.message); }
+        return std::move(*r.value);
+    }
+
     void sync_inputs_from_pl(experiment const& ex)
     {
         auto st = sync_inputs_from_pl_ec(ex);
@@ -588,6 +695,24 @@ public:
     void write_back_to_pl(experiment& ex, sample const& s) const
     {
         auto st = write_back_to_pl_ec(ex, s);
+        if(!st) { throw std::runtime_error(st.message); }
+    }
+
+    void write_back_to_pl(experiment& ex, sample const& s, write_back_options const& opt) const
+    {
+        auto st = write_back_to_pl_ec(ex, s, opt);
+        if(!st) { throw std::runtime_error(st.message); }
+    }
+
+    void write_back_now_to_pl(experiment& ex) const
+    {
+        auto st = write_back_now_to_pl_ec(ex);
+        if(!st) { throw std::runtime_error(st.message); }
+    }
+
+    void write_back_now_to_pl(experiment& ex, write_back_options const& opt) const
+    {
+        auto st = write_back_now_to_pl_ec(ex, opt);
         if(!st) { throw std::runtime_error(st.message); }
     }
 #endif

@@ -1,11 +1,19 @@
 ﻿#include <phy_engine/phy_engine.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <new>
 #include <numbers>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <phy_engine/model/models/linear/transformer.h>
 #include <phy_engine/model/models/linear/transformer_center_tap.h>
@@ -31,6 +39,11 @@
 #include <phy_engine/model/models/digital/logical/tri_state.h>
 #include <phy_engine/model/models/digital/verilog_ports.h>
 
+#include <phy_engine/phy_lab_wrapper/auto_layout/auto_layout.h>
+#include <phy_engine/phy_lab_wrapper/error.h>
+#include <phy_engine/phy_lab_wrapper/pe_sim.h>
+#include <phy_engine/phy_lab_wrapper/pe_to_pl.h>
+#include <phy_engine/phy_lab_wrapper/physicslab.h>
 #include <phy_engine/verilog/digital/pe_synth.h>
 
 namespace
@@ -160,6 +173,1349 @@ extern "C" void verilog_synth_set_loop_unroll_limit(::std::size_t n)
 extern "C" ::std::size_t verilog_synth_get_loop_unroll_limit()
 {
     return g_verilog_synth_loop_unroll_limit.load(::std::memory_order_relaxed);
+}
+
+namespace
+{
+using verilog_logic_t = ::phy_engine::verilog::digital::logic_t;
+using verilog_port_dir_t = ::phy_engine::verilog::digital::port_dir;
+
+[[nodiscard]] inline ::std::string to_std_string(::fast_io::u8string_view sv)
+{
+    return ::std::string(reinterpret_cast<char const*>(sv.data()), sv.size());
+}
+
+[[nodiscard]] inline ::std::string to_std_string(::fast_io::u8string const& s)
+{
+    return ::std::string(reinterpret_cast<char const*>(s.data()), s.size());
+}
+
+[[nodiscard]] inline ::std::string to_std_string(char const* s, ::std::size_t size)
+{
+    if(s == nullptr || size == 0) { return {}; }
+    return ::std::string(s, size);
+}
+
+inline void set_phy_engine_error(::std::string msg)
+{
+    ::phy_engine::phy_lab_wrapper::detail::set_last_error(::std::move(msg));
+}
+
+[[nodiscard]] inline char* dup_c_string(::std::string const& s)
+{
+    auto* out = new (::std::nothrow) char[s.size() + 1];
+    if(out == nullptr) { return nullptr; }
+    if(!s.empty()) { ::std::memcpy(out, s.data(), s.size()); }
+    out[s.size()] = '\0';
+    return out;
+}
+
+[[nodiscard]] inline ::std::uint8_t logic_to_u8(verilog_logic_t v) noexcept
+{
+    switch(v)
+    {
+        case ::phy_engine::model::digital_node_statement_t::false_state: return 0;
+        case ::phy_engine::model::digital_node_statement_t::true_state: return 1;
+        case ::phy_engine::model::digital_node_statement_t::indeterminate_state: return 2;
+        case ::phy_engine::model::digital_node_statement_t::high_impedence_state: return 3;
+        default: return 2;
+    }
+}
+
+[[nodiscard]] inline bool u8_to_logic(::std::uint8_t state, verilog_logic_t& out) noexcept
+{
+    switch(state)
+    {
+        case 0: out = ::phy_engine::model::digital_node_statement_t::false_state; return true;
+        case 1: out = ::phy_engine::model::digital_node_statement_t::true_state; return true;
+        case 2: out = ::phy_engine::model::digital_node_statement_t::indeterminate_state; return true;
+        case 3: out = ::phy_engine::model::digital_node_statement_t::high_impedence_state; return true;
+        default: return false;
+    }
+}
+
+[[nodiscard]] inline ::std::uint8_t port_dir_to_u8(verilog_port_dir_t dir) noexcept
+{
+    switch(dir)
+    {
+        case verilog_port_dir_t::input: return 1;
+        case verilog_port_dir_t::output: return 2;
+        case verilog_port_dir_t::inout: return 3;
+        default: return 0;
+    }
+}
+
+[[nodiscard]] inline int copy_bytes_to_c_buffer(char const* data, ::std::size_t size, char* out, ::std::size_t out_size, char const* what)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    if(out == nullptr)
+    {
+        set_phy_engine_error(::std::string(what) + ": output buffer is null");
+        return 1;
+    }
+    if(out_size < size + 1)
+    {
+        set_phy_engine_error(::std::string(what) + ": output buffer too small");
+        return 2;
+    }
+    if(size != 0) { ::std::memcpy(out, data, size); }
+    out[size] = '\0';
+    return 0;
+}
+
+[[nodiscard]] inline int copy_u8sv_to_c_buffer(::fast_io::u8string_view sv, char* out, ::std::size_t out_size, char const* what)
+{
+    return copy_bytes_to_c_buffer(reinterpret_cast<char const*>(sv.data()), sv.size(), out, out_size, what);
+}
+
+[[nodiscard]] inline bool read_text_file(::std::filesystem::path const& path, ::fast_io::u8string& out_text) noexcept
+{
+    try
+    {
+        ::std::ifstream ifs(path, ::std::ios::binary);
+        if(!ifs.is_open()) { return false; }
+        ifs.seekg(0, ::std::ios::end);
+        auto const end_pos = ifs.tellg();
+        if(end_pos < 0) { return false; }
+        auto const size = static_cast<::std::size_t>(end_pos);
+        ifs.seekg(0, ::std::ios::beg);
+        ::std::string buf(size, '\0');
+        if(size != 0) { ifs.read(buf.data(), static_cast<::std::streamsize>(size)); }
+        out_text.assign(::fast_io::u8string_view{reinterpret_cast<char8_t const*>(buf.data()), buf.size()});
+        return true;
+    }
+    catch(...)
+    {
+        return false;
+    }
+}
+
+struct verilog_include_context
+{
+    ::std::vector<::std::filesystem::path> roots{};
+};
+
+[[nodiscard]] inline bool verilog_include_resolver(void* user, ::fast_io::u8string_view path, ::fast_io::u8string& out_text) noexcept
+{
+    auto const requested = ::std::filesystem::path(to_std_string(path));
+    if(requested.is_absolute()) { return read_text_file(requested, out_text); }
+
+    auto* ctx = static_cast<verilog_include_context*>(user);
+    if(ctx == nullptr) { return false; }
+    for(auto const& root: ctx->roots)
+    {
+        if(read_text_file(root / requested, out_text)) { return true; }
+    }
+    return false;
+}
+
+struct verilog_runtime_handle
+{
+    ::fast_io::u8string source{};
+    ::fast_io::u8string preprocessed{};
+    ::std::shared_ptr<::phy_engine::verilog::digital::compiled_design> design{};
+    ::std::size_t top_module_index{};
+    ::phy_engine::verilog::digital::instance_state top_instance{};
+    ::std::uint64_t tick{};
+};
+
+[[nodiscard]] inline bool try_find_module_index(::phy_engine::verilog::digital::compiled_design const& d,
+                                                ::fast_io::u8string_view name,
+                                                ::std::size_t& out_index) noexcept
+{
+    auto const it = d.module_index.find(::fast_io::u8string{name});
+    if(it == d.module_index.end()) { return false; }
+    out_index = it->second;
+    return true;
+}
+
+[[nodiscard]] inline ::phy_engine::verilog::digital::compiled_module const* runtime_top_module(verilog_runtime_handle const& rt) noexcept
+{
+    if(rt.design == nullptr || rt.top_module_index >= rt.design->modules.size()) { return nullptr; }
+    return __builtin_addressof(rt.design->modules.index_unchecked(rt.top_module_index));
+}
+
+[[nodiscard]] inline verilog_logic_t const* runtime_port_value_ptr(verilog_runtime_handle const& rt, ::std::size_t port_index) noexcept
+{
+    auto const* mod = runtime_top_module(rt);
+    if(mod == nullptr || port_index >= mod->ports.size()) { return nullptr; }
+    auto const sig = mod->ports.index_unchecked(port_index).signal;
+    if(sig >= rt.top_instance.state.values.size()) { return nullptr; }
+    return __builtin_addressof(rt.top_instance.state.values.index_unchecked(sig));
+}
+
+[[nodiscard]] inline verilog_logic_t* runtime_port_value_ptr(verilog_runtime_handle& rt, ::std::size_t port_index) noexcept
+{
+    auto const* mod = runtime_top_module(rt);
+    if(mod == nullptr || port_index >= mod->ports.size()) { return nullptr; }
+    auto const sig = mod->ports.index_unchecked(port_index).signal;
+    if(sig >= rt.top_instance.state.values.size()) { return nullptr; }
+    return __builtin_addressof(rt.top_instance.state.values.index_unchecked(sig));
+}
+
+[[nodiscard]] inline verilog_logic_t const* runtime_signal_value_ptr(verilog_runtime_handle const& rt, ::std::size_t signal_index) noexcept
+{
+    if(signal_index >= rt.top_instance.state.values.size()) { return nullptr; }
+    return __builtin_addressof(rt.top_instance.state.values.index_unchecked(signal_index));
+}
+
+[[nodiscard]] inline verilog_logic_t* runtime_signal_value_ptr(verilog_runtime_handle& rt, ::std::size_t signal_index) noexcept
+{
+    if(signal_index >= rt.top_instance.state.values.size()) { return nullptr; }
+    return __builtin_addressof(rt.top_instance.state.values.index_unchecked(signal_index));
+}
+
+[[nodiscard]] inline bool runtime_reset_impl(verilog_runtime_handle& rt) noexcept
+{
+    auto const* mod = runtime_top_module(rt);
+    if(mod == nullptr || rt.design == nullptr) { return false; }
+    rt.top_instance = ::phy_engine::verilog::digital::elaborate(*rt.design, *mod);
+    rt.tick = 0;
+    return rt.top_instance.mod != nullptr;
+}
+}  // namespace
+
+extern "C" char const* phy_engine_last_error()
+{
+    return ::phy_engine::phy_lab_wrapper::detail::last_error_c_str();
+}
+
+extern "C" void phy_engine_clear_error()
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+}
+
+extern "C" void phy_engine_string_free(char* s)
+{
+    delete[] s;
+}
+
+extern "C" void* verilog_runtime_create(char const* src,
+                                        ::std::size_t src_size,
+                                        char const* top,
+                                        ::std::size_t top_size,
+                                        char const* const* include_dirs,
+                                        ::std::size_t const* include_dir_sizes,
+                                        ::std::size_t include_dir_count)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    if(src == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_create: src is null");
+        return nullptr;
+    }
+    try
+    {
+        auto* rt = new (::std::nothrow) verilog_runtime_handle{};
+        if(rt == nullptr)
+        {
+            set_phy_engine_error("verilog_runtime_create: allocation failed");
+            return nullptr;
+        }
+
+        rt->source.assign(::fast_io::u8string_view{reinterpret_cast<char8_t const*>(src), src_size});
+
+        ::phy_engine::verilog::digital::compile_options opt{};
+        verilog_include_context ictx{};
+        if(include_dirs != nullptr && include_dir_sizes != nullptr)
+        {
+            ictx.roots.reserve(include_dir_count);
+            for(::std::size_t i{}; i < include_dir_count; ++i)
+            {
+                if(include_dirs[i] == nullptr) { continue; }
+                ictx.roots.emplace_back(::std::string(include_dirs[i], include_dir_sizes[i]));
+            }
+            if(!ictx.roots.empty())
+            {
+                opt.preprocess.user = __builtin_addressof(ictx);
+                opt.preprocess.include_resolver = verilog_include_resolver;
+            }
+        }
+
+        auto const src_view = ::fast_io::u8string_view{rt->source.data(), rt->source.size()};
+        auto pp = ::phy_engine::verilog::digital::preprocess(src_view, opt.preprocess);
+        rt->preprocessed = pp.output;
+
+        auto cr = ::phy_engine::verilog::digital::compile(src_view, opt);
+        if(!cr.errors.empty() || cr.modules.empty())
+        {
+            auto formatted = ::phy_engine::verilog::digital::format_compile_errors(cr, src_view);
+            if(formatted.empty())
+            {
+                set_phy_engine_error("verilog_runtime_create: Verilog compile failed");
+            }
+            else
+            {
+                set_phy_engine_error(to_std_string(formatted));
+            }
+            delete rt;
+            return nullptr;
+        }
+
+        rt->design =
+            ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
+        if(rt->design == nullptr || rt->design->modules.empty())
+        {
+            set_phy_engine_error("verilog_runtime_create: no compiled modules");
+            delete rt;
+            return nullptr;
+        }
+
+        ::std::size_t top_index{};
+        if(top != nullptr && top_size != 0)
+        {
+            auto const top_view = ::fast_io::u8string_view{reinterpret_cast<char8_t const*>(top), top_size};
+            if(!try_find_module_index(*rt->design, top_view, top_index))
+            {
+                set_phy_engine_error("verilog_runtime_create: top module not found: " + ::std::string(top, top_size));
+                delete rt;
+                return nullptr;
+            }
+        }
+        else
+        {
+            static constexpr char8_t fallback_top_name[] = u8"top";
+            if(!try_find_module_index(*rt->design,
+                                      ::fast_io::u8string_view{fallback_top_name, sizeof(fallback_top_name) - 1},
+                                      top_index))
+            {
+                top_index = 0;
+            }
+        }
+
+        rt->top_module_index = top_index;
+        if(!runtime_reset_impl(*rt))
+        {
+            set_phy_engine_error("verilog_runtime_create: failed to elaborate top module");
+            delete rt;
+            return nullptr;
+        }
+
+        return rt;
+    }
+    catch(::std::exception const& e)
+    {
+        set_phy_engine_error(::std::string("verilog_runtime_create: exception: ") + e.what());
+        return nullptr;
+    }
+    catch(...)
+    {
+        set_phy_engine_error("verilog_runtime_create: unknown exception");
+        return nullptr;
+    }
+}
+
+extern "C" void verilog_runtime_destroy(void* runtime_ptr)
+{
+    delete static_cast<verilog_runtime_handle*>(runtime_ptr);
+}
+
+extern "C" ::std::uint64_t verilog_runtime_get_tick(void* runtime_ptr)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    return rt == nullptr ? 0 : rt->tick;
+}
+
+extern "C" int verilog_runtime_reset(void* runtime_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    if(rt == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_reset: runtime is null");
+        return 1;
+    }
+    if(!runtime_reset_impl(*rt))
+    {
+        set_phy_engine_error("verilog_runtime_reset: failed to re-elaborate top module");
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int verilog_runtime_step(void* runtime_ptr, ::std::uint64_t tick, ::std::uint8_t process_sequential)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    if(rt == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_step: runtime is null");
+        return 1;
+    }
+    if(rt->top_instance.mod == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_step: top instance is null");
+        return 2;
+    }
+    rt->tick = tick;
+    ::phy_engine::verilog::digital::simulate(rt->top_instance, tick, process_sequential != 0);
+    return 0;
+}
+
+extern "C" int verilog_runtime_tick(void* runtime_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    if(rt == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_tick: runtime is null");
+        return 1;
+    }
+    auto const next_tick = rt->tick + 1;
+    ::phy_engine::verilog::digital::simulate(rt->top_instance, next_tick, true);
+    rt->tick = next_tick;
+    return 0;
+}
+
+extern "C" ::std::size_t verilog_runtime_module_count(void* runtime_ptr)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    return (rt == nullptr || rt->design == nullptr) ? 0 : rt->design->modules.size();
+}
+
+extern "C" ::std::size_t verilog_runtime_port_count(void* runtime_ptr)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    return mod == nullptr ? 0 : mod->ports.size();
+}
+
+extern "C" ::std::size_t verilog_runtime_signal_count(void* runtime_ptr)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    return mod == nullptr ? 0 : mod->signal_names.size();
+}
+
+extern "C" ::std::size_t verilog_runtime_preprocessed_size(void* runtime_ptr)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    return rt == nullptr ? 0 : rt->preprocessed.size();
+}
+
+extern "C" int verilog_runtime_copy_preprocessed(void* runtime_ptr, char* out, ::std::size_t out_size)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    if(rt == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_copy_preprocessed: runtime is null");
+        return 1;
+    }
+    return copy_u8sv_to_c_buffer(::fast_io::u8string_view{rt->preprocessed.data(), rt->preprocessed.size()},
+                                 out,
+                                 out_size,
+                                 "verilog_runtime_copy_preprocessed");
+}
+
+extern "C" ::std::size_t verilog_runtime_top_module_name_size(void* runtime_ptr)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    return mod == nullptr ? 0 : mod->name.size();
+}
+
+extern "C" int verilog_runtime_copy_top_module_name(void* runtime_ptr, char* out, ::std::size_t out_size)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_copy_top_module_name: top module is null");
+        return 1;
+    }
+    return copy_u8sv_to_c_buffer(::fast_io::u8string_view{mod->name.data(), mod->name.size()}, out, out_size, "verilog_runtime_copy_top_module_name");
+}
+
+extern "C" ::std::size_t verilog_runtime_module_name_size(void* runtime_ptr, ::std::size_t module_index)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    if(rt == nullptr || rt->design == nullptr || module_index >= rt->design->modules.size()) { return 0; }
+    return rt->design->modules.index_unchecked(module_index).name.size();
+}
+
+extern "C" int verilog_runtime_copy_module_name(void* runtime_ptr, ::std::size_t module_index, char* out, ::std::size_t out_size)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    if(rt == nullptr || rt->design == nullptr || module_index >= rt->design->modules.size())
+    {
+        set_phy_engine_error("verilog_runtime_copy_module_name: invalid module index");
+        return 1;
+    }
+    auto const& mod = rt->design->modules.index_unchecked(module_index);
+    return copy_u8sv_to_c_buffer(::fast_io::u8string_view{mod.name.data(), mod.name.size()}, out, out_size, "verilog_runtime_copy_module_name");
+}
+
+extern "C" ::std::size_t verilog_runtime_port_name_size(void* runtime_ptr, ::std::size_t port_index)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr || port_index >= mod->ports.size()) { return 0; }
+    return mod->ports.index_unchecked(port_index).name.size();
+}
+
+extern "C" int verilog_runtime_copy_port_name(void* runtime_ptr, ::std::size_t port_index, char* out, ::std::size_t out_size)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr || port_index >= mod->ports.size())
+    {
+        set_phy_engine_error("verilog_runtime_copy_port_name: invalid port index");
+        return 1;
+    }
+    auto const& port = mod->ports.index_unchecked(port_index);
+    return copy_u8sv_to_c_buffer(::fast_io::u8string_view{port.name.data(), port.name.size()}, out, out_size, "verilog_runtime_copy_port_name");
+}
+
+extern "C" ::std::uint8_t verilog_runtime_port_dir(void* runtime_ptr, ::std::size_t port_index)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr || port_index >= mod->ports.size()) { return 0; }
+    return port_dir_to_u8(mod->ports.index_unchecked(port_index).dir);
+}
+
+extern "C" ::std::uint8_t verilog_runtime_get_port_value(void* runtime_ptr, ::std::size_t port_index)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* v = (rt == nullptr) ? nullptr : runtime_port_value_ptr(*rt, port_index);
+    return v == nullptr ? 2 : logic_to_u8(*v);
+}
+
+extern "C" int verilog_runtime_set_port_value(void* runtime_ptr, ::std::size_t port_index, ::std::uint8_t state)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr || port_index >= mod->ports.size())
+    {
+        set_phy_engine_error("verilog_runtime_set_port_value: invalid port index");
+        return 1;
+    }
+    auto const dir = mod->ports.index_unchecked(port_index).dir;
+    if(dir == verilog_port_dir_t::output)
+    {
+        set_phy_engine_error("verilog_runtime_set_port_value: output port is read-only");
+        return 2;
+    }
+    auto* dst = runtime_port_value_ptr(*rt, port_index);
+    if(dst == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_set_port_value: unresolved port signal");
+        return 3;
+    }
+    verilog_logic_t lv{};
+    if(!u8_to_logic(state, lv))
+    {
+        set_phy_engine_error("verilog_runtime_set_port_value: invalid digital state");
+        return 4;
+    }
+    *dst = lv;
+    return 0;
+}
+
+extern "C" ::std::size_t verilog_runtime_signal_name_size(void* runtime_ptr, ::std::size_t signal_index)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr || signal_index >= mod->signal_names.size()) { return 0; }
+    return mod->signal_names.index_unchecked(signal_index).size();
+}
+
+extern "C" int verilog_runtime_copy_signal_name(void* runtime_ptr, ::std::size_t signal_index, char* out, ::std::size_t out_size)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* mod = (rt == nullptr) ? nullptr : runtime_top_module(*rt);
+    if(mod == nullptr || signal_index >= mod->signal_names.size())
+    {
+        set_phy_engine_error("verilog_runtime_copy_signal_name: invalid signal index");
+        return 1;
+    }
+    auto const& signal_name = mod->signal_names.index_unchecked(signal_index);
+    return copy_u8sv_to_c_buffer(::fast_io::u8string_view{signal_name.data(), signal_name.size()}, out, out_size, "verilog_runtime_copy_signal_name");
+}
+
+extern "C" ::std::uint8_t verilog_runtime_get_signal_value(void* runtime_ptr, ::std::size_t signal_index)
+{
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto const* v = (rt == nullptr) ? nullptr : runtime_signal_value_ptr(*rt, signal_index);
+    return v == nullptr ? 2 : logic_to_u8(*v);
+}
+
+extern "C" int verilog_runtime_set_signal_value(void* runtime_ptr, ::std::size_t signal_index, ::std::uint8_t state)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* rt = static_cast<verilog_runtime_handle*>(runtime_ptr);
+    auto* dst = (rt == nullptr) ? nullptr : runtime_signal_value_ptr(*rt, signal_index);
+    if(dst == nullptr)
+    {
+        set_phy_engine_error("verilog_runtime_set_signal_value: invalid signal index");
+        return 1;
+    }
+    verilog_logic_t lv{};
+    if(!u8_to_logic(state, lv))
+    {
+        set_phy_engine_error("verilog_runtime_set_signal_value: invalid digital state");
+        return 2;
+    }
+    *dst = lv;
+    return 0;
+}
+
+extern "C" void* pl_experiment_create(int type_value)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    try
+    {
+        auto* ex = new (::std::nothrow)
+            ::phy_engine::phy_lab_wrapper::experiment(::phy_engine::phy_lab_wrapper::experiment::create(
+                static_cast<::phy_engine::phy_lab_wrapper::experiment_type>(type_value)));
+        if(ex == nullptr)
+        {
+            set_phy_engine_error("pl_experiment_create: allocation failed");
+            return nullptr;
+        }
+        return ex;
+    }
+    catch(::std::exception const& e)
+    {
+        set_phy_engine_error(::std::string("pl_experiment_create: exception: ") + e.what());
+        return nullptr;
+    }
+    catch(...)
+    {
+        set_phy_engine_error("pl_experiment_create: unknown exception");
+        return nullptr;
+    }
+}
+
+extern "C" void* pl_experiment_load_from_string(char const* sav_json, ::std::size_t sav_json_size)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    if(sav_json == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_load_from_string: sav_json is null");
+        return nullptr;
+    }
+    auto r = ::phy_engine::phy_lab_wrapper::experiment::load_from_string_ec(::std::string_view{sav_json, sav_json_size});
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return nullptr;
+    }
+    auto* ex = new (::std::nothrow) ::phy_engine::phy_lab_wrapper::experiment(::std::move(*r.value));
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_load_from_string: allocation failed");
+        return nullptr;
+    }
+    return ex;
+}
+
+extern "C" void* pl_experiment_load_from_file(char const* path, ::std::size_t path_size)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    if(path == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_load_from_file: path is null");
+        return nullptr;
+    }
+    auto r = ::phy_engine::phy_lab_wrapper::experiment::load_ec(::std::filesystem::path(to_std_string(path, path_size)));
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return nullptr;
+    }
+    auto* ex = new (::std::nothrow) ::phy_engine::phy_lab_wrapper::experiment(::std::move(*r.value));
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_load_from_file: allocation failed");
+        return nullptr;
+    }
+    return ex;
+}
+
+extern "C" void pl_experiment_destroy(void* experiment_ptr)
+{
+    delete static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+}
+
+extern "C" char* pl_experiment_dump(void* experiment_ptr, int indent)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_dump: experiment is null");
+        return nullptr;
+    }
+    auto r = ex->dump_ec(indent);
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return nullptr;
+    }
+    auto* out = dup_c_string(*r.value);
+    if(out == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_dump: allocation failed");
+        return nullptr;
+    }
+    return out;
+}
+
+extern "C" int pl_experiment_save(void* experiment_ptr, char const* path, ::std::size_t path_size, int indent)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr || path == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_save: experiment/path is null");
+        return 1;
+    }
+    auto st = ex->save_ec(::std::filesystem::path(to_std_string(path, path_size)), indent);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" char* pl_experiment_add_circuit_element(void* experiment_ptr,
+                                                   char const* model_id,
+                                                   ::std::size_t model_id_size,
+                                                   double x,
+                                                   double y,
+                                                   double z,
+                                                   ::std::uint8_t element_xyz_coords,
+                                                   ::std::uint8_t is_big_element,
+                                                   ::std::uint8_t participate_in_layout)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr || model_id == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_add_circuit_element: experiment/model_id is null");
+        return nullptr;
+    }
+    auto r = ex->add_circuit_element_ec(to_std_string(model_id, model_id_size),
+                                        ::phy_engine::phy_lab_wrapper::position{x, y, z},
+                                        element_xyz_coords != 0,
+                                        is_big_element != 0,
+                                        participate_in_layout != 0);
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return nullptr;
+    }
+    auto* out = dup_c_string(*r.value);
+    if(out == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_add_circuit_element: allocation failed");
+        return nullptr;
+    }
+    return out;
+}
+
+extern "C" int pl_experiment_connect(void* experiment_ptr,
+                                     char const* src_id,
+                                     ::std::size_t src_id_size,
+                                     int src_pin,
+                                     char const* dst_id,
+                                     ::std::size_t dst_id_size,
+                                     int dst_pin,
+                                     int color_value)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr || src_id == nullptr || dst_id == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_connect: experiment/src_id/dst_id is null");
+        return 1;
+    }
+    auto st = ex->connect_ec(to_std_string(src_id, src_id_size),
+                             src_pin,
+                             to_std_string(dst_id, dst_id_size),
+                             dst_pin,
+                             static_cast<::phy_engine::phy_lab_wrapper::wire_color>(color_value));
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_experiment_clear_wires(void* experiment_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_clear_wires: experiment is null");
+        return 1;
+    }
+    auto st = ex->clear_wires_ec();
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_experiment_set_xyz_precision(void* experiment_ptr, int decimals)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_xyz_precision: experiment is null");
+        return 1;
+    }
+    auto st = ex->set_xyz_precision_ec(decimals);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_experiment_set_element_xyz(void* experiment_ptr,
+                                             ::std::uint8_t enabled,
+                                             double origin_x,
+                                             double origin_y,
+                                             double origin_z)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_xyz: experiment is null");
+        return 1;
+    }
+    ex->set_element_xyz(enabled != 0, ::phy_engine::phy_lab_wrapper::position{origin_x, origin_y, origin_z});
+    return 0;
+}
+
+extern "C" int pl_experiment_set_camera(void* experiment_ptr,
+                                        double vision_center_x,
+                                        double vision_center_y,
+                                        double vision_center_z,
+                                        double target_rotation_x,
+                                        double target_rotation_y,
+                                        double target_rotation_z)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_camera: experiment is null");
+        return 1;
+    }
+    ex->set_camera(::phy_engine::phy_lab_wrapper::position{vision_center_x, vision_center_y, vision_center_z},
+                   ::phy_engine::phy_lab_wrapper::position{target_rotation_x, target_rotation_y, target_rotation_z});
+    return 0;
+}
+
+extern "C" int pl_experiment_set_element_property_number(void* experiment_ptr,
+                                                         char const* element_id,
+                                                         ::std::size_t element_id_size,
+                                                         char const* key,
+                                                         ::std::size_t key_size,
+                                                         double value)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr || element_id == nullptr || key == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_property_number: experiment/element_id/key is null");
+        return 1;
+    }
+    auto* el = ex->find_element(to_std_string(element_id, element_id_size));
+    if(el == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_property_number: unknown element identifier");
+        return 2;
+    }
+    auto& data = el->data();
+    if(!data.contains("Properties") || !data["Properties"].is_object()) { data["Properties"] = ::phy_engine::phy_lab_wrapper::json::object(); }
+    auto const key_s = to_std_string(key, key_size);
+    data["Properties"][key_s] = value;
+    if(key_s == "锁定") { data["IsLocked"] = (value != 0.0); }
+    return 0;
+}
+
+extern "C" int pl_experiment_set_element_label(void* experiment_ptr,
+                                               char const* element_id,
+                                               ::std::size_t element_id_size,
+                                               char const* label,
+                                               ::std::size_t label_size)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr || element_id == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_label: experiment/element_id is null");
+        return 1;
+    }
+    auto* el = ex->find_element(to_std_string(element_id, element_id_size));
+    if(el == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_label: unknown element identifier");
+        return 2;
+    }
+    if(label == nullptr || label_size == 0) { el->data()["Label"] = nullptr; }
+    else { el->data()["Label"] = to_std_string(label, label_size); }
+    return 0;
+}
+
+extern "C" int pl_experiment_set_element_position(void* experiment_ptr,
+                                                  char const* element_id,
+                                                  ::std::size_t element_id_size,
+                                                  double x,
+                                                  double y,
+                                                  double z,
+                                                  ::std::uint8_t element_xyz_coords)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr || element_id == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_position: experiment/element_id is null");
+        return 1;
+    }
+    auto* el = ex->find_element(to_std_string(element_id, element_id_size));
+    if(el == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_set_element_position: unknown element identifier");
+        return 2;
+    }
+    el->set_element_position(::phy_engine::phy_lab_wrapper::position{x, y, z}, element_xyz_coords != 0);
+    return 0;
+}
+
+extern "C" int pl_experiment_merge(void* dst_experiment_ptr,
+                                   void* src_experiment_ptr,
+                                   double offset_x,
+                                   double offset_y,
+                                   double offset_z)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* dst = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(dst_experiment_ptr);
+    auto* src = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(src_experiment_ptr);
+    if(dst == nullptr || src == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_merge: dst/src experiment is null");
+        return 1;
+    }
+    auto st = dst->merge_ec(*src, ::phy_engine::phy_lab_wrapper::position{offset_x, offset_y, offset_z});
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" void* pl_pe_circuit_build(void* experiment_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_build: experiment is null");
+        return nullptr;
+    }
+    auto r = ::phy_engine::phy_lab_wrapper::pe::circuit::build_from_ec(*ex);
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return nullptr;
+    }
+    auto* out = new (::std::nothrow) ::phy_engine::phy_lab_wrapper::pe::circuit(::std::move(*r.value));
+    if(out == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_build: allocation failed");
+        return nullptr;
+    }
+    return out;
+}
+
+extern "C" void pl_pe_circuit_destroy(void* pe_circuit_ptr)
+{
+    delete static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+}
+
+extern "C" ::std::size_t pl_pe_circuit_comp_size(void* pe_circuit_ptr)
+{
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    return c == nullptr ? 0 : c->comp_size();
+}
+
+extern "C" int pl_pe_circuit_set_analyze_type(void* pe_circuit_ptr, ::std::uint32_t analyze_type_value)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_set_analyze_type: circuit is null");
+        return 1;
+    }
+    auto st = c->set_analyze_type_ec(static_cast<phy_engine_analyze_type>(analyze_type_value));
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_set_tr(void* pe_circuit_ptr, double t_step, double t_stop)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_set_tr: circuit is null");
+        return 1;
+    }
+    auto st = c->set_tr_ec(t_step, t_stop);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_set_ac_omega(void* pe_circuit_ptr, double omega)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_set_ac_omega: circuit is null");
+        return 1;
+    }
+    auto st = c->set_ac_omega_ec(omega);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_analyze(void* pe_circuit_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_analyze: circuit is null");
+        return 1;
+    }
+    auto st = c->analyze_ec();
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_digital_clk(void* pe_circuit_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_digital_clk: circuit is null");
+        return 1;
+    }
+    auto st = c->digital_clk_ec();
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_sync_inputs_from_pl(void* pe_circuit_ptr, void* experiment_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(c == nullptr || ex == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_sync_inputs_from_pl: circuit/experiment is null");
+        return 1;
+    }
+    auto st = c->sync_inputs_from_pl_ec(*ex);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 2;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_write_back_to_pl(void* pe_circuit_ptr, void* experiment_ptr)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(c == nullptr || ex == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_write_back_to_pl: circuit/experiment is null");
+        return 1;
+    }
+    auto s = c->sample_now_digital_state_ec();
+    if(!s)
+    {
+        set_phy_engine_error(s.st.message);
+        return 2;
+    }
+    auto st = c->write_back_to_pl_ec(*ex, *s.value);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 3;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_write_back_to_pl_ex(void* pe_circuit_ptr,
+                                                 void* experiment_ptr,
+                                                 double logic_output_low,
+                                                 double logic_output_high,
+                                                 double logic_output_x,
+                                                 double logic_output_z)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(c == nullptr || ex == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_write_back_to_pl_ex: circuit/experiment is null");
+        return 1;
+    }
+    auto s = c->sample_now_digital_state_ec();
+    if(!s)
+    {
+        set_phy_engine_error(s.st.message);
+        return 2;
+    }
+    ::phy_engine::phy_lab_wrapper::pe::write_back_options opt{};
+    opt.logic_output_low = logic_output_low;
+    opt.logic_output_high = logic_output_high;
+    opt.logic_output_x = logic_output_x;
+    opt.logic_output_z = logic_output_z;
+    auto st = c->write_back_to_pl_ec(*ex, *s.value, opt);
+    if(!st)
+    {
+        set_phy_engine_error(st.message);
+        return 3;
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_sample_layout(void* pe_circuit_ptr,
+                                           ::std::size_t* voltage_ord,
+                                           ::std::size_t* current_ord,
+                                           ::std::size_t* digital_ord)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr || voltage_ord == nullptr || current_ord == nullptr || digital_ord == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_sample_layout: invalid arguments");
+        return 1;
+    }
+    auto s = c->sample_now_ec();
+    if(!s)
+    {
+        set_phy_engine_error(s.st.message);
+        return 2;
+    }
+    for(::std::size_t i{}; i < s.value->pin_voltage_ord.size(); ++i)
+    {
+        voltage_ord[i] = s.value->pin_voltage_ord[i];
+        current_ord[i] = s.value->branch_current_ord[i];
+        digital_ord[i] = s.value->pin_digital_ord[i];
+    }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_sample_u8(void* pe_circuit_ptr,
+                                       double* voltage,
+                                       ::std::size_t* voltage_ord,
+                                       double* current,
+                                       ::std::size_t* current_ord,
+                                       ::std::uint8_t* digital,
+                                       ::std::size_t* digital_ord)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr || voltage == nullptr || voltage_ord == nullptr || current == nullptr || current_ord == nullptr || digital == nullptr ||
+       digital_ord == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_sample_u8: invalid arguments");
+        return 1;
+    }
+    auto s = c->sample_now_ec();
+    if(!s)
+    {
+        set_phy_engine_error(s.st.message);
+        return 2;
+    }
+    for(::std::size_t i{}; i < s.value->pin_voltage_ord.size(); ++i)
+    {
+        voltage_ord[i] = s.value->pin_voltage_ord[i];
+        current_ord[i] = s.value->branch_current_ord[i];
+        digital_ord[i] = s.value->pin_digital_ord[i];
+    }
+    for(::std::size_t i{}; i < s.value->pin_voltage.size(); ++i) { voltage[i] = s.value->pin_voltage[i]; }
+    for(::std::size_t i{}; i < s.value->branch_current.size(); ++i) { current[i] = s.value->branch_current[i]; }
+    for(::std::size_t i{}; i < s.value->pin_digital.size(); ++i) { digital[i] = s.value->pin_digital[i]; }
+    return 0;
+}
+
+extern "C" int pl_pe_circuit_sample_digital_state_u8(void* pe_circuit_ptr,
+                                                     double* voltage,
+                                                     ::std::size_t* voltage_ord,
+                                                     double* current,
+                                                     ::std::size_t* current_ord,
+                                                     ::std::uint8_t* digital,
+                                                     ::std::size_t* digital_ord)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::phy_lab_wrapper::pe::circuit*>(pe_circuit_ptr);
+    if(c == nullptr || voltage == nullptr || voltage_ord == nullptr || current == nullptr || current_ord == nullptr || digital == nullptr ||
+       digital_ord == nullptr)
+    {
+        set_phy_engine_error("pl_pe_circuit_sample_digital_state_u8: invalid arguments");
+        return 1;
+    }
+    auto s = c->sample_now_digital_state_ec();
+    if(!s)
+    {
+        set_phy_engine_error(s.st.message);
+        return 2;
+    }
+    for(::std::size_t i{}; i < s.value->pin_voltage_ord.size(); ++i)
+    {
+        voltage_ord[i] = s.value->pin_voltage_ord[i];
+        current_ord[i] = s.value->branch_current_ord[i];
+        digital_ord[i] = s.value->pin_digital_ord[i];
+    }
+    for(::std::size_t i{}; i < s.value->pin_voltage.size(); ++i) { voltage[i] = s.value->pin_voltage[i]; }
+    for(::std::size_t i{}; i < s.value->branch_current.size(); ++i) { current[i] = s.value->branch_current[i]; }
+    for(::std::size_t i{}; i < s.value->pin_digital.size(); ++i) { digital[i] = s.value->pin_digital[i]; }
+    return 0;
+}
+
+extern "C" void* pe_to_pl_convert(void* circuit_ptr,
+                                  double fixed_x,
+                                  double fixed_y,
+                                  double fixed_z,
+                                  ::std::uint8_t element_xyz_coords,
+                                  ::std::uint8_t keep_pl_macros,
+                                  ::std::uint8_t include_linear,
+                                  ::std::uint8_t include_ground,
+                                  ::std::uint8_t generate_wires,
+                                  ::std::uint8_t keep_unknown_as_placeholders,
+                                  ::std::uint8_t drop_dangling_logic_inputs)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    if(c == nullptr)
+    {
+        set_phy_engine_error("pe_to_pl_convert: circuit is null");
+        return nullptr;
+    }
+
+    ::phy_engine::phy_lab_wrapper::pe_to_pl::options opt{};
+    opt.fixed_pos = ::phy_engine::phy_lab_wrapper::position{fixed_x, fixed_y, fixed_z};
+    opt.element_xyz_coords = element_xyz_coords != 0;
+    opt.keep_pl_macros = keep_pl_macros != 0;
+    opt.include_linear = include_linear != 0;
+    opt.include_ground = include_ground != 0;
+    opt.generate_wires = generate_wires != 0;
+    opt.keep_unknown_as_placeholders = keep_unknown_as_placeholders != 0;
+    opt.drop_dangling_logic_inputs = drop_dangling_logic_inputs != 0;
+
+    auto r = ::phy_engine::phy_lab_wrapper::pe_to_pl::convert_ec(c->get_netlist(), opt);
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return nullptr;
+    }
+    auto* ex = new (::std::nothrow) ::phy_engine::phy_lab_wrapper::experiment(::std::move(r.value->ex));
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pe_to_pl_convert: allocation failed");
+        return nullptr;
+    }
+    return ex;
+}
+
+extern "C" int pl_experiment_auto_layout(void* experiment_ptr,
+                                         double corner0_x,
+                                         double corner0_y,
+                                         double corner0_z,
+                                         double corner1_x,
+                                         double corner1_y,
+                                         double corner1_z,
+                                         double z_fixed,
+                                         int backend_value,
+                                         int mode_value,
+                                         double step_x,
+                                         double step_y,
+                                         double margin_x,
+                                         double margin_y,
+                                         ::std::size_t* out_grid_w,
+                                         ::std::size_t* out_grid_h,
+                                         ::std::size_t* out_fixed_obstacles,
+                                         ::std::size_t* out_placed,
+                                         ::std::size_t* out_skipped)
+{
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    auto* ex = static_cast<::phy_engine::phy_lab_wrapper::experiment*>(experiment_ptr);
+    if(ex == nullptr)
+    {
+        set_phy_engine_error("pl_experiment_auto_layout: experiment is null");
+        return 1;
+    }
+
+    ::phy_engine::phy_lab_wrapper::auto_layout::options opt{};
+    opt.backend_kind = static_cast<::phy_engine::phy_lab_wrapper::auto_layout::backend>(backend_value);
+    opt.layout_mode = static_cast<::phy_engine::phy_lab_wrapper::auto_layout::mode>(mode_value);
+    opt.step_x = step_x;
+    opt.step_y = step_y;
+    opt.margin_x = margin_x;
+    opt.margin_y = margin_y;
+
+    auto r = ::phy_engine::phy_lab_wrapper::auto_layout::layout_ec(
+        *ex,
+        ::phy_engine::phy_lab_wrapper::position{corner0_x, corner0_y, corner0_z},
+        ::phy_engine::phy_lab_wrapper::position{corner1_x, corner1_y, corner1_z},
+        z_fixed,
+        opt);
+    if(!r)
+    {
+        set_phy_engine_error(r.st.message);
+        return 2;
+    }
+    if(out_grid_w != nullptr) { *out_grid_w = r.value->grid_w; }
+    if(out_grid_h != nullptr) { *out_grid_h = r.value->grid_h; }
+    if(out_fixed_obstacles != nullptr) { *out_fixed_obstacles = r.value->fixed_obstacles; }
+    if(out_placed != nullptr) { *out_placed = r.value->placed; }
+    if(out_skipped != nullptr) { *out_skipped = r.value->skipped; }
+    return 0;
 }
 
 // Union-Find find function
@@ -910,6 +2266,44 @@ extern "C" int circuit_digital_clk(void* circuit_ptr)
     return 0;
 }
 
+extern "C" int circuit_sample_layout(void* circuit_ptr,
+                                     ::std::size_t* vec_pos,
+                                     ::std::size_t* chunk_pos,
+                                     ::std::size_t comp_size,
+                                     ::std::size_t* voltage_ord,
+                                     ::std::size_t* current_ord,
+                                     ::std::size_t* digital_ord)
+{
+    if(circuit_ptr == nullptr || vec_pos == nullptr || chunk_pos == nullptr || voltage_ord == nullptr || current_ord == nullptr || digital_ord == nullptr)
+    {
+        return 1;
+    }
+
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    auto& nl{c->get_netlist()};
+
+    voltage_ord[0] = current_ord[0] = digital_ord[0] = 0;
+    for(::std::size_t i{}; i < comp_size; ++i)
+    {
+        auto* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos[i], chunk_pos[i]});
+        if(model == nullptr || model->ptr == nullptr)
+        {
+            voltage_ord[i + 1] = voltage_ord[i];
+            current_ord[i + 1] = current_ord[i];
+            digital_ord[i + 1] = digital_ord[i];
+            continue;
+        }
+
+        auto const model_pin_view{model->ptr->generate_pin_view()};
+        auto const model_branch_view{model->ptr->generate_branch_view()};
+        voltage_ord[i + 1] = voltage_ord[i] + model_pin_view.size;
+        current_ord[i + 1] = current_ord[i] + model_branch_view.size;
+        digital_ord[i + 1] = digital_ord[i] + model_pin_view.size;
+    }
+
+    return 0;
+}
+
 extern "C" int circuit_sample(void* circuit_ptr,
                               ::std::size_t* vec_pos,
                               ::std::size_t* chunk_pos,
@@ -930,15 +2324,12 @@ extern "C" int circuit_sample(void* circuit_ptr,
     auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
     auto& nl{c->get_netlist()};
 
-    voltage_ord[0] = current_ord[0] = digital_ord[0] = 0;
+    if(circuit_sample_layout(circuit_ptr, vec_pos, chunk_pos, comp_size, voltage_ord, current_ord, digital_ord) != 0) { return 1; }
     for(::std::size_t i{}; i < comp_size; ++i)
     {
         phy_engine::model::model_base* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos[i], chunk_pos[i]});
         if(model == nullptr || model->ptr == nullptr)
         {
-            voltage_ord[i + 1] = voltage_ord[i];
-            current_ord[i + 1] = current_ord[i];
-            digital_ord[i + 1] = digital_ord[i];
             continue;
         }
 
@@ -950,10 +2341,7 @@ extern "C" int circuit_sample(void* circuit_ptr,
             auto const* node{model_pin_view.pins[j].nodes};
             voltage[j + voltage_ord[i]] = (node != nullptr) ? node->node_information.an.voltage.real() : 0.0;
         }
-        voltage_ord[i + 1] = voltage_ord[i] + model_pin_view.size;
-
         for(::std::size_t j{}; j < model_branch_view.size; ++j) { current[j + current_ord[i]] = model_branch_view.branches[j].current.real(); }
-        current_ord[i + 1] = current_ord[i] + model_branch_view.size;
 
         for(::std::size_t j{}; j < model_pin_view.size; ++j)
         {
@@ -965,7 +2353,6 @@ extern "C" int circuit_sample(void* circuit_ptr,
             }
             digital[j + digital_ord[i]] = v;
         }
-        digital_ord[i + 1] = digital_ord[i] + model_pin_view.size;
     }
 
     return 0;
@@ -991,15 +2378,12 @@ extern "C" int circuit_sample_u8(void* circuit_ptr,
     auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
     auto& nl{c->get_netlist()};
 
-    voltage_ord[0] = current_ord[0] = digital_ord[0] = 0;
+    if(circuit_sample_layout(circuit_ptr, vec_pos, chunk_pos, comp_size, voltage_ord, current_ord, digital_ord) != 0) { return 1; }
     for(::std::size_t i{}; i < comp_size; ++i)
     {
         phy_engine::model::model_base* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos[i], chunk_pos[i]});
         if(model == nullptr || model->ptr == nullptr)
         {
-            voltage_ord[i + 1] = voltage_ord[i];
-            current_ord[i + 1] = current_ord[i];
-            digital_ord[i + 1] = digital_ord[i];
             continue;
         }
 
@@ -1011,10 +2395,7 @@ extern "C" int circuit_sample_u8(void* circuit_ptr,
             auto const* node{model_pin_view.pins[j].nodes};
             voltage[j + voltage_ord[i]] = (node != nullptr) ? node->node_information.an.voltage.real() : 0.0;
         }
-        voltage_ord[i + 1] = voltage_ord[i] + model_pin_view.size;
-
         for(::std::size_t j{}; j < model_branch_view.size; ++j) { current[j + current_ord[i]] = model_branch_view.branches[j].current.real(); }
-        current_ord[i + 1] = current_ord[i] + model_branch_view.size;
 
         for(::std::size_t j{}; j < model_pin_view.size; ++j)
         {
@@ -1026,7 +2407,58 @@ extern "C" int circuit_sample_u8(void* circuit_ptr,
             }
             digital[j + digital_ord[i]] = v;
         }
-        digital_ord[i + 1] = digital_ord[i] + model_pin_view.size;
+    }
+
+    return 0;
+}
+
+extern "C" int circuit_sample_digital_state_u8(void* circuit_ptr,
+                                               ::std::size_t* vec_pos,
+                                               ::std::size_t* chunk_pos,
+                                               ::std::size_t comp_size,
+                                               double* voltage,
+                                               ::std::size_t* voltage_ord,
+                                               double* current,
+                                               ::std::size_t* current_ord,
+                                               ::std::uint8_t* digital,
+                                               ::std::size_t* digital_ord)
+{
+    if(circuit_ptr == nullptr || vec_pos == nullptr || chunk_pos == nullptr || voltage == nullptr || voltage_ord == nullptr || current == nullptr ||
+       current_ord == nullptr || digital == nullptr || digital_ord == nullptr)
+    {
+        return 1;
+    }
+
+    auto* c = static_cast<::phy_engine::circult*>(circuit_ptr);
+    auto& nl{c->get_netlist()};
+
+    if(circuit_sample_layout(circuit_ptr, vec_pos, chunk_pos, comp_size, voltage_ord, current_ord, digital_ord) != 0) { return 1; }
+    for(::std::size_t i{}; i < comp_size; ++i)
+    {
+        phy_engine::model::model_base* model = get_model(nl, ::phy_engine::netlist::model_pos{vec_pos[i], chunk_pos[i]});
+        if(model == nullptr || model->ptr == nullptr) { continue; }
+
+        auto const model_pin_view{model->ptr->generate_pin_view()};
+        auto const model_branch_view{model->ptr->generate_branch_view()};
+
+        for(::std::size_t j{}; j < model_pin_view.size; ++j)
+        {
+            auto const* node{model_pin_view.pins[j].nodes};
+            voltage[j + voltage_ord[i]] = (node != nullptr) ? node->node_information.an.voltage.real() : 0.0;
+        }
+
+        for(::std::size_t j{}; j < model_branch_view.size; ++j) { current[j + current_ord[i]] = model_branch_view.branches[j].current.real(); }
+
+        for(::std::size_t j{}; j < model_pin_view.size; ++j)
+        {
+            auto const* node{model_pin_view.pins[j].nodes};
+            ::std::uint8_t v{static_cast<::std::uint8_t>(::phy_engine::model::digital_node_statement_t::X)};
+            if(node != nullptr && node->num_of_analog_node == 0)
+            {
+                v = static_cast<::std::uint8_t>(node->node_information.dn.state);
+            }
+            digital[j + digital_ord[i]] = v;
+        }
     }
 
     return 0;
@@ -1066,16 +2498,26 @@ extern "C" void* create_circuit(int* elements,
                                 ::std::size_t** chunk_pos,
                                 ::std::size_t* comp_size)
 {
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
     // TODO In future versions, perhaps 0 (ground element) should not be allowed in elements
-    if(vec_pos == nullptr || chunk_pos == nullptr || comp_size == nullptr) { return nullptr; }
+    if(vec_pos == nullptr || chunk_pos == nullptr || comp_size == nullptr)
+    {
+        set_phy_engine_error("create_circuit: output pointers are null");
+        return nullptr;
+    }
     *vec_pos = nullptr;
     *chunk_pos = nullptr;
     *comp_size = 0;
-    if(elements == nullptr || properties == nullptr) { return nullptr; }
+    if(elements == nullptr || properties == nullptr)
+    {
+        set_phy_engine_error("create_circuit: elements/properties are null");
+        return nullptr;
+    }
     *vec_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     *chunk_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     if(*vec_pos == nullptr || *chunk_pos == nullptr)
     {
+        set_phy_engine_error("create_circuit: failed to allocate component position arrays");
         ::std::free(*vec_pos);
         ::std::free(*chunk_pos);
         *vec_pos = nullptr;
@@ -1098,6 +2540,7 @@ extern "C" void* create_circuit(int* elements,
     phy_engine::netlist::model_pos* model_pos_arr = static_cast<phy_engine::netlist::model_pos*>(malloc(ele_size * sizeof(phy_engine::netlist::model_pos)));
     if(model_pos_arr == nullptr)
     {
+        set_phy_engine_error("create_circuit: failed to allocate model_pos array");
         destroy_circuit(c, *vec_pos, *chunk_pos);
         *vec_pos = nullptr;
         *chunk_pos = nullptr;
@@ -1115,6 +2558,8 @@ extern "C" void* create_circuit(int* elements,
             auto [ele, ele_pos]{add_model_via_code(nl, elements[i], &curr_prop)};
             if(ele == nullptr)
             {
+                set_phy_engine_error("create_circuit: failed to create element at index " + ::std::to_string(i) + " with code " +
+                                     ::std::to_string(elements[i]));
                 ::std::free(model_pos_arr);
                 destroy_circuit(c, *vec_pos, *chunk_pos);
                 *vec_pos = nullptr;
@@ -1170,11 +2615,20 @@ extern "C" void* create_circuit_ex(int* elements,
                                    ::std::size_t** chunk_pos,
                                    ::std::size_t* comp_size)
 {
-    if(vec_pos == nullptr || chunk_pos == nullptr || comp_size == nullptr) { return nullptr; }
+    ::phy_engine::phy_lab_wrapper::detail::clear_last_error();
+    if(vec_pos == nullptr || chunk_pos == nullptr || comp_size == nullptr)
+    {
+        set_phy_engine_error("create_circuit_ex: output pointers are null");
+        return nullptr;
+    }
     *vec_pos = nullptr;
     *chunk_pos = nullptr;
     *comp_size = 0;
-    if(elements == nullptr || properties == nullptr) { return nullptr; }
+    if(elements == nullptr || properties == nullptr)
+    {
+        set_phy_engine_error("create_circuit_ex: elements/properties are null");
+        return nullptr;
+    }
 
     verilog_text_tables vt{
         .texts = texts,
@@ -1189,6 +2643,7 @@ extern "C" void* create_circuit_ex(int* elements,
     *chunk_pos = static_cast<::std::size_t*>(malloc(ele_size * sizeof(::std::size_t)));
     if(*vec_pos == nullptr || *chunk_pos == nullptr)
     {
+        set_phy_engine_error("create_circuit_ex: failed to allocate component position arrays");
         ::std::free(*vec_pos);
         ::std::free(*chunk_pos);
         *vec_pos = nullptr;
@@ -1219,6 +2674,7 @@ extern "C" void* create_circuit_ex(int* elements,
     phy_engine::netlist::model_pos* model_pos_arr = static_cast<phy_engine::netlist::model_pos*>(malloc(ele_size * sizeof(phy_engine::netlist::model_pos)));
     if(model_pos_arr == nullptr)
     {
+        set_phy_engine_error("create_circuit_ex: failed to allocate model_pos array");
         destroy_circuit(c, *vec_pos, *chunk_pos);
         *vec_pos = nullptr;
         *chunk_pos = nullptr;
@@ -1238,6 +2694,7 @@ extern "C" void* create_circuit_ex(int* elements,
                 auto const src = get_verilog_src(vt, i);
                 if(src.empty())
                 {
+                    set_phy_engine_error("create_circuit_ex: missing Verilog source for element index " + ::std::to_string(i));
                     ::std::free(model_pos_arr);
                     destroy_circuit(c, *vec_pos, *chunk_pos);
                     *vec_pos = nullptr;
@@ -1256,6 +2713,16 @@ extern "C" void* create_circuit_ex(int* elements,
                 auto cr = ::phy_engine::verilog::digital::compile(src, opt);
                 if(!cr.errors.empty() || cr.modules.empty())
                 {
+                    auto formatted = ::phy_engine::verilog::digital::format_compile_errors(cr, src);
+                    if(formatted.empty())
+                    {
+                        set_phy_engine_error("create_circuit_ex: Verilog compile failed for element index " + ::std::to_string(i));
+                    }
+                    else
+                    {
+                        set_phy_engine_error("create_circuit_ex: Verilog compile failed for element index " + ::std::to_string(i) + "\n" +
+                                             to_std_string(formatted));
+                    }
                     ::std::free(model_pos_arr);
                     destroy_circuit(c, *vec_pos, *chunk_pos);
                     *vec_pos = nullptr;
@@ -1267,6 +2734,7 @@ extern "C" void* create_circuit_ex(int* elements,
                     ::std::make_shared<::phy_engine::verilog::digital::compiled_design>(::phy_engine::verilog::digital::build_design(::std::move(cr)));
                 if(design->modules.empty())
                 {
+                    set_phy_engine_error("create_circuit_ex: compiled design is empty for element index " + ::std::to_string(i));
                     ::std::free(model_pos_arr);
                     destroy_circuit(c, *vec_pos, *chunk_pos);
                     *vec_pos = nullptr;
@@ -1310,6 +2778,8 @@ extern "C" void* create_circuit_ex(int* elements,
             auto [ele, ele_pos]{ret};
             if(ele == nullptr)
             {
+                set_phy_engine_error("create_circuit_ex: failed to create element at index " + ::std::to_string(i) + " with code " +
+                                     ::std::to_string(elements[i]));
                 ::std::free(model_pos_arr);
                 destroy_circuit(c, *vec_pos, *chunk_pos);
                 *vec_pos = nullptr;
@@ -1333,6 +2803,7 @@ extern "C" void* create_circuit_ex(int* elements,
         auto* stub = ::phy_engine::netlist::get_model(nl, job.stub_pos);
         if(stub == nullptr || stub->ptr == nullptr)
         {
+            set_phy_engine_error("create_circuit_ex: synthesized Verilog port stub lookup failed");
             ::std::free(model_pos_arr);
             destroy_circuit(c, *vec_pos, *chunk_pos);
             *vec_pos = nullptr;
@@ -1351,6 +2822,7 @@ extern "C" void* create_circuit_ex(int* elements,
                 auto& created = ::phy_engine::netlist::create_node(nl);
                 if(!::phy_engine::netlist::add_to_node(nl, *stub, pi, created))
                 {
+                    set_phy_engine_error("create_circuit_ex: failed to wire synthesized Verilog port stub");
                     ::std::free(model_pos_arr);
                     destroy_circuit(c, *vec_pos, *chunk_pos);
                     *vec_pos = nullptr;
@@ -1366,6 +2838,14 @@ extern "C" void* create_circuit_ex(int* elements,
 	        auto const syn_opt = verilog_synth_options_snapshot();
 	        if(!::phy_engine::verilog::digital::synthesize_to_pe_netlist(nl, job.top, port_nodes, &syn_err, syn_opt))
 	        {
+	            if(syn_err.message.empty())
+	            {
+	                set_phy_engine_error("create_circuit_ex: Verilog synthesis to PE netlist failed");
+	            }
+	            else
+	            {
+	                set_phy_engine_error("create_circuit_ex: Verilog synthesis to PE netlist failed\n" + to_std_string(syn_err.message));
+	            }
 	            ::std::free(model_pos_arr);
 	            destroy_circuit(c, *vec_pos, *chunk_pos);
             *vec_pos = nullptr;

@@ -31,6 +31,21 @@ extern "C"
         PHY_ENGINE_D_Z = 3,
     };
 
+    // Verilog top-level port directions (matches `phy_engine::verilog::digital::port_dir`).
+    enum phy_engine_verilog_port_dir : uint8_t
+    {
+        PHY_ENGINE_V_PORT_UNKNOWN = 0,
+        PHY_ENGINE_V_PORT_INPUT = 1,
+        PHY_ENGINE_V_PORT_OUTPUT = 2,
+        PHY_ENGINE_V_PORT_INOUT = 3,
+    };
+
+    // Thread-local diagnostic string for the most recent failing API call.
+    // Pointer remains valid until the next API call on the same thread.
+    char const* phy_engine_last_error(void);
+    void phy_engine_clear_error(void);
+    void phy_engine_string_free(char* s);
+
     // Element codes supported by `create_circuit()` / `create_circuit_ex()`.
     // Property consumption is positional via the `properties` array.
     enum phy_engine_element_code : int
@@ -164,6 +179,18 @@ extern "C"
     int circuit_analyze(void* circuit_ptr);
     int circuit_digital_clk(void* circuit_ptr);
 
+    // Query prefix-sum layouts used by `circuit_sample()` / `circuit_sample_u8()`.
+    // - `voltage_ord/current_ord/digital_ord` must each have length `comp_size + 1`.
+    // - `voltage_ord[i+1]-voltage_ord[i]` is the pin count of component i.
+    // - `current_ord[i+1]-current_ord[i]` is the branch count of component i.
+    int circuit_sample_layout(void* circuit_ptr,
+                              size_t* vec_pos,
+                              size_t* chunk_pos,
+                              size_t comp_size,
+                              size_t* voltage_ord,
+                              size_t* current_ord,
+                              size_t* digital_ord);
+
     // Sample the current state without running `analyze()`.
     // Output arrays are in component order (same order as `vec_pos/chunk_pos`).
     int circuit_sample(void* circuit_ptr,
@@ -190,6 +217,19 @@ extern "C"
                           uint8_t* digital,
                           size_t* digital_ord);
 
+    // Like `circuit_sample_u8`, but preserves 4-state digital values:
+    // 0=L, 1=H, 2=X, 3=Z. Non-pure-digital/hybrid pins currently report X.
+    int circuit_sample_digital_state_u8(void* circuit_ptr,
+                                        size_t* vec_pos,
+                                        size_t* chunk_pos,
+                                        size_t comp_size,
+                                        double* voltage,
+                                        size_t* voltage_ord,
+                                        double* current,
+                                        size_t* current_ord,
+                                        uint8_t* digital,
+                                        size_t* digital_ord);
+
     // Set a model's digital attribute (commonly used for `PHY_ENGINE_E_DIGITAL_INPUT` at attribute_index=0).
     int circuit_set_model_digital(void* circuit_ptr, size_t vec_pos, size_t chunk_pos, size_t attribute_index, uint8_t state);
 
@@ -208,6 +248,196 @@ extern "C"
                         size_t* current_ord,
                         bool* digital,
                         size_t* digital_ord);
+
+    // Global defaults used by `PHY_ENGINE_E_VERILOG_NETLIST` inside `create_circuit_ex()`.
+    void verilog_synth_set_opt_level(uint8_t level);
+    uint8_t verilog_synth_get_opt_level(void);
+    void verilog_synth_set_assume_binary_inputs(bool value);
+    bool verilog_synth_get_assume_binary_inputs(void);
+    void verilog_synth_set_allow_inout(bool value);
+    bool verilog_synth_get_allow_inout(void);
+    void verilog_synth_set_allow_multi_driver(bool value);
+    bool verilog_synth_get_allow_multi_driver(void);
+    void verilog_synth_set_optimize_wires(bool value);
+    bool verilog_synth_get_optimize_wires(void);
+    void verilog_synth_set_optimize_mul2(bool value);
+    bool verilog_synth_get_optimize_mul2(void);
+    void verilog_synth_set_optimize_adders(bool value);
+    bool verilog_synth_get_optimize_adders(void);
+    void verilog_synth_set_loop_unroll_limit(size_t n);
+    size_t verilog_synth_get_loop_unroll_limit(void);
+
+    // Verilog runtime: compile/elaborate one top module and simulate it directly.
+    // - `include_dirs/include_dir_sizes`: optional include search roots used by `` `include ``.
+    // - `top`: optional top module name; empty means: prefer "top", otherwise first compiled module.
+    // - On failure returns null and updates `phy_engine_last_error()`.
+    void* verilog_runtime_create(char const* src,
+                                 size_t src_size,
+                                 char const* top,
+                                 size_t top_size,
+                                 char const* const* include_dirs,
+                                 size_t const* include_dir_sizes,
+                                 size_t include_dir_count);
+    void verilog_runtime_destroy(void* runtime_ptr);
+
+    // Simulation control.
+    uint64_t verilog_runtime_get_tick(void* runtime_ptr);
+    int verilog_runtime_reset(void* runtime_ptr);
+    int verilog_runtime_step(void* runtime_ptr, uint64_t tick, uint8_t process_sequential);
+    int verilog_runtime_tick(void* runtime_ptr);  // increments internal tick then simulates with sequential logic enabled
+
+    // Design/runtime introspection.
+    size_t verilog_runtime_module_count(void* runtime_ptr);
+    size_t verilog_runtime_port_count(void* runtime_ptr);
+    size_t verilog_runtime_signal_count(void* runtime_ptr);
+
+    size_t verilog_runtime_preprocessed_size(void* runtime_ptr);
+    int verilog_runtime_copy_preprocessed(void* runtime_ptr, char* out, size_t out_size);
+
+    size_t verilog_runtime_top_module_name_size(void* runtime_ptr);
+    int verilog_runtime_copy_top_module_name(void* runtime_ptr, char* out, size_t out_size);
+
+    size_t verilog_runtime_module_name_size(void* runtime_ptr, size_t module_index);
+    int verilog_runtime_copy_module_name(void* runtime_ptr, size_t module_index, char* out, size_t out_size);
+
+    size_t verilog_runtime_port_name_size(void* runtime_ptr, size_t port_index);
+    int verilog_runtime_copy_port_name(void* runtime_ptr, size_t port_index, char* out, size_t out_size);
+    uint8_t verilog_runtime_port_dir(void* runtime_ptr, size_t port_index);
+    uint8_t verilog_runtime_get_port_value(void* runtime_ptr, size_t port_index);
+    int verilog_runtime_set_port_value(void* runtime_ptr, size_t port_index, uint8_t state);
+
+    size_t verilog_runtime_signal_name_size(void* runtime_ptr, size_t signal_index);
+    int verilog_runtime_copy_signal_name(void* runtime_ptr, size_t signal_index, char* out, size_t out_size);
+    uint8_t verilog_runtime_get_signal_value(void* runtime_ptr, size_t signal_index);
+    int verilog_runtime_set_signal_value(void* runtime_ptr, size_t signal_index, uint8_t state);
+
+    // PhysicsLab experiment handle (`phy_engine::phy_lab_wrapper::experiment`).
+    void* pl_experiment_create(int type_value);
+    void* pl_experiment_load_from_string(char const* sav_json, size_t sav_json_size);
+    void* pl_experiment_load_from_file(char const* path, size_t path_size);
+    void pl_experiment_destroy(void* experiment_ptr);
+
+    char* pl_experiment_dump(void* experiment_ptr, int indent);
+    int pl_experiment_save(void* experiment_ptr, char const* path, size_t path_size, int indent);
+
+    char* pl_experiment_add_circuit_element(void* experiment_ptr,
+                                           char const* model_id,
+                                           size_t model_id_size,
+                                           double x,
+                                           double y,
+                                           double z,
+                                           uint8_t element_xyz_coords,
+                                           uint8_t is_big_element,
+                                           uint8_t participate_in_layout);
+    int pl_experiment_connect(void* experiment_ptr,
+                              char const* src_id,
+                              size_t src_id_size,
+                              int src_pin,
+                              char const* dst_id,
+                              size_t dst_id_size,
+                              int dst_pin,
+                              int color_value);
+    int pl_experiment_clear_wires(void* experiment_ptr);
+    int pl_experiment_set_xyz_precision(void* experiment_ptr, int decimals);
+    int pl_experiment_set_element_xyz(void* experiment_ptr, uint8_t enabled, double origin_x, double origin_y, double origin_z);
+    int pl_experiment_set_camera(void* experiment_ptr,
+                                 double vision_center_x,
+                                 double vision_center_y,
+                                 double vision_center_z,
+                                 double target_rotation_x,
+                                 double target_rotation_y,
+                                 double target_rotation_z);
+    int pl_experiment_set_element_property_number(void* experiment_ptr,
+                                                  char const* element_id,
+                                                  size_t element_id_size,
+                                                  char const* key,
+                                                  size_t key_size,
+                                                  double value);
+    int pl_experiment_set_element_label(void* experiment_ptr,
+                                        char const* element_id,
+                                        size_t element_id_size,
+                                        char const* label,
+                                        size_t label_size);
+    int pl_experiment_set_element_position(void* experiment_ptr,
+                                           char const* element_id,
+                                           size_t element_id_size,
+                                           double x,
+                                           double y,
+                                           double z,
+                                           uint8_t element_xyz_coords);
+    int pl_experiment_merge(void* dst_experiment_ptr, void* src_experiment_ptr, double offset_x, double offset_y, double offset_z);
+
+    // PhysicsLab -> PE simulation handle (`phy_engine::phy_lab_wrapper::pe::circuit`).
+    void* pl_pe_circuit_build(void* experiment_ptr);
+    void pl_pe_circuit_destroy(void* pe_circuit_ptr);
+    size_t pl_pe_circuit_comp_size(void* pe_circuit_ptr);
+    int pl_pe_circuit_set_analyze_type(void* pe_circuit_ptr, uint32_t analyze_type_value);
+    int pl_pe_circuit_set_tr(void* pe_circuit_ptr, double t_step, double t_stop);
+    int pl_pe_circuit_set_ac_omega(void* pe_circuit_ptr, double omega);
+    int pl_pe_circuit_analyze(void* pe_circuit_ptr);
+    int pl_pe_circuit_digital_clk(void* pe_circuit_ptr);
+    int pl_pe_circuit_sync_inputs_from_pl(void* pe_circuit_ptr, void* experiment_ptr);
+    int pl_pe_circuit_write_back_to_pl(void* pe_circuit_ptr, void* experiment_ptr);
+    int pl_pe_circuit_write_back_to_pl_ex(void* pe_circuit_ptr,
+                                          void* experiment_ptr,
+                                          double logic_output_low,
+                                          double logic_output_high,
+                                          double logic_output_x,
+                                          double logic_output_z);
+    int pl_pe_circuit_sample_layout(void* pe_circuit_ptr,
+                                    size_t* voltage_ord,
+                                    size_t* current_ord,
+                                    size_t* digital_ord);
+    int pl_pe_circuit_sample_u8(void* pe_circuit_ptr,
+                                double* voltage,
+                                size_t* voltage_ord,
+                                double* current,
+                                size_t* current_ord,
+                                uint8_t* digital,
+                                size_t* digital_ord);
+    // Like `pl_pe_circuit_sample_u8`, but preserves 4-state digital values:
+    // 0=L, 1=H, 2=X, 3=Z.
+    int pl_pe_circuit_sample_digital_state_u8(void* pe_circuit_ptr,
+                                              double* voltage,
+                                              size_t* voltage_ord,
+                                              double* current,
+                                              size_t* current_ord,
+                                              uint8_t* digital,
+                                              size_t* digital_ord);
+
+    // PE -> PhysicsLab export.
+    void* pe_to_pl_convert(void* circuit_ptr,
+                           double fixed_x,
+                           double fixed_y,
+                           double fixed_z,
+                           uint8_t element_xyz_coords,
+                           uint8_t keep_pl_macros,
+                           uint8_t include_linear,
+                           uint8_t include_ground,
+                           uint8_t generate_wires,
+                           uint8_t keep_unknown_as_placeholders,
+                           uint8_t drop_dangling_logic_inputs);
+
+    // PhysicsLab auto-layout.
+    int pl_experiment_auto_layout(void* experiment_ptr,
+                                  double corner0_x,
+                                  double corner0_y,
+                                  double corner0_z,
+                                  double corner1_x,
+                                  double corner1_y,
+                                  double corner1_z,
+                                  double z_fixed,
+                                  int backend_value,
+                                  int mode_value,
+                                  double step_x,
+                                  double step_y,
+                                  double margin_x,
+                                  double margin_y,
+                                  size_t* out_grid_w,
+                                  size_t* out_grid_h,
+                                  size_t* out_fixed_obstacles,
+                                  size_t* out_placed,
+                                  size_t* out_skipped);
 
 #ifdef __cplusplus
 }  // extern "C"

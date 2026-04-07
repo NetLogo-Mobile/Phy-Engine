@@ -323,8 +323,9 @@
 3) 循环：
    - `c.sync_inputs_from_pl(ex)`（可选：同步逻辑输入开关）
    - `c.analyze()` / `c.digital_clk()`
-   - `auto s = c.sample_now()`
+   - `auto s = c.sample_now_digital_state()`
    - `c.write_back_to_pl(ex, s)`（可选：写回 Statistics）
+   - 或直接 `c.write_back_now_to_pl(ex)` / `c.write_back_now_to_pl(ex, opt)`
 
 该类的公开方法（以头文件为准）：
 
@@ -337,8 +338,12 @@
 - `analyze()`
 - `digital_clk()`
 - `sample_now() -> sample`
+- `sample_now_digital_state() -> sample`
 - `sync_inputs_from_pl(experiment const&)`
 - `write_back_to_pl(experiment&, sample const&)`
+- `write_back_to_pl(experiment&, sample const&, write_back_options const&)`
+- `write_back_now_to_pl(experiment&)`
+- `write_back_now_to_pl(experiment&, write_back_options const&)`
 
 ---
 

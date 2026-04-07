@@ -247,7 +247,44 @@
 
 ---
 
-## G. 环境变量（`PHY_ENGINE_*`）
+## G. PL → PE 回写：`pe::write_back_options`
+
+相关头文件：
+
+- `include/phy_engine/phy_lab_wrapper/pe_sim.h`
+
+定义：`phy_engine::phy_lab_wrapper::pe::write_back_options`
+
+字段：
+
+- `logic_output_low`
+  - 当 PE 数字态为 `L` 时，写回到 PhysicsLab `Logic Output.Properties["状态"]` 的数值
+  - 默认 `0.0`
+- `logic_output_high`
+  - 当 PE 数字态为 `H` 时的写回数值
+  - 默认 `1.0`
+- `logic_output_x`
+  - 当 PE 数字态为 `X` 时的写回数值
+  - 默认 `1.0`，用于保持历史兼容行为
+- `logic_output_z`
+  - 当 PE 数字态为 `Z` 时的写回数值
+  - 默认 `1.0`，用于保持历史兼容行为
+
+典型用法：
+
+- 保持历史兼容：直接使用默认值
+- 把未知态单独标出来：
+  - 例如 `logic_output_x = 0.25`
+  - 例如 `logic_output_z = -1.0`
+
+可搭配：
+
+- `pe::circuit::write_back_to_pl(ex, sample, opt)`
+- `pe::circuit::write_back_now_to_pl(ex, opt)`
+
+---
+
+## H. 环境变量（`PHY_ENGINE_*`）
 
 相关位置：`include/phy_engine/circuits/circuit.h`、`include/phy_engine/circuits/solver/cuda_sparse_lu.h`
 

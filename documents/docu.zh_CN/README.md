@@ -16,6 +16,7 @@
 - `09_文件格式_工具_FAQ.md`：文件格式/工具模块、常见问题、性能与排障
 - `10_Options_与配置参考.md`：所有 “options/setting/配置项/环境变量” 的逐项解释与示例
 - `11_API_逐函数参考.md`：按模块列出公开入口函数/方法，并给出用法与典型流程
+- `12_Python_API.md`：`python/phy_engine/` 的 Python 接口，覆盖电路构建/仿真、Verilog、PhysicsLab `.sav` 互操作与 PE→PL 导出
 
 ## 参考示例
 

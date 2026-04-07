@@ -19,3 +19,4 @@ test/**/*.exe
 .DS_Store
 *.sav
 *.penl
+__pycache__/
